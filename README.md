@@ -61,9 +61,9 @@ launcher = "wofi --show drun"
 launcher_app_id = "wofi"
 ```
 
-Press `Super+Space` while Clear is running to open the launcher. Clear launches
-the configured app inside the nested compositor and centers the launcher window
-on the output.
+Press `Super+Space` while Clear is running to open the launcher. Press it again
+to close the launcher if it is still open. Clear launches the configured app
+inside the nested compositor and centers the launcher window on the output.
 
 ## Logging
 

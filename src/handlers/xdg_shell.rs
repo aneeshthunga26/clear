@@ -13,7 +13,7 @@ use smithay::{
             protocol::{wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Logical, Point, Rectangle, Serial},
+    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
         compositor::with_states,
         shell::xdg::{
@@ -36,6 +36,9 @@ impl XdgShellHandler for Clear {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let window = Window::new_wayland_window(surface.clone());
         self.space.map_element(window, (0, 0), false);
+        if self.launcher_pending && self.pending_launcher_surface.is_none() {
+            self.pending_launcher_surface = Some(surface.wl_surface().clone());
+        }
         // Some clients set app_id before mapping, so try immediately.
         self.try_center_launcher(&surface);
     }
@@ -134,6 +137,10 @@ impl XdgShellHandler for Clear {
         // Other clients set app_id shortly after mapping; catch that path too.
         self.try_center_launcher(&surface);
     }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        self.clear_launcher_surface(surface.wl_surface());
+    }
 }
 
 fn check_grab(
@@ -231,18 +238,22 @@ impl Clear {
     }
 
     fn try_center_launcher_window(&mut self, window: Window, surface: &ToplevelSurface) {
-        // Only the first toplevel from an explicit launcher spawn should be centered.
-        if !self.launcher_pending
-            || self
-                .centered_launcher_surfaces
-                .iter()
-                .any(|centered| centered == surface.wl_surface())
-        {
+        let is_pending_launcher = self
+            .pending_launcher_surface
+            .as_ref()
+            .is_some_and(|pending| pending == surface.wl_surface());
+        let is_active_launcher = self
+            .active_launcher_surface
+            .as_ref()
+            .is_some_and(|active| active == surface.wl_surface());
+        let has_launcher_app_id =
+            toplevel_app_id(surface).as_deref() == Some(self.config.launcher_app_id());
+
+        // The pending surface covers launchers that set app_id late or not at all.
+        if !self.launcher_pending && !is_active_launcher {
             return;
         }
-
-        // The configured app id keeps unrelated windows from being moved.
-        if toplevel_app_id(surface).as_deref() != Some(self.config.launcher_app_id()) {
+        if !is_pending_launcher && !is_active_launcher && !has_launcher_app_id {
             return;
         }
 
@@ -253,21 +264,50 @@ impl Clear {
             return;
         };
 
-        let window_size = window.geometry().size;
+        let window_geo = window.geometry();
+        let window_size = window_geo.size;
         // Before the first real buffer commit, Wayland windows can report no useful size.
         if window_size.w <= 0 || window_size.h <= 0 {
             return;
         }
 
+        // Space stores the window geometry location. Keep recalculating this
+        // while the launcher is active because clients like wofi can resize
+        // after their first non-empty commit.
         let location = Point::<i32, Logical>::from((
             output_geo.loc.x + (output_geo.size.w - window_size.w) / 2,
             output_geo.loc.y + (output_geo.size.h - window_size.h) / 2,
         ));
 
         self.space.map_element(window, location, true);
-        self.centered_launcher_surfaces
-            .push(surface.wl_surface().clone());
+        let serial = SERIAL_COUNTER.next_serial();
+        self.seat.get_keyboard().unwrap().set_focus(
+            self,
+            Some(surface.wl_surface().clone()),
+            serial,
+        );
         self.launcher_pending = false;
+        self.pending_launcher_surface = None;
+        self.active_launcher_surface = Some(surface.wl_surface().clone());
+    }
+
+    fn clear_launcher_surface(&mut self, surface: &WlSurface) {
+        if self
+            .pending_launcher_surface
+            .as_ref()
+            .is_some_and(|pending| pending == surface)
+        {
+            self.pending_launcher_surface = None;
+            self.launcher_pending = false;
+        }
+
+        if self
+            .active_launcher_surface
+            .as_ref()
+            .is_some_and(|active| active == surface)
+        {
+            self.active_launcher_surface = None;
+        }
     }
 
     fn unconstrain_popup(&self, popup: &PopupSurface) {

@@ -37,8 +37,10 @@ pub struct Clear {
     pub suppressed_launcher_key: Option<Keysym>,
     /// Set after spawning the launcher, cleared after its first window is centered.
     pub launcher_pending: bool,
-    /// Launcher surfaces already centered, preventing later commits from moving them.
-    pub centered_launcher_surfaces: Vec<WlSurface>,
+    /// First toplevel seen after launching the launcher, even before app_id is set.
+    pub pending_launcher_surface: Option<WlSurface>,
+    /// Currently open launcher toplevel, used to toggle it closed.
+    pub active_launcher_surface: Option<WlSurface>,
 
     // Smithay State
     pub compositor_state: CompositorState,
@@ -107,7 +109,8 @@ impl Clear {
             loop_signal,
             suppressed_launcher_key: None,
             launcher_pending: false,
-            centered_launcher_surfaces: Vec::new(),
+            pending_launcher_surface: None,
+            active_launcher_surface: None,
             socket_name,
 
             compositor_state,
@@ -176,8 +179,12 @@ impl Clear {
             })
     }
 
-    /// Spawn the configured launcher command inside Clear's Wayland session.
-    pub fn spawn_launcher(&mut self) {
+    /// Toggle the configured launcher, closing an existing one before spawning.
+    pub fn toggle_launcher(&mut self) {
+        if self.close_active_launcher() {
+            return;
+        }
+
         let command = self.config.launcher_command().to_string();
         if command.is_empty() {
             return;
@@ -186,7 +193,27 @@ impl Clear {
         // Use the shell so users can configure commands with arguments.
         if Command::new("sh").arg("-c").arg(command).spawn().is_ok() {
             self.launcher_pending = true;
+            self.pending_launcher_surface = None;
         }
+    }
+
+    fn close_active_launcher(&mut self) -> bool {
+        let Some(surface) = self.active_launcher_surface.take() else {
+            return false;
+        };
+
+        if let Some(window) = self
+            .space
+            .elements()
+            .find(|window| window.toplevel().unwrap().wl_surface() == &surface)
+        {
+            window.toplevel().unwrap().send_close();
+            self.launcher_pending = false;
+            self.pending_launcher_surface = None;
+            return true;
+        }
+
+        false
     }
 }
 

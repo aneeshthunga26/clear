@@ -36,7 +36,7 @@ impl Clear {
                             {
                                 // Intercept compositor shortcuts before clients see them.
                                 state.suppressed_launcher_key = Some(keysym);
-                                state.spawn_launcher();
+                                state.toggle_launcher();
                                 FilterResult::Intercept(())
                             }
                             KeyState::Released if state.suppressed_launcher_key == Some(keysym) => {
