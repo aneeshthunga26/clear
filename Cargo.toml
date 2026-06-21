@@ -1,0 +1,19 @@
+[package]
+name = "clear"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+bitflags = "2.2.1"
+
+[dependencies.smithay]
+git = "https://github.com/Smithay/smithay.git"
+rev = "e1fb2496c9d7ec4d994cc50fe61b7439686ba8b9"
+default-features = false
+features = [
+    "backend_winit",
+    "wayland_frontend",
+    "desktop",
+]
