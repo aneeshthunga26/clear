@@ -1,8 +1,8 @@
-use std::{ffi::OsString, sync::Arc};
+use std::{ffi::OsString, process::Command, sync::Arc};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, keyboard::Keysym},
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -22,13 +22,23 @@ use smithay::{
     },
 };
 
+use crate::config::Config;
+
 pub struct Clear {
     pub start_time: std::time::Instant,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
+    /// Runtime config loaded from the user's XDG config file.
+    pub config: Config,
 
     pub space: Space<Window>,
     pub loop_signal: LoopSignal,
+    /// Tracks a compositor-handled shortcut key so its release is not forwarded.
+    pub suppressed_launcher_key: Option<Keysym>,
+    /// Set after spawning the launcher, cleared after its first window is centered.
+    pub launcher_pending: bool,
+    /// Launcher surfaces already centered, preventing later commits from moving them.
+    pub centered_launcher_surfaces: Vec<WlSurface>,
 
     // Smithay State
     pub compositor_state: CompositorState,
@@ -43,7 +53,7 @@ pub struct Clear {
 }
 
 impl Clear {
-    pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>) -> Self {
+    pub fn new(event_loop: &mut EventLoop<Self>, display: Display<Self>, config: Config) -> Self {
         let start_time = std::time::Instant::now();
 
         let dh = display.handle();
@@ -91,9 +101,13 @@ impl Clear {
         Self {
             start_time,
             display_handle: dh,
+            config,
 
             space,
             loop_signal,
+            suppressed_launcher_key: None,
+            launcher_pending: false,
+            centered_launcher_surfaces: Vec::new(),
             socket_name,
 
             compositor_state,
@@ -160,6 +174,19 @@ impl Clear {
                     .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                     .map(|(s, p)| (s, (p + location).to_f64()))
             })
+    }
+
+    /// Spawn the configured launcher command inside Clear's Wayland session.
+    pub fn spawn_launcher(&mut self) {
+        let command = self.config.launcher_command().to_string();
+        if command.is_empty() {
+            return;
+        }
+
+        // Use the shell so users can configure commands with arguments.
+        if Command::new("sh").arg("-c").arg(command).spawn().is_ok() {
+            self.launcher_pending = true;
+        }
     }
 }
 

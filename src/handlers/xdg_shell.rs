@@ -13,7 +13,7 @@ use smithay::{
             protocol::{wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::{Rectangle, Serial},
+    utils::{Logical, Point, Rectangle, Serial},
     wayland::{
         compositor::with_states,
         shell::xdg::{
@@ -34,8 +34,10 @@ impl XdgShellHandler for Clear {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let window = Window::new_wayland_window(surface);
+        let window = Window::new_wayland_window(surface.clone());
         self.space.map_element(window, (0, 0), false);
+        // Some clients set app_id before mapping, so try immediately.
+        self.try_center_launcher(&surface);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
@@ -127,6 +129,11 @@ impl XdgShellHandler for Clear {
     fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
         // TODO popup grabs
     }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        // Other clients set app_id shortly after mapping; catch that path too.
+        self.try_center_launcher(&surface);
+    }
 }
 
 fn check_grab(
@@ -192,6 +199,77 @@ pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: 
 }
 
 impl Clear {
+    /// Try centering a committed surface if it belongs to the pending launcher.
+    pub(crate) fn try_center_launcher_surface(&mut self, surface: &WlSurface) {
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| window.toplevel().unwrap().wl_surface() == surface)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(toplevel) = window.toplevel().cloned() else {
+            return;
+        };
+
+        self.try_center_launcher_window(window, &toplevel);
+    }
+
+    /// Try centering a toplevel handle if it matches the configured launcher app id.
+    fn try_center_launcher(&mut self, surface: &ToplevelSurface) {
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| window.toplevel().unwrap() == surface)
+            .cloned()
+        else {
+            return;
+        };
+
+        self.try_center_launcher_window(window, surface);
+    }
+
+    fn try_center_launcher_window(&mut self, window: Window, surface: &ToplevelSurface) {
+        // Only the first toplevel from an explicit launcher spawn should be centered.
+        if !self.launcher_pending
+            || self
+                .centered_launcher_surfaces
+                .iter()
+                .any(|centered| centered == surface.wl_surface())
+        {
+            return;
+        }
+
+        // The configured app id keeps unrelated windows from being moved.
+        if toplevel_app_id(surface).as_deref() != Some(self.config.launcher_app_id()) {
+            return;
+        }
+
+        let Some(output) = self.space.outputs().next() else {
+            return;
+        };
+        let Some(output_geo) = self.space.output_geometry(output) else {
+            return;
+        };
+
+        let window_size = window.geometry().size;
+        // Before the first real buffer commit, Wayland windows can report no useful size.
+        if window_size.w <= 0 || window_size.h <= 0 {
+            return;
+        }
+
+        let location = Point::<i32, Logical>::from((
+            output_geo.loc.x + (output_geo.size.w - window_size.w) / 2,
+            output_geo.loc.y + (output_geo.size.h - window_size.h) / 2,
+        ));
+
+        self.space.map_element(window, location, true);
+        self.centered_launcher_surfaces
+            .push(surface.wl_surface().clone());
+        self.launcher_pending = false;
+    }
+
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
@@ -218,4 +296,14 @@ impl Clear {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
     }
+}
+
+fn toplevel_app_id(surface: &ToplevelSurface) -> Option<String> {
+    // Smithay stores XDG toplevel metadata in the surface's role data.
+    with_states(surface.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().unwrap().app_id.clone())
+    })
 }

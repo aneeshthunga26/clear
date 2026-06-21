@@ -1,7 +1,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
     },
     input::{
         keyboard::FilterResult,
@@ -19,14 +19,34 @@ impl Clear {
             InputEvent::Keyboard { event, .. } => {
                 let serial = SERIAL_COUNTER.next_serial();
                 let time = Event::time_msec(&event);
+                let key_state = event.state();
 
                 self.seat.get_keyboard().unwrap().input::<(), _>(
                     self,
                     event.key_code(),
-                    event.state(),
+                    key_state,
                     serial,
                     time,
-                    |_, _, _| FilterResult::Forward,
+                    |state, modifiers, handle| {
+                        let keysym = handle.modified_sym();
+
+                        match key_state {
+                            KeyState::Pressed
+                                if state.config.launcher_matches(modifiers, keysym) =>
+                            {
+                                // Intercept compositor shortcuts before clients see them.
+                                state.suppressed_launcher_key = Some(keysym);
+                                state.spawn_launcher();
+                                FilterResult::Intercept(())
+                            }
+                            KeyState::Released if state.suppressed_launcher_key == Some(keysym) => {
+                                // A client that never saw the press should not see the release.
+                                state.suppressed_launcher_key = None;
+                                FilterResult::Intercept(())
+                            }
+                            _ => FilterResult::Forward,
+                        }
+                    },
                 );
             }
             InputEvent::PointerMotion { .. } => {}

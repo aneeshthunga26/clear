@@ -1,5 +1,6 @@
 #![allow(irrefutable_let_patterns)]
 
+mod config;
 mod handlers;
 
 mod grabs;
@@ -13,11 +14,13 @@ pub use state::Clear;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
+    let config = config::Config::load();
+
     let mut event_loop: EventLoop<Clear> = EventLoop::try_new()?;
 
     let display: Display<Clear> = Display::new()?;
 
-    let mut state = Clear::new(&mut event_loop, display);
+    let mut state = Clear::new(&mut event_loop, display, config);
 
     // Open a Wayland/X11 window for our nested compositor
     crate::winit::init_winit(&mut event_loop, &mut state)?;

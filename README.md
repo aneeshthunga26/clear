@@ -39,6 +39,32 @@ Clear opens a nested compositor window using Smithay's winit backend. The
 launched client receives `WAYLAND_DISPLAY` pointing at Clear's socket, so it
 runs inside the nested compositor rather than directly on your host compositor.
 
+## App Launcher
+
+Clear reads its config from `$XDG_CONFIG_HOME/clear/config.toml`, or
+`~/.config/clear/config.toml` if `XDG_CONFIG_HOME` is not set.
+
+The default launcher shortcut is `Super+Space`, where `Super` is the Windows
+key on most keyboards. The default launcher command is `wofi --show drun`.
+
+Example config:
+
+```toml
+[keys]
+leader = "Super"
+
+[shortcuts]
+launcher = "leader+Space"
+
+[apps]
+launcher = "wofi --show drun"
+launcher_app_id = "wofi"
+```
+
+Press `Super+Space` while Clear is running to open the launcher. Clear launches
+the configured app inside the nested compositor and centers the launcher window
+on the output.
+
 ## Logging
 
 Enable Rust tracing logs with `RUST_LOG`:
