@@ -1,8 +1,13 @@
-use std::{ffi::OsString, process::Command, sync::Arc};
+use std::{
+    ffi::OsString,
+    process::{Child, Command},
+    sync::Arc,
+};
 
 use smithay::{
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output},
     input::{Seat, SeatState, keyboard::Keysym},
+    output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_server::{
@@ -11,12 +16,15 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point},
+    utils::{Logical, Point, Rectangle},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::{
+            wlr_layer::{LayerSurface as WlrLayerSurface, WlrLayerShellState},
+            xdg::XdgShellState,
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -41,10 +49,17 @@ pub struct Clear {
     pub pending_launcher_surface: Option<WlSurface>,
     /// Currently open launcher toplevel, used to toggle it closed.
     pub active_launcher_surface: Option<WlSurface>,
+    /// Currently open status bar layer surface, used to toggle it closed.
+    pub active_status_bar_surface: Option<WlrLayerSurface>,
+    /// Child process for the configured status bar command.
+    pub active_status_bar_process: Option<Child>,
+    /// Set when the bar should be respawned after its current layer is destroyed.
+    pub status_bar_restart_pending: bool,
 
     // Smithay State
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub output_manager_state: OutputManagerState,
     pub seat_state: SeatState<Clear>,
@@ -67,6 +82,7 @@ impl Clear {
         // Initialize protocols needed for displaying windows
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let popups = PopupManager::default();
 
@@ -111,10 +127,14 @@ impl Clear {
             launcher_pending: false,
             pending_launcher_surface: None,
             active_launcher_surface: None,
+            active_status_bar_surface: None,
+            active_status_bar_process: None,
+            status_bar_restart_pending: false,
             socket_name,
 
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             shm_state,
             output_manager_state,
             seat_state,
@@ -170,6 +190,33 @@ impl Clear {
         &self,
         pos: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let output = self.space.outputs().find(|output| {
+            self.space
+                .output_geometry(output)
+                .is_some_and(|geometry| geometry.contains(pos.to_i32_round()))
+        })?;
+        let output_geo = self.space.output_geometry(output)?;
+        let layers = layer_map_for_output(output);
+
+        for layer_kind in [
+            smithay::wayland::shell::wlr_layer::Layer::Overlay,
+            smithay::wayland::shell::wlr_layer::Layer::Top,
+        ] {
+            if let Some(layer) = layers.layer_under(layer_kind, pos - output_geo.loc.to_f64()) {
+                let layer_geo = layers.layer_geometry(layer)?;
+                if let Some((surface, surface_loc)) = layer.surface_under(
+                    pos - output_geo.loc.to_f64() - layer_geo.loc.to_f64(),
+                    WindowSurfaceType::ALL,
+                ) {
+                    return Some((
+                        surface,
+                        (surface_loc + layer_geo.loc + output_geo.loc).to_f64(),
+                    ));
+                }
+            }
+        }
+        drop(layers);
+
         self.space
             .element_under(pos)
             .and_then(|(window, location)| {
@@ -177,6 +224,47 @@ impl Clear {
                     .surface_under(pos - location.to_f64(), WindowSurfaceType::ALL)
                     .map(|(s, p)| (s, (p + location).to_f64()))
             })
+            .or_else(|| {
+                let layers = layer_map_for_output(output);
+                for layer_kind in [
+                    smithay::wayland::shell::wlr_layer::Layer::Bottom,
+                    smithay::wayland::shell::wlr_layer::Layer::Background,
+                ] {
+                    if let Some(layer) =
+                        layers.layer_under(layer_kind, pos - output_geo.loc.to_f64())
+                    {
+                        let layer_geo = layers.layer_geometry(layer)?;
+                        if let Some((surface, surface_loc)) = layer.surface_under(
+                            pos - output_geo.loc.to_f64() - layer_geo.loc.to_f64(),
+                            WindowSurfaceType::ALL,
+                        ) {
+                            return Some((
+                                surface,
+                                (surface_loc + layer_geo.loc + output_geo.loc).to_f64(),
+                            ));
+                        }
+                    }
+                }
+
+                None
+            })
+    }
+
+    /// Output area available for normal windows after exclusive layers reserve space.
+    pub fn usable_output_geometry(&self, output: &Output) -> Option<Rectangle<i32, Logical>> {
+        let output_geo = self.space.output_geometry(output)?;
+        let usable = layer_map_for_output(output).non_exclusive_zone();
+        Some(Rectangle::new(output_geo.loc + usable.loc, usable.size))
+    }
+
+    /// Recompute layer placement and restart the bar against the latest output size.
+    pub fn handle_output_resize(&mut self, output: &Output) {
+        let changed = layer_map_for_output(output).arrange();
+        self.restart_status_bar();
+
+        if changed || self.status_bar_restart_pending {
+            let _ = self.display_handle.flush_clients();
+        }
     }
 
     /// Toggle the configured launcher, closing an existing one before spawning.
@@ -214,6 +302,61 @@ impl Clear {
         }
 
         false
+    }
+
+    /// Toggle the configured status bar, closing an existing one before spawning.
+    pub fn toggle_status_bar(&mut self) {
+        if self.active_status_bar_surface.is_some() || self.active_status_bar_process.is_some() {
+            self.stop_status_bar(false);
+            return;
+        }
+
+        self.spawn_status_bar();
+    }
+
+    /// Spawn the configured status bar inside Clear's Wayland session.
+    pub fn spawn_status_bar(&mut self) {
+        if self.active_status_bar_surface.is_some() || self.active_status_bar_process.is_some() {
+            return;
+        }
+
+        let command = self.config.apps.status_bar.command().to_string();
+        if command.is_empty() {
+            return;
+        }
+
+        // Use `exec` so the tracked child is the bar process for simple commands.
+        if let Ok(child) = Command::new("sh")
+            .arg("-c")
+            .arg(format!("exec {command}"))
+            .spawn()
+        {
+            self.active_status_bar_process = Some(child);
+        }
+    }
+
+    /// Close the bar so it can be recreated against the latest output geometry.
+    pub fn restart_status_bar(&mut self) {
+        self.stop_status_bar(true);
+    }
+
+    fn stop_status_bar(&mut self, restart: bool) {
+        self.status_bar_restart_pending = restart;
+        let had_surface = self.active_status_bar_surface.is_some();
+
+        if let Some(surface) = self.active_status_bar_surface.take() {
+            surface.send_close();
+        }
+
+        if let Some(mut child) = self.active_status_bar_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        if restart && !had_surface {
+            self.status_bar_restart_pending = false;
+            self.spawn_status_bar();
+        }
     }
 }
 

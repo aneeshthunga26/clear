@@ -45,6 +45,7 @@ impl CompositorHandler for Clear {
         xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
         resize_grab::handle_commit(&mut self.space, surface);
         self.try_center_launcher_surface(surface);
+        self.handle_layer_shell_commit(surface);
     }
 }
 

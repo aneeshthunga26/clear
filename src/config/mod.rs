@@ -3,12 +3,17 @@ use std::{env, fs, path::PathBuf};
 use serde::Deserialize;
 use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
+pub mod app_launcher;
+pub mod status_bar;
+
+use app_launcher::AppLauncherConfig;
+use status_bar::StatusBarConfig;
+
 /// User-facing Clear configuration loaded from `config.toml`.
-/// This file is located in the user's home directory at `$XDG_CONFIG_HOME/clear/config.toml`, or
-/// `~/.config/clear/config.toml` if `XDG_CONFIG_HOME` is not set.
 ///
-/// Each top-level field maps to a TOML section. Missing sections or fields use
-/// defaults so users can override only the pieces they care about.
+/// This file is located in the user's home directory at
+/// `$XDG_CONFIG_HOME/clear/config.toml`, or `~/.config/clear/config.toml` if
+/// `XDG_CONFIG_HOME` is not set.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -32,18 +37,19 @@ pub struct KeysConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ShortcutsConfig {
-    /// Chord used to open the launcher. Currently supports `leader+Space`.
+    /// Chord used to open the launcher.
     pub launcher: String,
+    /// Chord used to toggle the status bar.
+    pub status_bar: String,
 }
 
 /// External app commands and app ids used by compositor actions.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone)]
 pub struct AppsConfig {
-    /// Shell command used to launch the app launcher.
-    pub launcher: String,
-    /// XDG app id used to recognize and center the launcher window.
-    pub launcher_app_id: String,
+    /// Launcher config in the new `[apps.launcher]` format.
+    pub launcher: AppLauncherConfig,
+    /// Status bar config in the new `[apps.status_bar]` format.
+    pub status_bar: StatusBarConfig,
 }
 
 impl Config {
@@ -62,21 +68,30 @@ impl Config {
 
     /// Return true when the current key event matches the configured launcher chord.
     pub fn launcher_matches(&self, modifiers: &ModifiersState, keysym: Keysym) -> bool {
-        let Some(chord) = KeyChord::parse(&self.shortcuts.launcher, &self.keys.leader) else {
-            return Self::default().launcher_matches(modifiers, keysym);
-        };
+        self.shortcut_matches(&self.shortcuts.launcher, modifiers, keysym)
+    }
 
-        chord.matches(modifiers, keysym)
+    /// Return true when the current key event matches the configured status bar chord.
+    pub fn status_bar_matches(&self, modifiers: &ModifiersState, keysym: Keysym) -> bool {
+        self.shortcut_matches(&self.shortcuts.status_bar, modifiers, keysym)
     }
 
     /// Command that should be spawned for the launcher.
     pub fn launcher_command(&self) -> &str {
-        self.apps.launcher.trim()
+        self.apps.launcher.command()
     }
 
     /// App id expected from the launcher's XDG toplevel surface.
     pub fn launcher_app_id(&self) -> &str {
-        self.apps.launcher_app_id.trim()
+        self.apps.launcher.app_id()
+    }
+
+    fn shortcut_matches(&self, shortcut: &str, modifiers: &ModifiersState, keysym: Keysym) -> bool {
+        let Some(chord) = KeyChord::parse(shortcut, &self.keys.leader) else {
+            return false;
+        };
+
+        chord.matches(modifiers, keysym)
     }
 
     fn path() -> Option<PathBuf> {
@@ -110,6 +125,7 @@ impl Default for ShortcutsConfig {
     fn default() -> Self {
         Self {
             launcher: "leader+Space".to_string(),
+            status_bar: "leader+Grave".to_string(),
         }
     }
 }
@@ -117,9 +133,50 @@ impl Default for ShortcutsConfig {
 impl Default for AppsConfig {
     fn default() -> Self {
         Self {
-            launcher: "wofi --show drun".to_string(),
-            launcher_app_id: "wofi".to_string(),
+            launcher: AppLauncherConfig::default(),
+            status_bar: StatusBarConfig::default(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for AppsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(default)]
+        struct RawAppsConfig {
+            launcher: Option<AppLauncherConfig>,
+            status_bar: StatusBarConfig,
+            command: Option<String>,
+            app_id: Option<String>,
+        }
+
+        impl Default for RawAppsConfig {
+            fn default() -> Self {
+                Self {
+                    launcher: None,
+                    status_bar: StatusBarConfig::default(),
+                    command: None,
+                    app_id: None,
+                }
+            }
+        }
+
+        let raw = RawAppsConfig::deserialize(deserializer)?;
+        let mut launcher = raw.launcher.unwrap_or_default();
+        if let Some(command) = raw.command {
+            launcher.command = command;
+        }
+        if let Some(app_id) = raw.app_id {
+            launcher.app_id = app_id;
+        }
+
+        Ok(Self {
+            launcher,
+            status_bar: raw.status_bar,
+        })
     }
 }
 
@@ -135,7 +192,7 @@ impl KeyChord {
         let first = parts.next()?;
         let second = parts.next()?;
 
-        // Keep the first parser deliberately small until Clear has more bindings.
+        // Keep the parser small: Clear currently supports leader-based chords.
         if parts.next().is_some() || !first.eq_ignore_ascii_case("leader") {
             return None;
         }
@@ -182,14 +239,17 @@ impl LeaderKey {
 
 #[derive(Debug, Clone)]
 enum ShortcutKey {
-    /// Space is enough for the initial `leader+Space` launcher binding.
     Space,
+    B,
+    Grave,
 }
 
 impl ShortcutKey {
     fn parse(key: &str) -> Option<Self> {
         match normalize_key_name(key).as_str() {
             "space" => Some(Self::Space),
+            "b" => Some(Self::B),
+            "grave" | "backtick" | "`" => Some(Self::Grave),
             _ => None,
         }
     }
@@ -197,6 +257,8 @@ impl ShortcutKey {
     fn matches(&self, keysym: Keysym) -> bool {
         match self {
             Self::Space => keysym == keysyms::KEY_space.into(),
+            Self::B => keysym == keysyms::KEY_b.into() || keysym == keysyms::KEY_B.into(),
+            Self::Grave => keysym == keysyms::KEY_grave.into(),
         }
     }
 }

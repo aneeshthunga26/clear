@@ -39,6 +39,14 @@ impl Clear {
                                 state.toggle_launcher();
                                 FilterResult::Intercept(())
                             }
+                            KeyState::Pressed
+                                if state.config.status_bar_matches(modifiers, keysym) =>
+                            {
+                                // Intercept compositor shortcuts before clients see them.
+                                state.suppressed_launcher_key = Some(keysym);
+                                state.toggle_status_bar();
+                                FilterResult::Intercept(())
+                            }
                             KeyState::Released if state.suppressed_launcher_key == Some(keysym) => {
                                 // A client that never saw the press should not see the release.
                                 state.suppressed_launcher_key = None;

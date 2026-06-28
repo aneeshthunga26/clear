@@ -29,6 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // than the host compositor
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
+    // Start the configured layer-shell bar by default.
+    state.spawn_status_bar();
+
     // Spawn a test client, that will run under Clear
     spawn_client();
 

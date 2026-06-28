@@ -18,7 +18,8 @@ the task explicitly asks for a larger compositor architecture change.
   - input handling in `src/input.rs`
   - compositor state and process spawning in `src/state.rs`
   - XDG shell behavior in `src/handlers/xdg_shell.rs`
-  - user config parsing in `src/config.rs`
+  - layer-shell/status bar behavior in `src/handlers/layer_shell.rs`
+  - user config parsing in `src/config/mod.rs` with app-specific submodules
 
 ## Config Style
 
@@ -33,14 +34,29 @@ leader = "Super"
 
 [shortcuts]
 launcher = "leader+Space"
+status_bar = "leader+Grave"
 
-[apps]
-launcher = "wofi --show drun"
-launcher_app_id = "wofi"
+[apps.launcher]
+command = "wofi --show drun --normal-window"
+app_id = "wofi"
+
+[apps.status_bar]
+command = "waybar"
+namespace = "waybar"
+position = "top"
+layer = "top"
+exclusive = true
 ```
 
 Missing or invalid config should fall back to defaults instead of preventing the
 compositor from starting.
+
+Layer-shell bars should live above normal windows. Keep the default status bar
+layer as `top` unless there is a specific reason to test lower layers.
+
+Keep wofi's default command in normal-window mode. Once Clear advertises
+layer-shell for Waybar, plain wofi may choose layer-shell and bypass the XDG
+launcher centering/toggle code.
 
 ## Comment Style
 

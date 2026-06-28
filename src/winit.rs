@@ -63,6 +63,7 @@ pub fn init_winit(
                         None,
                         None,
                     );
+                    state.handle_output_resize(&output);
                 }
                 WinitEvent::Input(event) => state.process_input_event(event),
                 WinitEvent::Redraw => {

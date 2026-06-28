@@ -35,7 +35,14 @@ impl XdgShellHandler for Clear {
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let window = Window::new_wayland_window(surface.clone());
-        self.space.map_element(window, (0, 0), false);
+        let location = self
+            .space
+            .outputs()
+            .next()
+            .and_then(|output| self.usable_output_geometry(output))
+            .map(|geometry| geometry.loc)
+            .unwrap_or_default();
+        self.space.map_element(window, location, false);
         if self.launcher_pending && self.pending_launcher_surface.is_none() {
             self.pending_launcher_surface = Some(surface.wl_surface().clone());
         }
@@ -260,7 +267,7 @@ impl Clear {
         let Some(output) = self.space.outputs().next() else {
             return;
         };
-        let Some(output_geo) = self.space.output_geometry(output) else {
+        let Some(output_geo) = self.usable_output_geometry(output) else {
             return;
         };
 

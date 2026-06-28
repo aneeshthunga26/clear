@@ -39,13 +39,16 @@ Clear opens a nested compositor window using Smithay's winit backend. The
 launched client receives `WAYLAND_DISPLAY` pointing at Clear's socket, so it
 runs inside the nested compositor rather than directly on your host compositor.
 
-## App Launcher
+## Config
 
 Clear reads its config from `$XDG_CONFIG_HOME/clear/config.toml`, or
 `~/.config/clear/config.toml` if `XDG_CONFIG_HOME` is not set.
 
 The default launcher shortcut is `Super+Space`, where `Super` is the Windows
-key on most keyboards. The default launcher command is `wofi --show drun`.
+key on most keyboards. The default launcher command is
+`wofi --show drun --normal-window`.
+The status bar starts by default. Its default toggle shortcut is `Super+Grave`
+(`Super+\``), and the default bar command is `waybar`.
 
 Example config:
 
@@ -55,15 +58,28 @@ leader = "Super"
 
 [shortcuts]
 launcher = "leader+Space"
+status_bar = "leader+Grave"
 
-[apps]
-launcher = "wofi --show drun"
-launcher_app_id = "wofi"
+[apps.launcher]
+command = "wofi --show drun --normal-window"
+app_id = "wofi"
+
+[apps.status_bar]
+command = "waybar"
+namespace = "waybar"
+position = "top"
+layer = "top"
+exclusive = true
 ```
 
 Press `Super+Space` while Clear is running to open the launcher. Press it again
 to close the launcher if it is still open. Clear launches the configured app
 inside the nested compositor and centers the launcher window on the output.
+The `--normal-window` flag keeps wofi on the XDG window path so Clear can center
+and toggle it like a normal window.
+
+Press `Super+Grave` to toggle the status bar. Clear maps the bar with the
+layer-shell protocol on the top layer, so it appears above normal windows.
 
 ## Logging
 
