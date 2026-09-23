@@ -1,0 +1,311 @@
+//! Configuration and scripting orchestration, without Wayland or renderer types.
+
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+
+use crate::{
+    config::Config,
+    core::{Command, Desktop, Effect, Mode, OutputId, Placement, Rect, WorkspaceId},
+    input::{Action, Bindings},
+    scripting::{ScriptContext, ScriptHost, ScriptRect, ScriptWindow},
+};
+
+/// Startup options shared by the CLI and platform adapter.
+#[derive(Default)]
+pub struct Options {
+    /// Explicit configuration file; otherwise use the XDG location.
+    pub config_path: Option<PathBuf>,
+    /// Optional child executable and arguments, without shell expansion.
+    pub command: Vec<String>,
+    /// Gracefully stop after this duration, for bounded integration tests.
+    pub exit_after: Option<Duration>,
+    /// Explicit Wayland socket name, useful for external test clients.
+    pub socket_name: Option<String>,
+    /// Optional PPM framebuffer capture for visual smoke tests.
+    pub capture: Option<PathBuf>,
+}
+
+/// Owns desktop policy, compiled shortcuts, and the optional extension host.
+pub struct Runtime {
+    /// Backend-neutral desktop state.
+    pub desktop: Desktop,
+    /// Last successfully loaded configuration.
+    pub config: Config,
+    /// Compiled bindings for backend-normalized key events.
+    pub bindings: Bindings,
+    config_path: Option<PathBuf>,
+    script: Option<ScriptHost>,
+    failed_functions: BTreeSet<String>,
+}
+
+impl Runtime {
+    /// Load startup policy, using defaults rather than refusing an invalid config.
+    pub fn load(config_path: Option<PathBuf>) -> Result<Self, String> {
+        let config_path = config_path.or_else(default_config_path);
+        let config = config_path.as_ref().map_or_else(Config::default, |path| {
+            read_config(path).unwrap_or_else(|error| {
+                eprintln!("clear: {error}; using default configuration");
+                Config::default()
+            })
+        });
+        Self::new(config, config_path)
+    }
+
+    /// Construct policy from validated configuration, without creating any outputs.
+    pub fn new(config: Config, config_path: Option<PathBuf>) -> Result<Self, String> {
+        let bindings = Bindings::new(&config.bindings)?;
+        let script = load_script(&config).unwrap_or_else(|error| {
+            eprintln!("clear: {error}; scripted layouts will use master_stack");
+            None
+        });
+        let mut runtime = Self {
+            desktop: Desktop::new(),
+            config,
+            bindings,
+            config_path,
+            script,
+            failed_functions: BTreeSet::new(),
+        };
+        runtime.apply_config();
+        Ok(runtime)
+    }
+
+    fn apply_config(&mut self) {
+        self.desktop.set_gaps(self.config.gaps);
+        for workspace in &self.config.workspaces {
+            let mode = Mode::parse(&workspace.mode).unwrap_or_else(|| {
+                eprintln!(
+                    "clear: unknown mode {:?}; using master_stack",
+                    workspace.mode
+                );
+                Mode::MasterStack
+            });
+            self.desktop.configure_workspace(
+                WorkspaceId(workspace.id),
+                workspace.name.clone(),
+                mode,
+            );
+        }
+        self.configure_output_modes();
+        let windows: Vec<_> = self
+            .desktop
+            .windows()
+            .map(|w| (w.id, w.app_id.clone()))
+            .collect();
+        for (id, app_id) in windows {
+            self.classify_window(id, &app_id);
+        }
+    }
+
+    /// Apply launcher policy after mapping, late app-ID changes, or config reload.
+    pub fn classify_window(&mut self, id: crate::core::WindowId, app_id: &str) {
+        let role = if self.config.shell.is_launcher(app_id) {
+            crate::core::WindowRole::Launcher
+        } else {
+            crate::core::WindowRole::Normal
+        };
+        self.desktop.set_window_role(id, role);
+    }
+
+    /// Resolve configured connector names after the backend creates its outputs.
+    pub fn configure_output_modes(&mut self) {
+        let outputs: Vec<_> = self
+            .desktop
+            .outputs()
+            .map(|o| (o.id, o.name.clone()))
+            .collect();
+        for workspace in &self.config.workspaces {
+            for (id, name) in &outputs {
+                let mode = workspace
+                    .output_modes
+                    .get(name)
+                    .and_then(|name| Mode::parse(name));
+                self.desktop
+                    .set_workspace_output_mode(WorkspaceId(workspace.id), *id, mode);
+            }
+        }
+    }
+
+    /// Reload atomically. Output topology changes require restarting the backend.
+    pub fn reload(&mut self) -> Result<(), String> {
+        let path = self
+            .config_path
+            .as_ref()
+            .ok_or("no configuration path available")?;
+        let config = read_config(path)?;
+        if config.outputs != self.config.outputs {
+            return Err("output topology changes require restarting Clear".into());
+        }
+        let bindings = Bindings::new(&config.bindings)?;
+        let script = load_script(&config)?;
+        self.config = config;
+        self.bindings = bindings;
+        self.script = script;
+        self.failed_functions.clear();
+        self.apply_config();
+        eprintln!("clear: configuration reloaded");
+        Ok(())
+    }
+
+    /// Execute a typed action, returning only the effects requiring platform IO.
+    pub fn action(&mut self, action: Action) -> Vec<Effect> {
+        let mut pending = vec![action];
+        let mut effects = Vec::new();
+        let mut budget = 128;
+        while let Some(action) = pending.pop() {
+            if budget == 0 {
+                eprintln!("clear: script action expansion limit reached");
+                break;
+            }
+            budget -= 1;
+            eprintln!("clear: action {action:?}");
+            let command = match action {
+                Action::FocusNext => Command::FocusNext,
+                Action::FocusPrevious => Command::FocusPrevious,
+                Action::CycleOutput => Command::CycleOutput,
+                Action::SwitchWorkspace { workspace } => {
+                    Command::SwitchWorkspace(WorkspaceId(workspace))
+                }
+                Action::MoveToWorkspace { workspace } => {
+                    Command::MoveToWorkspace(WorkspaceId(workspace))
+                }
+                Action::MoveToOutput { output } => Command::MoveToOutput(OutputId(output)),
+                Action::SetWorkspaceMode { mode } => {
+                    let Some(mode) = Mode::parse(&mode) else {
+                        eprintln!("clear: unknown mode {mode:?}");
+                        continue;
+                    };
+                    Command::SetWorkspaceMode(mode)
+                }
+                Action::SetOutputMode { mode } => {
+                    let Some(mode) = Mode::parse(&mode) else {
+                        eprintln!("clear: unknown mode {mode:?}");
+                        continue;
+                    };
+                    Command::SetOutputMode(mode)
+                }
+                Action::ClearOutputMode => Command::ClearOutputMode,
+                Action::CycleMode => Command::CycleMode,
+                Action::StretchAll => Command::StretchAll,
+                Action::Unstretch => Command::Unstretch,
+                Action::ToggleFloating => Command::ToggleFloating,
+                Action::Scroll { amount } => Command::Scroll(amount),
+                Action::CloseFocused => Command::CloseFocused,
+                Action::Spawn { command } => Command::Spawn(command),
+                Action::Quit => Command::Quit,
+                Action::Reload => {
+                    if let Err(error) = self.reload() {
+                        eprintln!("clear: reload rejected: {error}; keeping current configuration");
+                    }
+                    continue;
+                }
+                Action::Script { name } => {
+                    if self.failed_functions.contains(&name) {
+                        continue;
+                    }
+                    if let Some(script) = self.script.as_mut() {
+                        match script.action(&name) {
+                            Ok(actions) => pending.extend(actions.into_iter().rev()),
+                            Err(_) => {
+                                self.failed_functions.insert(name);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
+            effects.extend(self.desktop.command(command));
+        }
+        effects
+    }
+
+    /// Compute a scene; a faulty script is disabled until reload, with built-in fallback.
+    pub fn placements(&mut self) -> Vec<Placement> {
+        let script = &mut self.script;
+        let failed = &mut self.failed_functions;
+        self.desktop.placements_with(|mode, ctx| {
+            let Mode::Script(name) = mode else {
+                return None;
+            };
+            if failed.contains(name) {
+                return None;
+            }
+            let host = script.as_mut()?;
+            let result = host.layout(
+                name,
+                ScriptContext {
+                    area: to_script_rect(ctx.area),
+                    windows: ctx
+                        .windows
+                        .iter()
+                        .map(|w| ScriptWindow {
+                            id: w.id.0,
+                            rect: to_script_rect(w.floating_rect),
+                        })
+                        .collect(),
+                    focused: ctx.focused.map(|id| id.0),
+                    gaps: ctx.gaps,
+                    scroll_offset: ctx.scroll_offset,
+                },
+            );
+            match result {
+                Ok(placements) => Some(
+                    placements
+                        .into_iter()
+                        .map(|p| Placement {
+                            window: crate::core::WindowId(p.window),
+                            rect: Rect::new(p.rect.x, p.rect.y, p.rect.width, p.rect.height),
+                            clip: Some(ctx.area),
+                            focused: ctx.focused.map(|id| id.0) == Some(p.window),
+                            tiled: true,
+                        })
+                        .collect(),
+                ),
+                Err(_) => {
+                    failed.insert(name.clone());
+                    None
+                }
+            }
+        })
+    }
+}
+
+fn to_script_rect(rect: Rect) -> ScriptRect {
+    ScriptRect {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+    }
+}
+
+fn load_script(config: &Config) -> Result<Option<ScriptHost>, String> {
+    config.script.as_deref().map(ScriptHost::load).transpose()
+}
+
+fn default_config_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .map(|p| p.join(".config"))
+        })
+        .map(|p| p.join("clear/config.toml"))
+}
+
+fn read_config(path: &std::path::Path) -> Result<Config, String> {
+    let source =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let mut config = Config::from_source(&source)?;
+    if let Some(script) = config.script.as_mut() {
+        if script.is_relative() {
+            *script = path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join(&*script);
+        }
+    }
+    Ok(config)
+}

@@ -1,66 +1,104 @@
-#![allow(irrefutable_let_patterns)]
-
-mod config;
-mod handlers;
-
-mod grabs;
-mod input;
-mod state;
-mod winit;
-
-use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
-pub use state::Clear;
+use clear::runtime::Options;
+use std::{path::PathBuf, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging();
-
-    let config = config::Config::load();
-
-    let mut event_loop: EventLoop<Clear> = EventLoop::try_new()?;
-
-    let display: Display<Clear> = Display::new()?;
-
-    let mut state = Clear::new(&mut event_loop, display, config);
-
-    // Open a Wayland/X11 window for our nested compositor
-    crate::winit::init_winit(&mut event_loop, &mut state)?;
-
-    // Set WAYLAND_DISPLAY to our socket name, so child processes connect to Clear rather
-    // than the host compositor
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
-
-    // Start the configured layer-shell bar by default.
-    state.spawn_status_bar();
-
-    // Spawn a test client, that will run under Clear
-    spawn_client();
-
-    event_loop.run(None, &mut state, move |_| {
-        // Clear is running
-    })?;
-
-    Ok(())
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .init();
+    let Some(options) = parse_args(std::env::args().skip(1))? else {
+        return Ok(());
+    };
+    clear::platform::run(options)
 }
 
-fn init_logging() {
-    if let Ok(env_filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
-        tracing_subscriber::fmt().with_env_filter(env_filter).init();
-    } else {
-        tracing_subscriber::fmt().init();
-    }
-}
-
-fn spawn_client() {
-    let mut args = std::env::args().skip(1);
-    let flag = args.next();
-    let arg = args.next();
-
-    match (flag.as_deref(), arg) {
-        (Some("-c") | Some("--command"), Some(command)) => {
-            std::process::Command::new(command).spawn().ok();
+fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, String> {
+    let mut args = args;
+    let mut options = Options::default();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                println!(
+                    "Clear — nested Wayland compositor\n\nUsage: clear [OPTIONS] [--command PROGRAM [ARG...]]\n\n  --config PATH        Load a TOML config instead of the XDG default\n  --socket NAME        Use a specific Wayland socket name\n  --exit-after SECONDS  Gracefully stop after a bounded test run\n  --capture PATH       Save a PPM frame near the test deadline (or after 3s)\n  --command, -c        Launch a child inside Clear (must be the last option)\n  --help, -h           Show this help\n\nDefaults: two virtual monitors, nine workspaces. Super+Return opens foot;\nSuper+Escape exits. See examples/config.toml for bindings and Rhai extensions."
+                );
+                return Ok(None);
+            }
+            "--config" => {
+                options.config_path = Some(PathBuf::from(
+                    args.next().ok_or("--config requires a path")?,
+                ))
+            }
+            "--capture" => {
+                options.capture = Some(PathBuf::from(
+                    args.next().ok_or("--capture requires a path")?,
+                ))
+            }
+            "--socket" => {
+                let name = args.next().ok_or("--socket requires a name")?;
+                if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+                    return Err("socket must be a nonempty filename, not a path".into());
+                }
+                options.socket_name = Some(name);
+            }
+            "--exit-after" => {
+                let seconds: u64 = args
+                    .next()
+                    .ok_or("--exit-after requires seconds")?
+                    .parse()
+                    .map_err(|_| "--exit-after must be a positive integer")?;
+                if !(1..=86400).contains(&seconds) {
+                    return Err("--exit-after must be in 1..=86400".into());
+                }
+                options.exit_after = Some(Duration::from_secs(seconds));
+            }
+            "--command" | "-c" => {
+                options.command = args.collect();
+                if options.command.is_empty() || options.command[0].is_empty() {
+                    return Err("--command requires an executable".into());
+                }
+                return Ok(Some(options));
+            }
+            _ => return Err(format!("unknown option {arg:?}; use --help")),
         }
-        _ => {
-            std::process::Command::new("weston-terminal").spawn().ok();
+    }
+    Ok(Some(options))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn parse(args: &[&str]) -> Result<Option<Options>, String> {
+        parse_args(args.iter().map(|a| a.to_string()))
+    }
+    #[test]
+    fn bounded_runs_and_child_arguments() {
+        let options = parse(&[
+            "--exit-after",
+            "3",
+            "--socket",
+            "clear-test",
+            "--command",
+            "foot",
+            "--app-id",
+            "demo",
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(options.exit_after, Some(Duration::from_secs(3)));
+        assert_eq!(options.command, ["foot", "--app-id", "demo"]);
+    }
+    #[test]
+    fn rejects_invalid_arguments() {
+        for args in [
+            vec!["--socket", "../bad"],
+            vec!["--exit-after", "0"],
+            vec!["--exit-after", "NaN"],
+            vec!["--command"],
+            vec!["--config"],
+            vec!["--unknown"],
+        ] {
+            assert!(parse(&args).is_err());
         }
     }
 }

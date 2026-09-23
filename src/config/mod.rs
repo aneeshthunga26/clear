@@ -1,268 +1,270 @@
-use std::{env, fs, path::PathBuf};
+//! TOML configuration with deterministic defaults and all-or-default startup loading.
+//!
+//! `gaps` and `script` are top-level keys. Arrays use `[[outputs]]`,
+//! `[[workspaces]]`, and `[[bindings]]`; each supplied array replaces its default.
+//! Bindings use a flattened snake-case `action` tag and action-specific fields.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
-use smithay::input::keyboard::{Keysym, ModifiersState, keysyms};
 
-pub mod app_launcher;
-pub mod status_bar;
+mod shell;
+pub use shell::{PanelLayer, PanelRule, ShellConfig};
 
-use app_launcher::AppLauncherConfig;
-use status_bar::StatusBarConfig;
+use crate::{
+    decoration::Theme,
+    input::{self, Binding, Bindings},
+};
 
-/// User-facing Clear configuration loaded from `config.toml`.
-///
-/// This file is located in the user's home directory at
-/// `$XDG_CONFIG_HOME/clear/config.toml`, or `~/.config/clear/config.toml` if
-/// `XDG_CONFIG_HOME` is not set.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct Config {
-    /// Key aliases shared by shortcut definitions.
-    pub keys: KeysConfig,
-    /// Compositor-level keybindings.
-    pub shortcuts: ShortcutsConfig,
-    /// External applications Clear can launch.
-    pub apps: AppsConfig,
+/// A virtual output's logical dimensions.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputConfig {
+    /// Unique output name, also used by workspace output-mode overrides.
+    pub name: String,
+    /// Logical width in pixels.
+    pub width: i32,
+    /// Logical height in pixels.
+    pub height: i32,
 }
 
-/// Named keys that can be referenced from shortcuts.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct KeysConfig {
-    /// Modifier used as the shortcut leader. Defaults to the Super/Windows key.
-    pub leader: String,
+/// A workspace and its default and per-output layout selections.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceConfig {
+    /// Stable positive workspace ID.
+    pub id: u64,
+    /// Human-readable workspace label.
+    pub name: String,
+    /// Built-in mode or `script:function_name` selected by the platform.
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// Output names mapped to layout mode overrides.
+    #[serde(default)]
+    pub output_modes: BTreeMap<String, String>,
 }
 
-/// Configurable compositor shortcuts.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct ShortcutsConfig {
-    /// Chord used to open the launcher.
-    pub launcher: String,
-    /// Chord used to toggle the status bar.
-    pub status_bar: String,
+fn default_mode() -> String {
+    "columns".into()
 }
 
-/// External app commands and app ids used by compositor actions.
+/// Runtime configuration, independent of the compositor's platform objects.
 #[derive(Debug, Clone)]
-pub struct AppsConfig {
-    /// Launcher config in the new `[apps.launcher]` format.
-    pub launcher: AppLauncherConfig,
-    /// Status bar config in the new `[apps.status_bar]` format.
-    pub status_bar: StatusBarConfig,
-}
-
-impl Config {
-    /// Load config from the XDG config path, falling back to built-in defaults.
-    pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-
-        match fs::read_to_string(path) {
-            // Invalid config should not prevent the compositor from starting.
-            Ok(contents) => toml::from_str(&contents).unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
-    }
-
-    /// Return true when the current key event matches the configured launcher chord.
-    pub fn launcher_matches(&self, modifiers: &ModifiersState, keysym: Keysym) -> bool {
-        self.shortcut_matches(&self.shortcuts.launcher, modifiers, keysym)
-    }
-
-    /// Return true when the current key event matches the configured status bar chord.
-    pub fn status_bar_matches(&self, modifiers: &ModifiersState, keysym: Keysym) -> bool {
-        self.shortcut_matches(&self.shortcuts.status_bar, modifiers, keysym)
-    }
-
-    /// Command that should be spawned for the launcher.
-    pub fn launcher_command(&self) -> &str {
-        self.apps.launcher.command()
-    }
-
-    /// App id expected from the launcher's XDG toplevel surface.
-    pub fn launcher_app_id(&self) -> &str {
-        self.apps.launcher.app_id()
-    }
-
-    fn shortcut_matches(&self, shortcut: &str, modifiers: &ModifiersState, keysym: Keysym) -> bool {
-        let Some(chord) = KeyChord::parse(shortcut, &self.keys.leader) else {
-            return false;
-        };
-
-        chord.matches(modifiers, keysym)
-    }
-
-    fn path() -> Option<PathBuf> {
-        if let Some(config_home) = env::var_os("XDG_CONFIG_HOME") {
-            return Some(PathBuf::from(config_home).join("clear/config.toml"));
-        }
-
-        env::var_os("HOME").map(|home| PathBuf::from(home).join(".config/clear/config.toml"))
-    }
+pub struct Config {
+    /// Virtual outputs created at startup.
+    pub outputs: Vec<OutputConfig>,
+    /// Available workspaces, in presentation order.
+    pub workspaces: Vec<WorkspaceConfig>,
+    /// Uncompiled shortcuts, ready for `Bindings::new`.
+    pub bindings: Vec<Binding>,
+    /// Layout gap in logical pixels.
+    pub gaps: i32,
+    /// Optional Rhai extension file; relative paths are resolved when loading a file.
+    pub script: Option<PathBuf>,
+    /// Static renderer styling.
+    pub theme: Theme,
+    /// Launcher roles and namespace-specific panel policies.
+    pub shell: ShellConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            keys: KeysConfig::default(),
-            shortcuts: ShortcutsConfig::default(),
-            apps: AppsConfig::default(),
+            outputs: (1..=2)
+                .map(|n| OutputConfig {
+                    name: format!("virtual-{n}"),
+                    width: 800,
+                    height: 600,
+                })
+                .collect(),
+            workspaces: (1..=9)
+                .map(|id| WorkspaceConfig {
+                    id,
+                    name: id.to_string(),
+                    mode: default_mode(),
+                    output_modes: BTreeMap::new(),
+                })
+                .collect(),
+            bindings: input::default_bindings(),
+            gaps: 8,
+            script: None,
+            theme: Theme::default(),
+            shell: ShellConfig::default(),
         }
     }
 }
 
-impl Default for KeysConfig {
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Source {
+    outputs: Vec<OutputConfig>,
+    workspaces: Vec<WorkspaceConfig>,
+    bindings: Vec<Binding>,
+    gaps: i32,
+    script: Option<PathBuf>,
+    theme: Theme,
+    shell: ShellConfig,
+    keys: Keys,
+}
+
+impl Default for Source {
+    fn default() -> Self {
+        let config = Config::default();
+        Self {
+            outputs: config.outputs,
+            workspaces: config.workspaces,
+            bindings: config.bindings,
+            gaps: config.gaps,
+            script: config.script,
+            theme: config.theme,
+            shell: config.shell,
+            keys: Keys::default(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Keys {
+    leader: String,
+}
+
+impl Default for Keys {
     fn default() -> Self {
         Self {
-            leader: "Super".to_string(),
+            leader: "Super".into(),
         }
     }
 }
 
-impl Default for ShortcutsConfig {
-    fn default() -> Self {
-        Self {
-            launcher: "leader+Space".to_string(),
-            status_bar: "leader+Grave".to_string(),
-        }
-    }
-}
-
-impl Default for AppsConfig {
-    fn default() -> Self {
-        Self {
-            launcher: AppLauncherConfig::default(),
-            status_bar: StatusBarConfig::default(),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for AppsConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(default)]
-        struct RawAppsConfig {
-            launcher: Option<AppLauncherConfig>,
-            status_bar: StatusBarConfig,
-            command: Option<String>,
-            app_id: Option<String>,
-        }
-
-        impl Default for RawAppsConfig {
-            fn default() -> Self {
-                Self {
-                    launcher: None,
-                    status_bar: StatusBarConfig::default(),
-                    command: None,
-                    app_id: None,
+impl Config {
+    /// Load the XDG config file, logging unreadable or invalid files to stderr.
+    ///
+    /// An absolute, nonempty `XDG_CONFIG_HOME` takes precedence over
+    /// `$HOME/.config`. Missing files and invalid configuration use all defaults.
+    pub fn load() -> Self {
+        let path = env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| {
+                env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_absolute())
+                    .map(|p| p.join(".config"))
+            })
+            .map(|base| base.join("clear/config.toml"));
+        let Some(path) = path else {
+            eprintln!("clear: no absolute XDG_CONFIG_HOME or HOME; using default configuration");
+            return Self::default();
+        };
+        let source = match fs::read_to_string(&path) {
+            Ok(source) => source,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "clear: cannot read {}: {error}; using defaults",
+                        path.display()
+                    );
                 }
+                return Self::default();
+            }
+        };
+        match Self::from_source(&source) {
+            Ok(mut config) => {
+                if let Some(script) = config.script.as_mut() {
+                    if script.is_relative() {
+                        *script = path.parent().unwrap_or(Path::new(".")).join(&*script);
+                    }
+                }
+                config
+            }
+            Err(error) => {
+                eprintln!("clear: invalid {}: {error}; using defaults", path.display());
+                Self::default()
             }
         }
+    }
 
-        let raw = RawAppsConfig::deserialize(deserializer)?;
-        let mut launcher = raw.launcher.unwrap_or_default();
-        if let Some(command) = raw.command {
-            launcher.command = command;
-        }
-        if let Some(app_id) = raw.app_id {
-            launcher.app_id = app_id;
-        }
+    /// Parse and validate TOML without filesystem access or environment mutation.
+    ///
+    /// An empty script path disables extensions. Relative script paths are left
+    /// relative here; `load` resolves them against the config file directory.
+    pub fn from_source(source: &str) -> Result<Self, String> {
+        let mut source: Source = toml::from_str(source).map_err(|error| error.to_string())?;
+        input::resolve_leader(&mut source.bindings, &source.keys.leader)?;
+        let config = Self {
+            outputs: source.outputs,
+            workspaces: source.workspaces,
+            bindings: source.bindings,
+            gaps: source.gaps,
+            script: source.script.filter(|p| !p.as_os_str().is_empty()),
+            theme: source.theme,
+            shell: source.shell,
+        };
+        config.validate()?;
+        Ok(config)
+    }
 
-        Ok(Self {
-            launcher,
-            status_bar: raw.status_bar,
-        })
+    fn validate(&self) -> Result<(), String> {
+        if self.outputs.is_empty() || self.outputs.len() > 16 {
+            return Err("configure between 1 and 16 outputs".into());
+        }
+        let mut outputs = BTreeSet::new();
+        for output in &self.outputs {
+            if output.name.trim().is_empty() || !outputs.insert(output.name.as_str()) {
+                return Err(format!("empty or duplicate output name {:?}", output.name));
+            }
+            if !(1..=32_768).contains(&output.width) || !(1..=32_768).contains(&output.height) {
+                return Err(format!(
+                    "output {:?}: dimensions must be in 1..=32768",
+                    output.name
+                ));
+            }
+        }
+        if self.workspaces.is_empty() || self.workspaces.len() > 256 {
+            return Err("configure between 1 and 256 workspaces".into());
+        }
+        let mut workspaces = BTreeSet::new();
+        for workspace in &self.workspaces {
+            if workspace.id == 0
+                || !workspaces.insert(workspace.id)
+                || workspace.name.trim().is_empty()
+            {
+                return Err("workspaces require unique positive IDs and nonempty names".into());
+            }
+            validate_mode(&workspace.mode)?;
+            for (output, mode) in &workspace.output_modes {
+                if !outputs.contains(output.as_str()) {
+                    return Err(format!(
+                        "workspace {} refers to unknown output {output:?}",
+                        workspace.id
+                    ));
+                }
+                validate_mode(mode)?;
+            }
+        }
+        if !(0..=4096).contains(&self.gaps) {
+            return Err("gaps must be in 0..=4096".into());
+        }
+        self.theme.validate()?;
+        self.shell.validate()?;
+        Bindings::new(&self.bindings)?;
+        Ok(())
     }
 }
 
-#[derive(Debug, Clone)]
-struct KeyChord {
-    leader: LeaderKey,
-    key: ShortcutKey,
-}
-
-impl KeyChord {
-    fn parse(chord: &str, leader: &str) -> Option<Self> {
-        let mut parts = chord.split('+').map(str::trim);
-        let first = parts.next()?;
-        let second = parts.next()?;
-
-        // Keep the parser small: Clear currently supports leader-based chords.
-        if parts.next().is_some() || !first.eq_ignore_ascii_case("leader") {
-            return None;
-        }
-
-        Some(Self {
-            leader: LeaderKey::parse(leader)?,
-            key: ShortcutKey::parse(second)?,
-        })
+fn validate_mode(mode: &str) -> Result<(), String> {
+    if mode.trim().is_empty() || mode.len() > 256 {
+        return Err("workspace modes must be nonempty and at most 256 bytes".into());
     }
-
-    fn matches(&self, modifiers: &ModifiersState, keysym: Keysym) -> bool {
-        self.leader.matches(modifiers) && self.key.matches(keysym)
-    }
-}
-
-#[derive(Debug, Clone)]
-enum LeaderKey {
-    Super,
-    Ctrl,
-    Alt,
-    Shift,
-}
-
-impl LeaderKey {
-    fn parse(key: &str) -> Option<Self> {
-        match normalize_key_name(key).as_str() {
-            "super" | "logo" | "windows" | "win" => Some(Self::Super),
-            "ctrl" | "control" => Some(Self::Ctrl),
-            "alt" => Some(Self::Alt),
-            "shift" => Some(Self::Shift),
-            _ => None,
+    if let Some(name) = mode.strip_prefix("script:") {
+        if !input::valid_function_name(name) {
+            return Err("script mode must be script:function_name".into());
         }
     }
-
-    fn matches(&self, modifiers: &ModifiersState) -> bool {
-        match self {
-            Self::Super => modifiers.logo,
-            Self::Ctrl => modifiers.ctrl,
-            Self::Alt => modifiers.alt,
-            Self::Shift => modifiers.shift,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum ShortcutKey {
-    Space,
-    B,
-    Grave,
-}
-
-impl ShortcutKey {
-    fn parse(key: &str) -> Option<Self> {
-        match normalize_key_name(key).as_str() {
-            "space" => Some(Self::Space),
-            "b" => Some(Self::B),
-            "grave" | "backtick" | "`" => Some(Self::Grave),
-            _ => None,
-        }
-    }
-
-    fn matches(&self, keysym: Keysym) -> bool {
-        match self {
-            Self::Space => keysym == keysyms::KEY_space.into(),
-            Self::B => keysym == keysyms::KEY_b.into() || keysym == keysyms::KEY_B.into(),
-            Self::Grave => keysym == keysyms::KEY_grave.into(),
-        }
-    }
-}
-
-fn normalize_key_name(key: &str) -> String {
-    key.trim().to_ascii_lowercase().replace(' ', "")
+    Ok(())
 }

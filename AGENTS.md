@@ -1,99 +1,102 @@
 # Agent Guidance
 
-## Project Context
+## Project
 
-Clear is an early Smithay-based Wayland compositor. The code currently tracks
-Smithay's Smallvil example closely, with project-specific changes layered on top
-for configuration and launcher behavior.
+Clear is a Rust 2024 Wayland compositor built on pinned Smithay. It currently
+runs nested through winit with virtual outputs; native DRM/KMS is not implemented.
 
-Prefer small, local changes that keep the Smallvil structure recognizable unless
-the task explicitly asks for a larger compositor architecture change.
+## Local environment notes
 
-## Rust Style
+If `.agents/AGENTS.md` exists, read it for this checkout's local development and
+test environment. The entire `.agents/` directory is git-ignored. Keep personal
+names, machine paths, SSH endpoints, VM identities, and backup/recovery notes
+there, never in tracked documentation, examples, or scripts. Tracked guidance
+must work without that directory; never invent local connection details.
 
-- Use idiomatic Rust 2024 and keep formatting under `cargo fmt`.
-- Prefer explicit, simple data structures over premature abstraction.
-- Preserve Smithay naming and handler patterns where possible.
-- Keep behavior in the module that owns the relevant protocol or event flow:
-  - input handling in `src/input.rs`
-  - compositor state and process spawning in `src/state.rs`
-  - XDG shell behavior in `src/handlers/xdg_shell.rs`
-  - layer-shell/status bar behavior in `src/handlers/layer_shell.rs`
-  - user config parsing in `src/config/mod.rs` with app-specific submodules
+## Module guidance
 
-## Config Style
+Read this file first, then the `AGENTS.md` for the directory being changed.
+Parent guidance also applies to nested modules. Keep these files updated when
+responsibilities, invariants, or verification workflows change; use the standard
+`AGENTS.md` filename for new module directories.
 
-Clear reads user config from `$XDG_CONFIG_HOME/clear/config.toml`, falling back
-to `~/.config/clear/config.toml`.
+| Scope                                                   | Guidance                                                         |
+| ------------------------------------------------------- | ---------------------------------------------------------------- |
+| Crate exports and CLI (`src/lib.rs`, `src/main.rs`)     | [src/AGENTS.md](src/AGENTS.md)                                   |
+| Desktop state, geometry, and commands                   | [src/core/AGENTS.md](src/core/AGENTS.md)                         |
+| Built-in layout policies                                | [src/management/AGENTS.md](src/management/AGENTS.md)             |
+| Typed actions and shortcut parsing                      | [src/input/AGENTS.md](src/input/AGENTS.md)                       |
+| TOML schema, defaults, and shell rules                  | [src/config/AGENTS.md](src/config/AGENTS.md)                     |
+| Orchestration, reload, and script routing               | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)                   |
+| Rhai extensions and validation                          | [src/scripting/AGENTS.md](src/scripting/AGENTS.md)               |
+| Backend-independent theme descriptions                  | [src/decoration/AGENTS.md](src/decoration/AGENTS.md)             |
+| Platform entry point and adapter boundary               | [src/platform/AGENTS.md](src/platform/AGENTS.md)                 |
+| Smithay protocols, rendering, input, and nested backend | [src/platform/smithay/AGENTS.md](src/platform/smithay/AGENTS.md) |
 
-Keep the config organized around these top-level TOML sections:
+See [docs/architecture.md](docs/architecture.md) for the full design and
+[README.md](README.md) for supported behavior and current limitations.
 
-```toml
-[keys]
-leader = "Super"
+## Shared boundaries
 
-[shortcuts]
-launcher = "leader+Space"
-status_bar = "leader+Grave"
+- Keep all Smithay and Wayland types in `src/platform/smithay/`.
+- Desktop state, workspaces, output groups, focus, IDs, geometry, and commands live
+  in `src/core/`; use explicit, backend-independent data structures.
+- Built-in layout geometry lives in `src/management/`.
+- Key parsing and typed actions live in `src/input/`; physical event translation
+  and protocol serials belong in the platform adapter.
+- Config parsing lives in `src/config/`; orchestration, reload and script routing
+  live in `src/runtime/`.
+- User extensions use Rhai, not Lua or JavaScript. Keep script values declarative;
+  scripts never own compositor objects or mutate desktop state directly.
+- Theme descriptions live in `src/decoration/`; rendering stays in the adapter.
 
-[apps.launcher]
-command = "wofi --show drun --normal-window"
-app_id = "wofi"
+## Configuration and behavior
 
-[apps.status_bar]
-command = "waybar"
-namespace = "waybar"
-position = "top"
-layer = "top"
-exclusive = true
-```
+See `examples/config.toml` and `examples/vm.toml` for the current schema. The XDG
+path is `clear/config.toml`. Missing or invalid startup config falls back to safe
+defaults. Failed reloads retain the last good configuration. Output topology
+changes currently require a restart.
 
-Missing or invalid config should fall back to defaults instead of preventing the
-compositor from starting.
+Workspaces own windows; output groups present workspaces. A workspace can be
+visible in only one group. Per-output modes are workspace-specific overrides.
+Preserve window state when changing modes or output topology. Do not conflate
+client-committed geometry with compositor-requested geometry.
 
-Layer-shell bars should live above normal windows. Keep the default status bar
-layer as `top` unless there is a specific reason to test lower layers.
+Floating rectangles may extend offscreen; never clamp saved geometry because of
+panel reservations or temporary output sizes. Rendering and hit-testing must use
+the same visible workspace/output-group clips. Launcher geometry is client-sized
+and separate from saved floating geometry.
 
-Keep wofi's default command in normal-window mode. Once Clear advertises
-layer-shell for Waybar, plain wofi may choose layer-shell and bypass the XDG
-launcher centering/toggle code.
+Layer-shell panels stay above normal windows on top/overlay layers. Reservations
+and keyboard ownership follow mapping lifecycle, not merely object existence.
+Track suppressed key releases by physical code.
 
-## Comment Style
+## Style
 
-Use doc comments for public structs, fields, and methods that are part of
-Clear's local behavior. Keep them short and focused on purpose:
-
-```rust
-/// Runtime config loaded from the user's XDG config file.
-pub config: Config,
-```
-
-Use inline comments only when the reason is not obvious from the code, especially
-for Wayland/Smithay timing, protocol state, or event suppression:
-
-```rust
-// A client that never saw the press should not see the release.
-state.suppressed_launcher_key = None;
-```
-
-Avoid comments that restate assignments or control flow. Prefer explaining why a
-guard exists, why a callback is needed, or why behavior is intentionally delayed.
+Use idiomatic Rust and `cargo fmt`. Favor small concrete modules over abstract
+frameworks. Public types and methods documenting local behavior should have short
+doc comments. Inline comments should explain non-obvious protocol timing, state
+ownership, or safety—not restate assignments.
 
 ## Verification
 
-After Rust changes, run:
+After Rust changes run `cargo fmt`, `cargo check --locked`, and `cargo test --locked`.
+Check editor diagnostics. Use a bounded runtime for compositor tests, such as
+`--exit-after 15`; don't start unbounded servers through agent terminal tools.
 
-```sh
-cargo fmt
-cargo check
-```
+Prefer an isolated VM for compositor integration tests:
 
-If the Rust toolchain proxy fails in the Cursor environment, use the system
-Cargo path that has worked in this repo:
+- `python3 scripts/vm-smoke.py`: isolated virtual KWin host and real foot clients;
+  also run with `--script examples/columns.rhai` for the Rhai path.
+- `python3 scripts/vm-layer-smoke.py --binary target/debug/clear`: real layer-shell
+  and XDG clients checking lifecycle, reservations, stacking, keyboard ownership,
+  panel popups, and client-sized launcher centering.
+- `python3 -B scripts/test_vm_layer_smoke.py`: fixture assertion self-tests, with
+  no compositor needed.
 
-```sh
-PATH=/usr/bin:/bin:$PATH /usr/bin/cargo fmt
-PATH=/usr/bin:/bin:$PATH /usr/bin/cargo check
-```
-
-Also check diagnostics for edited Rust files before finishing.
+Logs and PPM captures stay under `target/`. These tests do not automate physical
+clicks, key presses, or drags; state explicitly what was verified. See
+[docs/vm-testing.md](docs/vm-testing.md) for portable bounded commands and test
+dependencies. Consult `.agents/` for any locally configured VM access and recovery
+notes. Do not modify the host desktop or VM privileges unnecessarily. Never store
+passwords or private keys in this repository, including ignored directories.

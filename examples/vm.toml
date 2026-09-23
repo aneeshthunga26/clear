@@ -1,0 +1,151 @@
+# Nested VM demo. Ctrl+Alt avoids most of the host desktop's Super shortcuts.
+# This binding list replaces the defaults and exposes workspaces 1–3.
+gaps = 12
+
+[keys]
+leader = "Ctrl+Alt"
+
+# Placement rules, not autostart or launcher/panel toggle commands.
+# Arrays replace their defaults; [] disables a policy. IDs match exactly.
+[shell]
+# Center XDG launchers at their client-committed size, outside tiled layouts.
+# Layer-shell launcher keyboard focus is being integrated separately.
+launcher_app_ids = ["wofi"]
+
+# Default override: only the layer, never the client's anchors or exclusive zone.
+# Explicit rules require both fields; layers: background, bottom, top, overlay.
+[[shell.panels]]
+namespace = "waybar"
+layer = "top"
+
+# Float positions stay unbounded when panel reservations or output sizes change.
+[[workspaces]]
+id = 1
+name = "main"
+mode = "master_stack"
+[workspaces.output_modes]
+virtual-2 = "scrolling"
+
+[[workspaces]]
+id = 2
+name = "floating"
+mode = "floating"
+
+[[workspaces]]
+id = 3
+name = "scrolling"
+mode = "scrolling"
+
+[[bindings]]
+key = "leader+Return"
+action = "spawn"
+command = ["foot"]
+
+[[bindings]]
+key = "leader+Escape"
+action = "quit"
+
+[[bindings]]
+key = "leader+q"
+action = "close_focused"
+
+[[bindings]]
+key = "leader+1"
+action = "switch_workspace"
+workspace = 1
+
+[[bindings]]
+key = "leader+2"
+action = "switch_workspace"
+workspace = 2
+
+[[bindings]]
+key = "leader+3"
+action = "switch_workspace"
+workspace = 3
+
+[[bindings]]
+key = "leader+Shift+1"
+action = "move_to_workspace"
+workspace = 1
+
+[[bindings]]
+key = "leader+Shift+2"
+action = "move_to_workspace"
+workspace = 2
+
+[[bindings]]
+key = "leader+Shift+3"
+action = "move_to_workspace"
+workspace = 3
+
+[[bindings]]
+key = "leader+s"
+action = "stretch_all"
+
+[[bindings]]
+key = "leader+Shift+s"
+action = "unstretch"
+
+[[bindings]]
+key = "leader+o"
+action = "cycle_output"
+
+[[bindings]]
+key = "leader+Shift+Left"
+action = "move_to_output"
+output = 1
+
+[[bindings]]
+key = "leader+Shift+Right"
+action = "move_to_output"
+output = 2
+
+[[bindings]]
+key = "leader+m"
+action = "cycle_mode"
+
+[[bindings]]
+key = "leader+BackSpace"
+action = "clear_output_mode"
+
+[[bindings]]
+key = "leader+t"
+action = "set_workspace_mode"
+mode = "master_stack"
+
+[[bindings]]
+key = "leader+g"
+action = "set_workspace_mode"
+mode = "floating"
+
+[[bindings]]
+key = "leader+h"
+action = "set_workspace_mode"
+mode = "scrolling"
+
+[[bindings]]
+key = "leader+f"
+action = "toggle_floating"
+
+[[bindings]]
+key = "leader+j"
+action = "focus_next"
+
+[[bindings]]
+key = "leader+k"
+action = "focus_previous"
+
+[[bindings]]
+key = "leader+Left"
+action = "scroll"
+amount = -300
+
+[[bindings]]
+key = "leader+Right"
+action = "scroll"
+amount = 300
+
+[[bindings]]
+key = "leader+Shift+r"
+action = "reload"
