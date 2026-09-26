@@ -108,6 +108,26 @@ resource limits. Runtime disables failing functions until reload; core has a
 second validation boundary and built-in fallback. Rhai does not own compositor
 state, render surfaces, or run directly from the paint loop.
 
+## Optional desktop-shell boundary
+
+`src/shell/` provides an owned, serializable view of desktop state and a small
+validated command allowlist. A bounded nonblocking Unix transport serves that
+model; `platform/smithay/shell.rs` polls it on event-loop turns and reconciles
+successful commands before responding. State changes are coalesced snapshots,
+not an event history. Window/workspace/output IDs remain strings on the wire.
+
+Shell windows use standard layer-shell. Quickshell is one optional example
+client under `examples/quickshell/`, not a dependency, mandatory process, or
+owner of desktop policy. Clear works without it, and `--no-shell-ipc` disables
+the bridge. Each instance exports its own private `CLEAR_SOCKET` to children;
+never leak a host compositor's endpoint into a nested instance with IPC disabled.
+
+A future native shell can use the same model and commands without adopting QML.
+Notification/tray services stay outside the compositor. Alt-Tab selection and
+accept/cancel policy remain in Clear; the shell view presents that state.
+See [shell-integration.md](shell-integration.md) for
+current capabilities, limitations, socket permissions, and tests.
+
 ## Implementation boundaries still to grow
 
 - Current built-ins keep state in the desktop model; extensible user-defined mode

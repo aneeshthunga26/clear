@@ -40,6 +40,8 @@ width = 800
 height = 600
 
 # Float positions are unbounded; panel reservations retile without moving saved floats.
+# Built-in modes: floating, scrolling, master_stack, columns, rows, grid,
+# spiral (also fibonacci or dwindle), and monocle.
 # Omitting workspaces gives nine workspaces, IDs 1..9, with mode "columns".
 # To replace the workspace list with a script-driven workspace, uncomment:
 # [[workspaces]]

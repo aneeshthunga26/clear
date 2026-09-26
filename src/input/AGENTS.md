@@ -18,6 +18,8 @@ keyboard ownership, grabs, and pointer events belong in `platform/smithay/`.
 - Binding lookup expects normalized unshifted key names. Smithay must translate
   actual keysyms with `xkb::keysym_get_name`, not debug labels such as `XK_Return`.
 - Spawn actions carry executable/argument vectors, not shell command strings.
+- `alt_tab` is a declarative gesture advance. The Smithay adapter detects the
+  physical Alt release and Escape cancellation; runtime retains pending selection.
 - When extending `Action`, update validation, runtime dispatch, Rhai action
   conversion as needed, and config examples together.
 

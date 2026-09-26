@@ -8,25 +8,43 @@ use serde::Deserialize;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    /// Advance the Alt-Tab selection; focus changes when Alt is released.
+    AltTab,
     FocusNext,
     FocusPrevious,
     CycleOutput,
-    SwitchWorkspace { workspace: u64 },
-    MoveToWorkspace { workspace: u64 },
-    MoveToOutput { output: u64 },
-    SetWorkspaceMode { mode: String },
-    SetOutputMode { mode: String },
+    SwitchWorkspace {
+        workspace: u64,
+    },
+    MoveToWorkspace {
+        workspace: u64,
+    },
+    MoveToOutput {
+        output: u64,
+    },
+    SetWorkspaceMode {
+        mode: String,
+    },
+    SetOutputMode {
+        mode: String,
+    },
     ClearOutputMode,
     CycleMode,
     StretchAll,
     Unstretch,
     ToggleFloating,
-    Scroll { amount: i32 },
+    Scroll {
+        amount: i32,
+    },
     CloseFocused,
-    Spawn { command: Vec<String> },
+    Spawn {
+        command: Vec<String>,
+    },
     Quit,
     Reload,
-    Script { name: String },
+    Script {
+        name: String,
+    },
 }
 
 impl Action {
@@ -238,6 +256,7 @@ fn normalize_key(key: &str) -> Option<String> {
 /// Default shortcuts; a configured binding array replaces this entire list.
 pub fn default_bindings() -> Vec<Binding> {
     let mut bindings = vec![
+        ("Alt+Tab", Action::AltTab),
         (
             "leader+Return",
             Action::Spawn {

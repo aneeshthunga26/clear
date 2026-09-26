@@ -51,7 +51,9 @@ after three seconds without `--exit-after`. It overwrites the requested file.
   windows are never duplicated.
 - Each workspace has a default mode. Each output can override that mode **within
   that workspace**. Changing the workspace default retains explicit overrides.
-- Built-ins: floating, scrolling columns, master/stack, equal columns, and monocle.
+- Built-ins: floating, scrolling columns, master/stack, equal columns, equal
+  rows, grid, Fibonacci-style spiral, and monocle. The spiral also accepts
+  `fibonacci` and `dwindle` as mode names.
 - Saved floating rectangles and scrolling state survive mode changes.
 - Floating exceptions are available within tiled/scrolling regions. Dragging a
   tiled window detaches it. Floating movement transfers windows between outputs
@@ -82,6 +84,7 @@ before a nested compositor sees them.
 | leader+m                  | Cycle the focused output's mode override |
 | leader+f                  | Toggle a window's floating exception     |
 | leader+j / leader+k       | Next / previous window                   |
+| Alt+Tab                   | Select a window; release Alt to focus it |
 | leader+q                  | Close focused window                     |
 | leader+Shift+r            | Reload config and scripts                |
 | leader+Escape             | Quit                                     |
@@ -170,6 +173,32 @@ Theme options currently cover background, active/inactive border colors, and
 border width. Application titlebars in screenshots are client-side decorations,
 not a custom server-side widget toolkit.
 
+## Optional shell / Quickshell
+
+Clear runs without a shell and has no Qt or Quickshell build dependency. Panels
+use standard layer-shell; a versioned local IPC interface exposes Clear's
+workspaces, output groups, window metadata, focus, and management modes to any
+shell implementation.
+
+An optional example panel is provided in `examples/quickshell/`. With Quickshell
+installed separately, run:
+
+```sh
+cargo run --locked -- --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
+```
+
+It provides workspace buttons, grouped applications with window cards and pins,
+per-output mode icons and controls, a system tray, notifications, and a searchable
+desktop-entry launcher. Alt+Tab selection is managed by Clear and shown by the
+shell until Alt is released. Clear exports `WAYLAND_DISPLAY` and `CLEAR_SOCKET` to its
+children. `--no-shell-ipc` disables the bridge; failure to bind it never prevents
+Clear starting. The example is not autostarted and can be replaced by a future
+native shell without changing desktop policy.
+
+Window cards contain titles and workspaces; live thumbnails need a toplevel
+capture protocol that Clear does not yet expose. See [docs/shell-integration.md](docs/shell-integration.md)
+for the protocol, security/limits, and optional example/test instructions.
+
 ## Source map
 
 ```text
@@ -180,6 +209,7 @@ src/config/              TOML parsing and defaults
 src/scripting/           Bounded Rhai host and data validation
 src/decoration/          Static theme descriptions
 src/runtime/             Config/reload, script routing and policy orchestration
+src/shell/               Toolkit-independent shell model, commands and local IPC
 src/platform/smithay/    Protocols, input translation, scene and nested backend
 src/main.rs              CLI only
 ```
@@ -198,6 +228,7 @@ cargo build --locked
 python3 scripts/vm-smoke.py
 python3 scripts/vm-smoke.py --script examples/columns.rhai --artifacts target/vm-rhai
 python3 scripts/vm-layer-smoke.py --binary target/debug/clear
+python3 scripts/vm-shell-smoke.py --binary target/debug/clear
 ```
 
 The smoke runner requires KDE's `kwin_wayland`, `dbus-run-session`, and `foot`.

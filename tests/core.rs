@@ -181,12 +181,17 @@ fn mode_names_and_parsing() {
         ("scrolling", Mode::Scrolling),
         ("master_stack", Mode::MasterStack),
         ("columns", Mode::Columns),
+        ("rows", Mode::Rows),
+        ("grid", Mode::Grid),
+        ("spiral", Mode::Spiral),
         ("monocle", Mode::Monocle),
     ] {
         assert_eq!(Mode::parse(name), Some(mode.clone()));
         assert_eq!(mode.name(), name);
     }
     assert_eq!(Mode::parse(" MASTER-STACK "), Some(Mode::MasterStack));
+    assert_eq!(Mode::parse("Fibonacci"), Some(Mode::Spiral));
+    assert_eq!(Mode::parse("dwindle"), Some(Mode::Spiral));
     assert_eq!(
         Mode::parse(" Script:MyLayout "),
         Some(Mode::Script("MyLayout".into()))
@@ -194,6 +199,28 @@ fn mode_names_and_parsing() {
     assert_eq!(Mode::Script("custom".into()).name(), "custom");
     for invalid in ["", "unknown", "script", "script: ", "floating:bad"] {
         assert_eq!(Mode::parse(invalid), None);
+    }
+}
+
+#[test]
+fn mode_cycle_visits_every_builtin() {
+    let mut desktop = populated(1);
+    desktop.command(Command::SetOutputMode(Mode::Floating));
+    for expected in [
+        Mode::Scrolling,
+        Mode::MasterStack,
+        Mode::Columns,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
+        Mode::Monocle,
+        Mode::Floating,
+    ] {
+        desktop.command(Command::CycleMode);
+        assert_eq!(
+            desktop.effective_mode(WorkspaceId(1), OutputId(1)),
+            Some(&expected)
+        );
     }
 }
 
@@ -627,6 +654,9 @@ fn floating_exceptions_do_not_consume_tiles_and_keep_geometry() {
         Mode::Floating,
         Mode::MasterStack,
         Mode::Columns,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
     ] {
         desktop.command(Command::SetWorkspaceMode(mode));
         assert_eq!(desktop.window(WindowId(2)).unwrap().floating_rect, saved);
@@ -795,6 +825,9 @@ fn initial_floating_placement_fits_usable_area_and_mode_round_trips_restore_offs
         Mode::Scrolling,
         Mode::MasterStack,
         Mode::Monocle,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
         Mode::Script("fallback".into()),
     ] {
         desktop.command(Command::SetWorkspaceMode(mode));
@@ -878,6 +911,9 @@ fn launchers_do_not_consume_tiles_or_scroll_content_in_any_mode() {
         Mode::Scrolling,
         Mode::MasterStack,
         Mode::Columns,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
         Mode::Monocle,
         Mode::Script("fallback".into()),
     ] {
@@ -1168,6 +1204,9 @@ fn manually_scrolled_position_survives_mode_and_workspace_round_trips() {
         Mode::Columns,
         Mode::Monocle,
         Mode::MasterStack,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
         Mode::Script("custom".into()),
     ] {
         desktop.command(Command::SetWorkspaceMode(mode));
@@ -1325,6 +1364,9 @@ fn builtins_never_call_custom_callback() {
         Mode::Scrolling,
         Mode::MasterStack,
         Mode::Columns,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
         Mode::Monocle,
     ] {
         desktop.command(Command::SetWorkspaceMode(mode));
@@ -1473,6 +1515,94 @@ fn tiled_layouts_cover_expected_geometry_and_monocle_raises_focus() {
 }
 
 #[test]
+fn rows_grid_and_spiral_place_windows_in_stable_order() {
+    let mut desktop = populated(5);
+    desktop.set_gaps(0);
+    desktop.set_output_area(OutputId(1), Rect::new(-100, 50, 1001, 801));
+    let expected = [
+        (
+            Mode::Rows,
+            vec![
+                Rect::new(-100, 50, 1001, 161),
+                Rect::new(-100, 211, 1001, 160),
+                Rect::new(-100, 371, 1001, 160),
+                Rect::new(-100, 531, 1001, 160),
+                Rect::new(-100, 691, 1001, 160),
+            ],
+        ),
+        (
+            Mode::Grid,
+            vec![
+                Rect::new(-100, 50, 334, 401),
+                Rect::new(234, 50, 334, 401),
+                Rect::new(568, 50, 333, 401),
+                Rect::new(-100, 451, 501, 400),
+                Rect::new(401, 451, 500, 400),
+            ],
+        ),
+        (
+            Mode::Spiral,
+            vec![
+                Rect::new(-100, 50, 600, 801),
+                Rect::new(500, 50, 401, 480),
+                Rect::new(661, 530, 240, 321),
+                Rect::new(500, 659, 161, 192),
+                Rect::new(500, 530, 161, 129),
+            ],
+        ),
+    ];
+    for (mode, rectangles) in expected {
+        desktop.command(Command::SetWorkspaceMode(mode));
+        let placements = desktop.placements();
+        assert_eq!(
+            placements
+                .iter()
+                .map(|placement| placement.window)
+                .collect::<Vec<_>>(),
+            (1..=5).map(WindowId).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            placements
+                .iter()
+                .map(|placement| placement.rect)
+                .collect::<Vec<_>>(),
+            rectangles
+        );
+    }
+}
+
+#[test]
+fn new_layouts_respect_gaps_and_do_not_overlap() {
+    let context = LayoutContext {
+        area: Rect::new(-100, 20, 103, 83),
+        windows: (1..=7)
+            .map(|id| LayoutWindow {
+                id: WindowId(id),
+                floating_rect: Rect::default(),
+            })
+            .collect(),
+        focused: None,
+        scroll_offset: 0,
+        gaps: 4,
+    };
+    let bounds = context.area.inset(context.gaps);
+    for mode in [Mode::Rows, Mode::Grid, Mode::Spiral] {
+        let placements = management::arrange(&mode, &context);
+        assert_eq!(placements.len(), 7);
+        for (index, placement) in placements.iter().enumerate() {
+            assert!(placement.tiled);
+            assert_eq!(placement.clip, None);
+            assert!(placement.rect.x >= bounds.x && placement.rect.y >= bounds.y);
+            assert!(placement.rect.right() <= bounds.right());
+            assert!(placement.rect.bottom() <= bounds.bottom());
+            for other in &placements[..index] {
+                assert!(!placement.rect.intersects(other.rect), "{mode:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn layouts_handle_empty_tiny_negative_and_extreme_geometry_without_overflow() {
     let areas = [
         Rect::default(),
@@ -1508,6 +1638,9 @@ fn layouts_handle_empty_tiny_negative_and_extreme_geometry_without_overflow() {
                     Mode::Scrolling,
                     Mode::MasterStack,
                     Mode::Columns,
+                    Mode::Rows,
+                    Mode::Grid,
+                    Mode::Spiral,
                     Mode::Monocle,
                     Mode::Script("fallback".into()),
                 ] {
@@ -1558,12 +1691,15 @@ fn deterministic_random_commands_preserve_all_global_invariants() {
         let id = (state >> 32) % 30 + 1;
         let output_id = OutputId(id % 4 + 1);
         let workspace = WorkspaceId(id % 11 + 1);
-        let mode = match id % 6 {
+        let mode = match id % 9 {
             0 => Mode::Floating,
             1 => Mode::Scrolling,
             2 => Mode::MasterStack,
             3 => Mode::Columns,
-            4 => Mode::Monocle,
+            4 => Mode::Rows,
+            5 => Mode::Grid,
+            6 => Mode::Spiral,
+            7 => Mode::Monocle,
             _ => Mode::Script("test".into()),
         };
         match (state >> 16) % 24 {

@@ -32,6 +32,43 @@ login manager or interact with another desktop. It checks real client mapping an
 rendering, not physical input. Unit/runtime tests cover workspace and mode commands.
 PPM captures can be viewed directly or converted with ImageMagick.
 
+## Optional shell integration
+
+The shell IPC smoke needs only the base test dependencies. Quickshell is an
+optional separately installed client, not a build or runtime requirement:
+
+```sh
+python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --artifacts target/vm-shell-smoke
+python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --artifacts target/vm-quickshell
+python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --exercise-overlays --artifacts target/vm-overlays
+```
+
+Each run uses a bounded compositor (25 seconds), a real foot client, a private
+virtual KWin host, and actual Unix sockets. It checks exported socket discovery,
+subscriptions, workspace/group/mode commands, invalid requests, reconnects,
+disabled IPC, and cleanup. Allow 75 seconds for startup, assertions, and cleanup.
+With `--quickshell`, it also runs the example on a private D-Bus session using Qt
+Quick's software renderer, checks both output reservations, stops/restarts the
+shell without stopping Clear, confirms fresh subscription, and samples panel
+pixels in the capture. It does not automate physical clicks or keypresses.
+The optional `--exercise-overlays` fixture requires Alacritty. It invokes
+Quickshell's launcher and other view methods in a copied QML config, launches
+Alacritty through its desktop entry, simulates switcher snapshot state, and
+verifies that closing the launcher, notification view, app preview, and switcher
+does not disconnect the panels. It still
+does not synthesize pointer or keyboard input.
+
+The compositor's CLI child is used to verify environment propagation. Quickshell
+is launched separately by the runner using those exported values so the test
+can stop/restart only its own shell process group. Logs and captures stay under
+the selected artifacts directory. The optional Quickshell process starts its
+notification and tray services on the private test bus; the smoke does not send
+notifications or tray items.
+
+For the contract and example, see [shell-integration.md](shell-integration.md).
+Test its pure message/model helpers without a GUI using
+`node --test examples/quickshell/Protocol.test.mjs`.
+
 ## Layer-shell and launcher integration fixture
 
 `scripts/vm-layer-smoke.py` drives real SHM-backed layer-shell and XDG clients

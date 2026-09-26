@@ -23,6 +23,7 @@ source; each module's guidance adds its local responsibilities and invariants.
 - [runtime](runtime/AGENTS.md): orchestration, reload, and script routing.
 - [scripting](scripting/AGENTS.md): bounded Rhai host and validation.
 - [decoration](decoration/AGENTS.md): theme descriptions.
+- [shell](shell/AGENTS.md): toolkit-independent state, commands, and local IPC.
 - [platform](platform/AGENTS.md): adapter entry point; also read the nested
   [Smithay guidance](platform/smithay/AGENTS.md) for backend work.
 

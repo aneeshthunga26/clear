@@ -5,6 +5,7 @@ mod input;
 mod layers;
 mod protocols;
 mod scene;
+mod shell;
 mod state;
 
 use crate::runtime::{Options, Runtime};
@@ -28,6 +29,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         .map(|duration| duration.saturating_sub(Duration::from_millis(250)))
         .unwrap_or(Duration::from_secs(3));
     backend::init(&event_loop, &mut state, options.capture, capture_after)?;
+    state.init_shell(!options.no_shell_ipc);
     if !options.command.is_empty() {
         state.spawn(options.command);
     }
@@ -38,6 +40,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     );
     event_loop.run(Some(Duration::from_millis(16)), &mut state, |state| {
         state.reconcile();
+        state.dispatch_shell();
         state.popups.cleanup();
         state.space.refresh();
         state

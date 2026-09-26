@@ -29,6 +29,7 @@ responsibilities, invariants, or verification workflows change; use the standard
 | TOML schema, defaults, and shell rules                  | [src/config/AGENTS.md](src/config/AGENTS.md)                     |
 | Orchestration, reload, and script routing               | [src/runtime/AGENTS.md](src/runtime/AGENTS.md)                   |
 | Rhai extensions and validation                          | [src/scripting/AGENTS.md](src/scripting/AGENTS.md)               |
+| Optional shell state, commands, and local IPC           | [src/shell/AGENTS.md](src/shell/AGENTS.md)                       |
 | Backend-independent theme descriptions                  | [src/decoration/AGENTS.md](src/decoration/AGENTS.md)             |
 | Platform entry point and adapter boundary               | [src/platform/AGENTS.md](src/platform/AGENTS.md)                 |
 | Smithay protocols, rendering, input, and nested backend | [src/platform/smithay/AGENTS.md](src/platform/smithay/AGENTS.md) |
@@ -49,6 +50,9 @@ See [docs/architecture.md](docs/architecture.md) for the full design and
 - User extensions use Rhai, not Lua or JavaScript. Keep script values declarative;
   scripts never own compositor objects or mutate desktop state directly.
 - Theme descriptions live in `src/decoration/`; rendering stays in the adapter.
+- Shell state and validated commands live in `src/shell/`, independent of any
+  UI toolkit. Quickshell is an optional example client, never a compositor
+  dependency or mandatory startup process. Preserve bounded private IPC.
 
 ## Configuration and behavior
 
@@ -93,6 +97,12 @@ Prefer an isolated VM for compositor integration tests:
   panel popups, and client-sized launcher centering.
 - `python3 -B scripts/test_vm_layer_smoke.py`: fixture assertion self-tests, with
   no compositor needed.
+- `python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear`: local shell
+  IPC integration; add `--quickshell quickshell` for the optional real panel.
+- Add `--exercise-overlays` to the Quickshell smoke to test launcher, notification
+  center, and app preview lifecycles with a real Alacritty desktop entry.
+- `node --test examples/quickshell/Protocol.test.mjs`: optional example's pure
+  message/model tests, without launching a shell.
 
 Logs and PPM captures stay under `target/`. These tests do not automate physical
 clicks, key presses, or drags; state explicitly what was verified. See

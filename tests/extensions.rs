@@ -44,9 +44,19 @@ fn defaults_are_complete_and_collision_free() {
         config.workspaces.iter().map(|w| w.id).collect::<Vec<_>>(),
         (1..=9).collect::<Vec<_>>()
     );
-    assert_eq!(config.bindings.len(), 29);
+    assert_eq!(config.bindings.len(), 30);
     assert!(config.script.is_none());
     let bindings = Bindings::new(&config.bindings).unwrap();
+    assert_eq!(
+        bindings.action(
+            Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            "Tab"
+        ),
+        Some(Action::AltTab)
+    );
     let logo = Modifiers {
         logo: true,
         ..Modifiers::default()

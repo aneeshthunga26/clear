@@ -8,3 +8,4 @@ pub mod management;
 pub mod platform;
 pub mod runtime;
 pub mod scripting;
+pub mod shell;

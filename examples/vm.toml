@@ -42,6 +42,10 @@ action = "spawn"
 command = ["foot"]
 
 [[bindings]]
+key = "Alt+Tab"
+action = "alt_tab"
+
+[[bindings]]
 key = "leader+Escape"
 action = "quit"
 

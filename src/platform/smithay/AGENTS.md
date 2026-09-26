@@ -14,6 +14,8 @@ only directory allowed to depend on Smithay and Wayland types.
   and client move/resize requests.
 - `layers.rs`: layer-shell lifecycle, namespace policy, and keyboard ownership.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
+- `shell.rs`: optional socket initialization and dispatch; reconcile commands
+  before acknowledging/publishing. Wire types and transport stay in `src/shell/`.
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,
   shared visibility clips, and frame callbacks.
 
@@ -48,6 +50,13 @@ only directory allowed to depend on Smithay and Wayland types.
   follow mapping/stacking order rather than only creation order.
 - Convert keysyms with `xkb::keysym_get_name`, not debug `Keysym::name()` labels.
   Track intercepted releases by physical keycode; preserve grab/serial checks.
+- Alt-Tab is selected in runtime and committed on physical Alt release; Escape
+  cancels. Keep keyboard ownership and final focus in the compositor.
+- Shell state is published after reconciliation, using a dirty flag and snapshot
+  comparison rather than running scripts or serializing from the renderer. Poll
+  the nonblocking transport each event-loop turn to flush replies. Export this
+  instance's `CLEAR_SOCKET` to children, removing inherited values if disabled.
+  Optional IPC bind failures must not prevent compositor startup.
 - Framebuffer texture mapping can change the EGL target. Preserve the backend's
   restoration of the window target before swapping after capture.
 

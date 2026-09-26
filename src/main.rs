@@ -20,10 +20,11 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Option<Options>, Str
         match arg.as_str() {
             "--help" | "-h" => {
                 println!(
-                    "Clear — nested Wayland compositor\n\nUsage: clear [OPTIONS] [--command PROGRAM [ARG...]]\n\n  --config PATH        Load a TOML config instead of the XDG default\n  --socket NAME        Use a specific Wayland socket name\n  --exit-after SECONDS  Gracefully stop after a bounded test run\n  --capture PATH       Save a PPM frame near the test deadline (or after 3s)\n  --command, -c        Launch a child inside Clear (must be the last option)\n  --help, -h           Show this help\n\nDefaults: two virtual monitors, nine workspaces. Super+Return opens foot;\nSuper+Escape exits. See examples/config.toml for bindings and Rhai extensions."
+                    "Clear — nested Wayland compositor\n\nUsage: clear [OPTIONS] [--command PROGRAM [ARG...]]\n\n  --config PATH        Load a TOML config instead of the XDG default\n  --socket NAME        Use a specific Wayland socket name\n  --no-shell-ipc       Disable the optional local shell interface\n  --exit-after SECONDS  Gracefully stop after a bounded test run\n  --capture PATH       Save a PPM frame near the test deadline (or after 3s)\n  --command, -c        Launch a child inside Clear (must be the last option)\n  --help, -h           Show this help\n\nDefaults: two virtual monitors, nine workspaces. Super+Return opens foot;\nSuper+Escape exits. See examples/config.toml for bindings and Rhai extensions."
                 );
                 return Ok(None);
             }
+            "--no-shell-ipc" => options.no_shell_ipc = true,
             "--config" => {
                 options.config_path = Some(PathBuf::from(
                     args.next().ok_or("--config requires a path")?,
@@ -88,6 +89,12 @@ mod tests {
         assert_eq!(options.exit_after, Some(Duration::from_secs(3)));
         assert_eq!(options.command, ["foot", "--app-id", "demo"]);
     }
+    #[test]
+    fn shell_ipc_is_optional_and_enabled_by_default() {
+        assert!(!parse(&[]).unwrap().unwrap().no_shell_ipc);
+        assert!(parse(&["--no-shell-ipc"]).unwrap().unwrap().no_shell_ipc);
+    }
+
     #[test]
     fn rejects_invalid_arguments() {
         for args in [

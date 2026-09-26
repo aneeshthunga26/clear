@@ -53,6 +53,7 @@ impl Compositor {
             return;
         }
         self.dirty = false;
+        self.shell_dirty = true;
         self.refresh_layers();
         let layer_focus = self.layer_keyboard_focus();
         for region in &self.outputs {

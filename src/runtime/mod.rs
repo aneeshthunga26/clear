@@ -4,7 +4,10 @@ use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
 use crate::{
     config::Config,
-    core::{Command, Desktop, Effect, Mode, OutputId, Placement, Rect, WorkspaceId},
+    core::{
+        Command, Desktop, Effect, Mode, OutputId, Placement, Rect, WindowId, WindowRole,
+        WorkspaceId,
+    },
     input::{Action, Bindings},
     scripting::{ScriptContext, ScriptHost, ScriptRect, ScriptWindow},
 };
@@ -22,6 +25,8 @@ pub struct Options {
     pub socket_name: Option<String>,
     /// Optional PPM framebuffer capture for visual smoke tests.
     pub capture: Option<PathBuf>,
+    /// Disable the optional local shell state/command interface.
+    pub no_shell_ipc: bool,
 }
 
 /// Owns desktop policy, compiled shortcuts, and the optional extension host.
@@ -32,9 +37,19 @@ pub struct Runtime {
     pub config: Config,
     /// Compiled bindings for backend-normalized key events.
     pub bindings: Bindings,
+    /// Pending Alt-Tab selection, committed by the physical modifier release.
+    pub switcher: Option<Switcher>,
     config_path: Option<PathBuf>,
     script: Option<ScriptHost>,
     failed_functions: BTreeSet<String>,
+}
+
+/// Stable candidate order and selection for one keyboard switch gesture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Switcher {
+    pub output: OutputId,
+    pub windows: Vec<WindowId>,
+    pub selected: WindowId,
 }
 
 impl Runtime {
@@ -61,6 +76,7 @@ impl Runtime {
             desktop: Desktop::new(),
             config,
             bindings,
+            switcher: None,
             config_path,
             script,
             failed_functions: BTreeSet::new(),
@@ -158,7 +174,10 @@ impl Runtime {
             }
             budget -= 1;
             eprintln!("clear: action {action:?}");
+            self.switcher = None;
             let command = match action {
+                // Only the physical-key adapter can start a modifier-held gesture.
+                Action::AltTab => continue,
                 Action::FocusNext => Command::FocusNext,
                 Action::FocusPrevious => Command::FocusPrevious,
                 Action::CycleOutput => Command::CycleOutput,
@@ -216,6 +235,64 @@ impl Runtime {
             effects.extend(self.desktop.command(command));
         }
         effects
+    }
+
+    /// Advance a selection among normal windows on the focused workspace.
+    pub fn advance_switcher(&mut self) {
+        if let Some(switcher) = &mut self.switcher {
+            if let Some(index) = switcher
+                .windows
+                .iter()
+                .position(|id| *id == switcher.selected)
+            {
+                switcher.selected = switcher.windows[(index + 1) % switcher.windows.len()];
+            }
+            return;
+        }
+        let desktop = &self.desktop;
+        let Some(output) = desktop.focused_output() else {
+            return;
+        };
+        let Some(workspace) = desktop
+            .workspace_for_output(output)
+            .and_then(|id| desktop.workspace(id))
+        else {
+            return;
+        };
+        let windows: Vec<_> = workspace
+            .windows()
+            .iter()
+            .copied()
+            .filter(|id| {
+                desktop
+                    .window(*id)
+                    .is_some_and(|window| window.role == WindowRole::Normal)
+            })
+            .collect();
+        if windows.is_empty() {
+            return;
+        }
+        let current = desktop.focused_window();
+        let next = current
+            .and_then(|id| windows.iter().position(|candidate| *candidate == id))
+            .map_or(0, |index| (index + 1) % windows.len());
+        self.switcher = Some(Switcher {
+            output,
+            selected: windows[next],
+            windows,
+        });
+    }
+
+    /// Commit the selected window when Alt is physically released.
+    pub fn finish_switcher(&mut self) {
+        if let Some(switcher) = self.switcher.take() {
+            self.desktop.command(Command::Focus(switcher.selected));
+        }
+    }
+
+    /// Cancel a pending switch without changing focus.
+    pub fn cancel_switcher(&mut self) {
+        self.switcher = None;
     }
 
     /// Compute a scene; a faulty script is disabled until reload, with built-in fallback.

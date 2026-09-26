@@ -14,6 +14,9 @@ pub fn arrange(mode: &Mode, ctx: &LayoutContext) -> Vec<Placement> {
             .map(|window| window.floating_rect.normalized())
             .collect(),
         Mode::Columns => split(inner, count, ctx.gaps, true),
+        Mode::Rows => split(inner, count, ctx.gaps, false),
+        Mode::Grid => grid(inner, count, ctx.gaps),
+        Mode::Spiral => spiral(inner, count, ctx.gaps),
         Mode::Monocle => vec![inner; count],
         Mode::Scrolling => {
             let (width, stride, _) = scrolling_metrics(ctx);
@@ -116,6 +119,85 @@ fn split(area: Rect, count: usize, gaps: i32, horizontal: bool) -> Vec<Rect> {
             rect
         })
         .collect()
+}
+
+fn grid(area: Rect, count: usize, gaps: i32) -> Vec<Rect> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut columns = 1usize;
+    while columns < count.div_ceil(columns) {
+        columns += 1;
+    }
+    let rows = count.div_ceil(columns);
+    let mut result = Vec::with_capacity(count);
+    for row in split(area, rows, gaps, false) {
+        let cells = columns.min(count - result.len());
+        result.extend(split(row, cells, gaps, true));
+    }
+    result
+}
+
+fn spiral(area: Rect, count: usize, gaps: i32) -> Vec<Rect> {
+    let mut result = Vec::with_capacity(count);
+    let mut remaining = area;
+    for index in 0..count {
+        if index + 1 == count {
+            result.push(remaining);
+            break;
+        }
+        let horizontal = index % 2 == 0;
+        let length = if horizontal {
+            remaining.width
+        } else {
+            remaining.height
+        };
+        let gap = gaps.max(0).min(length / 3);
+        let available = length - gap;
+        let taken = (i64::from(available) * 3 / 5) as i32;
+        let rest = available - taken;
+        let (tile, tail) = match index % 4 {
+            0 => (
+                Rect::new(remaining.x, remaining.y, taken, remaining.height),
+                Rect::new(
+                    remaining.x + taken + gap,
+                    remaining.y,
+                    rest,
+                    remaining.height,
+                ),
+            ),
+            1 => (
+                Rect::new(remaining.x, remaining.y, remaining.width, taken),
+                Rect::new(
+                    remaining.x,
+                    remaining.y + taken + gap,
+                    remaining.width,
+                    rest,
+                ),
+            ),
+            2 => (
+                Rect::new(
+                    remaining.right() - taken,
+                    remaining.y,
+                    taken,
+                    remaining.height,
+                ),
+                Rect::new(remaining.x, remaining.y, rest, remaining.height),
+            ),
+            _ => (
+                Rect::new(
+                    remaining.x,
+                    remaining.bottom() - taken,
+                    remaining.width,
+                    taken,
+                ),
+                Rect::new(remaining.x, remaining.y, remaining.width, rest),
+            ),
+        };
+        result.push(tile);
+        remaining = tail;
+    }
+    result
 }
 
 fn scrolling_metrics(ctx: &LayoutContext) -> (i32, i64, i32) {

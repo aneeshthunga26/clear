@@ -66,6 +66,9 @@ pub(super) struct Compositor {
     pub placements: Vec<Placement>,
     pub layers: Vec<super::layers::LayerEntry>,
     pub layer_focus: Option<WlSurface>,
+    pub shell_server: Option<crate::shell::server::Server>,
+    pub shell_snapshot: Option<crate::shell::Snapshot>,
+    pub shell_dirty: bool,
     pub host_size: Size<i32, Logical>,
     pub dirty: bool,
     pub host_focused: bool,
@@ -143,6 +146,9 @@ impl Compositor {
             placements: Vec::new(),
             layers: Vec::new(),
             layer_focus: None,
+            shell_server: None,
+            shell_snapshot: None,
+            shell_dirty: true,
             host_size: (1, 1).into(),
             dirty: true,
             host_focused: true,
@@ -200,7 +206,13 @@ impl Compositor {
         let Some(program) = command.first() else {
             return;
         };
-        match Command::new(program)
+        let mut child = Command::new(program);
+        // Never leak a parent compositor's bridge into a nested instance.
+        child.env_remove("CLEAR_SOCKET");
+        if let Some(server) = &self.shell_server {
+            child.env("CLEAR_SOCKET", server.path());
+        }
+        match child
             .args(&command[1..])
             .env("WAYLAND_DISPLAY", &self.socket_name)
             .env_remove("WAYLAND_SOCKET")

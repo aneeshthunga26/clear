@@ -91,6 +91,17 @@ mod tests {
             binding_action(&bindings, Modifiers::default(), [Keysym::Return]),
             None
         );
+        assert_eq!(
+            binding_action(
+                &bindings,
+                Modifiers {
+                    alt: true,
+                    ..Default::default()
+                },
+                [Keysym::Tab]
+            ),
+            Some(Action::AltTab)
+        );
     }
 }
 
@@ -101,6 +112,7 @@ impl Compositor {
                 let code = event.key_code();
                 let pressed = event.state() == KeyState::Pressed;
                 let keyboard = self.seat.get_keyboard().expect("keyboard initialized");
+                let mut cancelled_switcher = false;
                 let action = keyboard.input::<Option<Action>, _>(
                     self,
                     code,
@@ -112,6 +124,15 @@ impl Compositor {
                             return FilterResult::Intercept(None);
                         }
                         if pressed && state.suppressed_keys.contains(&code.raw()) {
+                            return FilterResult::Intercept(None);
+                        }
+                        if pressed
+                            && state.runtime.switcher.is_some()
+                            && key.raw_syms().contains(&Keysym::Escape)
+                        {
+                            state.runtime.cancel_switcher();
+                            state.suppressed_keys.insert(code.raw());
+                            cancelled_switcher = true;
                             return FilterResult::Intercept(None);
                         }
                         if pressed {
@@ -132,7 +153,21 @@ impl Compositor {
                     },
                 );
                 if let Some(Some(action)) = action {
-                    self.action(action);
+                    if matches!(action, Action::AltTab) {
+                        self.runtime.advance_switcher();
+                        self.dirty = true;
+                        self.reconcile();
+                    } else {
+                        self.action(action);
+                    }
+                }
+                if self.runtime.switcher.is_some() && !keyboard.modifier_state().alt {
+                    self.runtime.finish_switcher();
+                    self.dirty = true;
+                    self.reconcile();
+                } else if cancelled_switcher {
+                    self.dirty = true;
+                    self.reconcile();
                 }
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {

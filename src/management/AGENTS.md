@@ -5,9 +5,9 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 ## Responsibilities and boundaries
 
 `mod.rs` implements pure layout geometry over core `Mode` and `LayoutContext`.
-Built-ins currently include floating, scrolling, master-stack, columns, and
-monocle. Do not introduce protocol objects, config loading, script execution,
-process effects, or persistent desktop ownership here.
+Built-ins currently include floating, scrolling, master-stack, columns, rows,
+grid, spiral, and monocle. Do not introduce protocol objects, config loading,
+script execution, process effects, or persistent desktop ownership here.
 
 - The supplied area already excludes panel reservations. Do not subtract them
   again or query the platform.

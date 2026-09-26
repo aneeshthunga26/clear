@@ -26,6 +26,12 @@ pub enum Mode {
     MasterStack,
     /// Equal-width tiled columns.
     Columns,
+    /// Equal-height tiled rows.
+    Rows,
+    /// Tiled rows and columns with balanced cell counts.
+    Grid,
+    /// Successive shrinking splits that rotate around the remaining area.
+    Spiral,
     /// Each tiled window fills the region; the focused one is stacked last.
     Monocle,
     /// A named layout delegated to the host, with master-stack fallback.
@@ -43,6 +49,9 @@ impl Mode {
                 Some(Self::MasterStack)
             }
             "columns" => Some(Self::Columns),
+            "rows" => Some(Self::Rows),
+            "grid" => Some(Self::Grid),
+            "spiral" | "fibonacci" | "dwindle" => Some(Self::Spiral),
             "monocle" => Some(Self::Monocle),
             _ => {
                 let (prefix, name) = value.split_once(':')?;
@@ -60,6 +69,9 @@ impl Mode {
             Self::Scrolling => "scrolling",
             Self::MasterStack => "master_stack",
             Self::Columns => "columns",
+            Self::Rows => "rows",
+            Self::Grid => "grid",
+            Self::Spiral => "spiral",
             Self::Monocle => "monocle",
             Self::Script(name) => name,
         }
@@ -70,7 +82,10 @@ impl Mode {
             Self::Floating => Self::Scrolling,
             Self::Scrolling => Self::MasterStack,
             Self::MasterStack => Self::Columns,
-            Self::Columns => Self::Monocle,
+            Self::Columns => Self::Rows,
+            Self::Rows => Self::Grid,
+            Self::Grid => Self::Spiral,
+            Self::Spiral => Self::Monocle,
             Self::Monocle | Self::Script(_) => Self::Floating,
         }
     }

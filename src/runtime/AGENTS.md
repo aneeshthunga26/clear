@@ -24,6 +24,9 @@ objects out of this module; return effects for the platform to execute.
   reload and use the built-in layout fallback rather than failing the compositor.
 - Spawning, closing clients, and shutdown are explicit effects, not OS/protocol
   operations performed by policy code.
+- Pending Alt-Tab selection contains normal windows on the focused workspace.
+  Advancing it must not change focus; finish commits the selected window and
+  cancel preserves focus. The adapter owns physical release/cancel detection.
 
 ## Verification
 
