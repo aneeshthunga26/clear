@@ -209,6 +209,44 @@ class KawaseTests(unittest.TestCase):
                         )
 
 
+class GlassTests(unittest.TestCase):
+    def test_optical_sampling_is_bounded_to_nonzero_viewport(self):
+        clip = (319, 0, 321, 241)
+        def source(x, y):
+            self.assertTrue(SMOKE.inside(x, y, clip), (x, y))
+            return (48, 96, 144)
+        effect = SMOKE.glass_filter(source, clip, clip, 0)
+        for x, y in [(319, 0), (639, 240), (319, 120), (479, 120)]:
+            color = effect(x, y)
+            self.assertTrue(all(math.isfinite(c) and 0 <= c <= 255 for c in color))
+        self.assertEqual(effect(479, 120), (48, 96, 144))
+
+    def test_zero_bypasses_glass_and_oracle_rejects_missing_optics(self):
+        for method, radius, passes in [("gaussian", 2, 3), ("kawase", 2, 3)]:
+            for case in ("xdg", "layer-top", "stacking", "output-boundary-odd"):
+                zero = SMOKE.oracle(case, 0, method, passes)
+                glass_zero = SMOKE.oracle(case, 0, method, passes, True)
+                plain = SMOKE.oracle(case, radius, method, passes)
+                glass = SMOKE.oracle(case, radius, method, passes, True)
+                points = SMOKE.sample_points(case)
+                self.assertTrue(all(zero(x, y) == glass_zero(x, y) for x, y in points))
+                with patch.object(SMOKE, "pixel", side_effect=lambda image, x, y: image(x, y)):
+                    with self.assertRaises(AssertionError):
+                        SMOKE.check_frame(plain, case, radius, method, passes, expected=glass)
+                if case == "layer-top":
+                    # A fully transparent client hole must expose the unfiltered scene.
+                    self.assertEqual(glass(320, 220), zero(320, 220))
+                if case == "xdg":
+                    self.assertEqual(glass(240, 200), SMOKE.INK)
+
+    def test_glass_option_is_explicit_and_independent_of_filter(self):
+        self.assertFalse(SMOKE.parse_args([]).liquid_glass)
+        for method in ("gaussian", "kawase"):
+            args = SMOKE.parse_args(["--liquid-glass", "--method", method])
+            self.assertTrue(args.liquid_glass)
+            self.assertIn("[theme.liquid_glass]\nenabled = true", SMOKE.config_text("xdg", 2, method, liquid_glass=True))
+
+
 class HarnessTests(unittest.TestCase):
     def test_cli_defaults_and_bounds(self):
         args = SMOKE.parse_args([])
@@ -271,7 +309,7 @@ class HarnessTests(unittest.TestCase):
             )
             self.assertEqual(
                 [c.args for c in oracle.call_args_list],
-                [("xdg", r, "kawase", passes) for r in (0, 0, 1.5)],
+                [("xdg", r, "kawase", passes, False) for r in (0, 0, 1.5)],
             )
             self.assertEqual(check.call_args.args[2:5], (1.5, "kawase", passes))
             self.assertEqual(compare.call_args.args[3:6], (1.5, "kawase", passes))

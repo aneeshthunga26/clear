@@ -100,7 +100,8 @@ fn shell_rejects_empty_duplicate_malformed_and_unsupported_rules() {
 fn shipped_configs_document_the_default_shell_rules() {
     for source in [
         include_str!("../examples/config.toml"),
-        include_str!("../examples/vm.toml"),
+        include_str!("../examples/dual-virtual-monitors.toml"),
+        include_str!("../examples/single-monitor.toml"),
     ] {
         assert_eq!(
             Config::from_source(source).unwrap().shell,

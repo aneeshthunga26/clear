@@ -4,7 +4,7 @@ use super::{
     rounded::{RoundedShape, SHAPE, TEXTURE_HEADER},
     scene::{Scene, SceneElement},
 };
-use crate::decoration::BlurMethod;
+use crate::decoration::{BlurMethod, LiquidGlass};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -27,7 +27,7 @@ pub(super) enum BlurMask {
     /// Square floating trees may extend beyond the requested frame while resizing.
     SquareWindow(RoundedShape),
     /// No protocol blur region: weight blur by tree alpha, preserving transparent holes.
-    ClientAlpha,
+    ClientAlpha(crate::core::Rect),
 }
 
 /// Four framebuffer-sized textures, reused across trees and frames; resize replaces them.
@@ -49,7 +49,7 @@ pub(super) struct BackdropBlur {
 impl BackdropBlur {
     pub fn new(renderer: &mut GlesRenderer) -> Result<Self, GlesError> {
         let composite = renderer.compile_custom_texture_shader(
-            format!("{TEXTURE_HEADER}\n{SHAPE}\n{COMPOSITE}"),
+            format!("{TEXTURE_HEADER}\n{SHAPE}\n{LIQUID_GLASS}\n{COMPOSITE}"),
             &[
                 UniformName::new("backdrop", UniformType::_1i),
                 UniformName::new("original", UniformType::_1i),
@@ -57,6 +57,11 @@ impl BackdropBlur {
                 UniformName::new("outline", UniformType::_4f),
                 UniformName::new("radii", UniformType::_4f),
                 UniformName::new("target_height", UniformType::_1f),
+                UniformName::new("glass_enabled", UniformType::_1f),
+                UniformName::new("glass_texel", UniformType::_2f),
+                UniformName::new("glass_bounds", UniformType::_4f),
+                UniformName::new("glass_optics", UniformType::_4f),
+                UniformName::new("glass_highlight", UniformType::_1f),
             ],
         )?;
         Ok(Self {
@@ -77,6 +82,7 @@ impl BackdropBlur {
         radius: f32,
         method: BlurMethod,
         passes: u8,
+        glass: LiquidGlass,
         background: [f32; 4],
     ) -> Result<TextureRenderElement<GlesTexture>, GlesError> {
         // Config validation owns finite 0..=32; the backend owns the exact zero path.
@@ -141,17 +147,24 @@ impl BackdropBlur {
                 draw_tree(frame, elements)
             })?;
 
+            // Refraction may read outside the tree. Initialize its entire bounded
+            // sampling halo (including bilinear neighbors) in either filter.
+            let filter_area = glass_filter_area(area, clip, glass);
             if method == BlurMethod::Kawase {
-                self.kawase
-                    .as_mut()
-                    .expect("Kawase initialized")
-                    .filter(renderer, scratch, clip, area, radius, passes)?;
+                self.kawase.as_mut().expect("Kawase initialized").filter(
+                    renderer,
+                    scratch,
+                    clip,
+                    filter_area,
+                    radius,
+                    passes,
+                )?;
             } else {
                 let kernel = Gaussian::new(radius);
                 let bounds = sample_bounds(clip, size);
                 // The vertical pass needs horizontally filtered rows beyond the tree.
                 // Both passes clamp to this viewport, never the neighboring virtual output.
-                let horizontal_area = vertical_support(area, clip, kernel.support());
+                let horizontal_area = vertical_support(filter_area, clip, kernel.support());
                 let pass = |renderer: &mut GlesRenderer,
                             source: &GlesTexture,
                             target: &mut GlesTexture,
@@ -179,15 +192,15 @@ impl BackdropBlur {
                     renderer,
                     &scratch.horizontal,
                     &mut scratch.vertical,
-                    area,
+                    filter_area,
                     [0.0, 1.0 / size.h as f32],
                 )?;
             }
 
             let shape = match mask {
                 BlurMask::Window(shape) | BlurMask::SquareWindow(shape) => shape,
-                BlurMask::ClientAlpha => RoundedShape {
-                    rect: crate::core::Rect::new(0, 0, size.w, size.h),
+                BlurMask::ClientAlpha(rect) => RoundedShape {
+                    rect,
                     radii: [0.0; 4],
                 },
             };
@@ -195,11 +208,24 @@ impl BackdropBlur {
             uniforms.extend([
                 Uniform::new("backdrop", 1_i32),
                 Uniform::new("original", 2_i32),
+                Uniform::new("glass_enabled", if glass.enabled { 1.0_f32 } else { 0.0 }),
+                Uniform::new("glass_texel", [1.0 / size.w as f32, 1.0 / size.h as f32]),
+                Uniform::new("glass_bounds", sample_bounds(clip, size)),
+                Uniform::new(
+                    "glass_optics",
+                    [
+                        glass.refraction_strength,
+                        glass.edge_width,
+                        glass.liquidity,
+                        glass.dispersion,
+                    ],
+                ),
+                Uniform::new("glass_highlight", glass.highlight),
                 Uniform::new(
                     "client_shape",
                     match mask {
                         BlurMask::Window(_) => 0.0_f32,
-                        BlurMask::ClientAlpha => 1.0,
+                        BlurMask::ClientAlpha(_) => 1.0,
                         BlurMask::SquareWindow(_) => 2.0,
                     },
                 ),
@@ -655,6 +681,24 @@ impl Gaussian {
     }
 }
 
+/// Initialize every texel reachable by a bounded ray, plus bilinear neighbors.
+fn glass_filter_area(
+    area: Rectangle<i32, Physical>,
+    clip: Rectangle<i32, Physical>,
+    glass: LiquidGlass,
+) -> Rectangle<i32, Physical> {
+    if !glass.enabled || glass.refraction_strength == 0.0 {
+        return area;
+    }
+    let halo = glass.refraction_strength.ceil() as i32 + 1;
+    Rectangle::new(
+        (area.loc.x - halo, area.loc.y - halo).into(),
+        (area.size.w + 2 * halo, area.size.h + 2 * halo).into(),
+    )
+    .intersection(clip)
+    .expect("tree intersects viewport")
+}
+
 fn vertical_support(
     area: Rectangle<i32, Physical>,
     clip: Rectangle<i32, Physical>,
@@ -707,8 +751,9 @@ void main() {
 }
 "#;
 
+const LIQUID_GLASS: &str = include_str!("liquid_glass.frag");
+
 const COMPOSITE: &str = r#"
-uniform sampler2D backdrop;
 uniform sampler2D original;
 uniform float client_shape;
 void main() {
@@ -723,7 +768,7 @@ void main() {
     if (client_shape > 1.5) c = max(c, tree_coverage);
     else if (client_shape > 0.5) c = tree_coverage;
     c = max(c, a); // UNORM rounding can put stored alpha just above analytic coverage.
-    gl_FragColor = foreground + (c - a) * texture2D(backdrop, v_coords)
+    gl_FragColor = foreground + (c - a) * glass_backdrop(desktop_point())
         + (1.0 - c) * texture2D(original, v_coords);
 }
 "#;
@@ -731,6 +776,29 @@ void main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glass_halo_covers_displaced_bilinear_samples_and_clamps_to_viewport() {
+        let clip = Rectangle::new((319, 0).into(), (321, 241).into());
+        let area = Rectangle::new((320, 20).into(), (100, 60).into());
+        let mut glass = LiquidGlass::default();
+        assert_eq!(glass_filter_area(area, clip, glass), area);
+        glass.enabled = true;
+        glass.refraction_strength = 0.0;
+        assert_eq!(glass_filter_area(area, clip, glass), area);
+        glass.refraction_strength = 12.5;
+        assert_eq!(
+            glass_filter_area(area, clip, glass),
+            Rectangle::new((319, 6).into(), (115, 88).into())
+        );
+        glass.refraction_strength = 64.0;
+        assert_eq!(
+            glass_filter_area(area, clip, glass),
+            Rectangle::new((319, 0).into(), (166, 145).into())
+        );
+        let one = Rectangle::new((639, 240).into(), (1, 1).into());
+        assert_eq!(glass_filter_area(one, one, glass), one);
+    }
 
     #[test]
     fn kawase_pyramid_ceil_halves_and_stops_at_one() {

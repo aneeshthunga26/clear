@@ -17,6 +17,7 @@ nonfinite/out-of-range values. Reload follows the
 | `blur_method` | `gaussian` | `gaussian` or `kawase` |
 | `blur_radius` | 0 | Finite scalar 0–32, fractions allowed |
 | `blur_passes` | 3 | Integer 1–6; always validated |
+| `liquid_glass` | Disabled | Optional [optical treatment](#liquid-glass) after either filter |
 | `titlebar` | See [decorations](decorations.md#titlebar-configuration) | Independent titlebar style/resources |
 
 Wallpapers use full outputs behind all surfaces, as specified in
@@ -62,7 +63,8 @@ controls. Logical surface-tree groups are processed bottom-to-top, compositing
 subsurfaces before one backdrop replacement per tree. Popups sample their parent
 and lower groups, never surfaces stacked above them. Wallpapers are ordinary
 unfiltered lower-scene content. Neither filter changes client opacity, geometry,
-protocol state, or adds tint/noise/saturation treatment.
+protocol state. The optional liquid-glass treatment below refracts and lights only
+the filtered lower scene; ordinary blur remains unchanged.
 
 For premultiplied foreground `F`, composed alpha `A`, and independent rounded frame
 coverage `C`, the result is:
@@ -83,8 +85,8 @@ alpha independently of blur.
 ## Gaussian filter
 
 Gaussian uses two separable passes, sigma `max(radius / 3, 0.5)`, and at most 65
-samples per pass. Filtering is bounded to the tree plus the required vertical
-halo. Sample positions clamp to the output/workspace viewport's texel centers;
+samples per pass. Filtering is bounded to the tree plus any liquid-glass sampling halo and the
+required vertical blur halo. Sample positions clamp to the output/workspace viewport's texel centers;
 one independent output MUST NOT contribute samples to another.
 
 ## Dual Kawase filter
@@ -103,6 +105,52 @@ sampling is center-aligned and uses actual source/destination ratios for odd
 dimensions. Samples clamp to each level's texel centers; intermediates are RGBA8.
 Nonzero viewport origins MUST be handled without sampling neighboring outputs.
 The VM example's radius 2/passes 3 is not equivalent to Gaussian radius 2.
+
+## Liquid glass
+
+`[theme.liquid_glass]` applies an optical treatment after either Gaussian or Dual
+Kawase filtering. It is independent of `blur_method`, disabled by default, and
+radius zero MUST still bypass the complete backdrop renderer, including glass.
+Unknown fields, wrong types, and nonfinite/out-of-range values MUST fail validation
+even when disabled. Reload uses the same atomic theme transaction.
+
+| Field | Default | Accepted value |
+| --- | --- | --- |
+| `enabled` | false | Boolean |
+| `refraction_strength` | 12 | Finite scalar 0–64; maximum per-axis displacement in logical pixels |
+| `edge_width` | 24 | Finite scalar 1–128 logical pixels; fitted to the smaller half-dimension |
+| `liquidity` | 0.5 | Finite scalar 0–1; interior dome curvature |
+| `dispersion` | 0.15 | Finite scalar 0–1; chromatic separation |
+| `highlight` | 0.25 | Finite scalar 0–1; directional edge reflection |
+
+The fitted outline's distance gradient supplies an outward normal. A smooth curved
+edge and an interior dome produce a dielectric normal; Snell refraction samples the
+filtered backdrop with index 1.5. Dispersion offsets the red/blue indices by
+`-/+ 0.15 * dispersion`. A top-left light and grazing-angle reflection brighten
+the meniscus. This is a static optical approximation integrated with Clear's
+existing blur and premultiplied composition. No animation, noise or opacity
+override is added.
+
+Glass replaces only `blurred_lower_scene` in the composition equation above.
+Foreground text, controls and opaque pixels MUST remain sharp; coverage and input
+shapes MUST remain unchanged. Refraction strength zero disables displacement;
+`highlight` remains independently effective. Setting both to zero is neutral.
+Dispersed channels are unpremultiplied individually and premultiplied using the
+green sample's alpha, preserving valid premultiplied RGBA for translucent backdrops.
+
+Windows use their original fitted outline, including SSD. Layers/popups use the
+original uncropped surface-tree bounding rectangle with square optical edges,
+while their existing alpha mask preserves transparent holes. Cropping MUST NOT
+create new optical edges. Square-window overflow outside its frame retains ordinary
+blur. Rounded cut-outs retain the original scene.
+
+All displaced samples MUST clamp to the owning output/workspace viewport's texel
+centers. Either filter initializes an expanded tree region of
+`ceil(refraction_strength) + 1` pixels per side when displacement is active,
+intersected with the viewport, so bilinear samples cannot read stale scratch data.
+Gaussian additionally initializes its vertical support halo; Kawase still filters
+the whole isolated viewport before copying this expanded region. Glass reuses the
+existing composite pass, samplers, and scratch textures; it adds no texture cache.
 
 ## Blur resource bounds and lifecycle
 
@@ -131,6 +179,10 @@ state restored, and the window framebuffer restored before presentation/capture.
   [scene assembly](../src/platform/smithay/scene.rs).
 - [Rounded schema/reload](../tests/rounded.rs) and [blur schema/reload](../tests/blur.rs)
   tests cover CPU policy, not rendered pixels.
+- [Glass schema/reload tests](../tests/liquid_glass.rs) cover independent filter
+  selection, strict disabled validation, and last-good reload retention.
+  The blur fixture’s `--liquid-glass` option compares GPU captures with a scalar
+  Snell/dispersion/lighting oracle and checks foreground/holes and output bounds.
 - [Rounded GPU fixture](../scripts/vm-rounded-smoke.py),
   [blur GPU fixture](../scripts/vm-blur-smoke.py), and
   [blur oracle self-tests](../scripts/test_vm_blur_smoke.py) separate independent

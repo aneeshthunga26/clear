@@ -40,7 +40,8 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   early at `1×1`. Gaussian ignores it but validation always applies, even with blur
   disabled. `examples/vm.toml` selects Kawase radius 2/passes 3.
 - Failed blur reloads preserve the full previous theme. Neither method changes
-  client opacity or adds a glass treatment.
+  client opacity. The independent `[theme.liquid_glass]` table is always validated,
+  including when disabled; see [rendering](../../specs/rendering.md#liquid-glass).
 - `[theme.titlebar]` is strict/defaulted: finite straight RGBA color arrays in
   `0..=1`, height `16..=128` (default 32), controls_side `left|right` (default
   right), show_icon false, show_title true. Its strict `[theme.titlebar.controls]`

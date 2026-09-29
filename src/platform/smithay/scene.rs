@@ -9,7 +9,7 @@ use crate::core::{Desktop, OutputId, Placement, Rect, WindowId, WindowRole};
 use smithay::{
     backend::renderer::{
         element::{
-            Kind,
+            Element, Kind,
             solid::{SolidColorBuffer, SolidColorRenderElement},
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             texture::TextureRenderElement,
@@ -46,6 +46,15 @@ pub(super) struct SceneGroup {
     pub elements: std::ops::Range<usize>,
     pub clip: Rectangle<i32, Physical>,
     pub mask: Option<BlurMask>,
+}
+
+// Optical bounds come from the original tree, never an output-dependent crop.
+fn client_tree_shape(elements: &[WaylandSurfaceRenderElement<GlesRenderer>]) -> Option<Rect> {
+    elements
+        .iter()
+        .map(|e| e.geometry(1.0.into()))
+        .reduce(|a, b| a.merge(b))
+        .map(|r| Rect::new(r.loc.x, r.loc.y, r.size.w, r.size.h))
 }
 
 pub(super) fn logical(rect: Rect) -> Rectangle<i32, Logical> {
@@ -412,6 +421,7 @@ impl Compositor {
                             1.0,
                             Kind::Unspecified,
                         );
+                    let shape = client_tree_shape(&surfaces);
                     let start = elements.len();
                     elements.extend(
                         surfaces
@@ -422,7 +432,7 @@ impl Compositor {
                     groups.push(SceneGroup {
                         elements: start..elements.len(),
                         clip: physical(clip),
-                        mask: Some(BlurMask::ClientAlpha),
+                        mask: shape.map(BlurMask::ClientAlpha),
                     });
                 }
                 let offset = entry.window.geometry().loc;
@@ -572,6 +582,7 @@ impl Compositor {
                                 1.0,
                                 Kind::Unspecified,
                             );
+                        let shape = client_tree_shape(&surfaces);
                         elements.extend(
                             surfaces
                                 .into_iter()
@@ -583,7 +594,7 @@ impl Compositor {
                         groups.push(SceneGroup {
                             elements: start..elements.len(),
                             clip: physical(region.rect),
-                            mask: Some(BlurMask::ClientAlpha),
+                            mask: shape.map(BlurMask::ClientAlpha),
                         });
                     }
                 }

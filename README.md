@@ -120,6 +120,21 @@ filter units, composition, validation, and resource bounds. To see blur through
 an application, configure transparency in that application; for example, set
 Alacritty's `[window] opacity = 0.85` in its own config.
 
+### Liquid glass in nested mode
+
+The [liquid-glass example](examples/liquid-glass.toml) combines glass optics with
+Kawase blur, translucent titlebars, and a translucent foot terminal:
+
+```sh
+cargo build --locked
+target/debug/clear --config examples/liquid-glass.toml --exit-after 120 --command foot -o colors-dark.alpha=0.55
+```
+
+Use Ctrl+Alt+Return for another terminal and Ctrl+Alt+Escape to quit. Edit
+`blur_method`/`blur_radius` to try Gaussian, then Ctrl+Alt+Shift+R to reload.
+Set `[theme.liquid_glass] enabled = false` to compare ordinary blur. See the
+[optical settings](specs/rendering.md#liquid-glass) for supported controls.
+
 ### Server-side titlebars
 
 See [decorations](specs/decorations.md) for negotiation, titlebar configuration,

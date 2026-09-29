@@ -23,7 +23,7 @@ permission to change behavior silently.
 | [Platform and surfaces](platform.md) | CLI, nested outputs, mapping/configures, clipping, layer-shell lifecycle |
 | [Shell IPC](shell.md) | Optional shell boundary, v1 messages, snapshots, validation, transport limits |
 | [Decorations](decorations.md) | XDG/KDE negotiation, titlebar style, controls, SVG and app-icon resources |
-| [Rendering](rendering.md) | Theme, rounded outlines, alpha, backdrop filters, renderer resource bounds |
+| [Rendering](rendering.md) | Theme, rounded outlines, alpha, backdrop filters, liquid glass, renderer resource bounds |
 | [Wallpapers](wallpaper.md) | Image selection, scaling, preparation, reload and failure behavior |
 
 ## Reading and evidence

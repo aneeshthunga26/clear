@@ -1,0 +1,62 @@
+# Nested liquid-glass demo. See specs/rendering.md#liquid-glass for the contract.
+# Run: target/debug/clear --config examples/liquid-glass.toml --exit-after 120 --command foot -o colors-dark.alpha=0.55
+gaps = 24
+
+[[outputs]]
+name = "virtual-1"
+width = 1280
+height = 720
+
+[[workspaces]]
+id = 1
+name = "glass"
+mode = "floating"
+
+[wallpaper]
+path = "aurora.png"
+mode = "fill"
+
+[theme]
+corner_radius = 10
+border_width = 1
+active_border = [0.8, 0.9, 1.0, 0.35]
+inactive_border = [0.6, 0.7, 0.8, 0.15]
+blur_method = "gaussian" # Or "gaussian" with blur_radius = 8.
+blur_radius = 2
+# blur_passes = 3
+
+[theme.liquid_glass]
+enabled = true
+refraction_strength = 32
+edge_width = 44
+liquidity = 1
+dispersion = 0.35
+highlight = 0.35
+
+[theme.titlebar]
+active_background = [0.137, 0.157, 0.204, 0.35]
+inactive_background = [0.106, 0.118, 0.149, 0.45]
+
+[keys]
+leader = "Ctrl+Alt"
+
+[[bindings]]
+key = "leader+Return"
+action = "spawn"
+command = ["foot", "-o", "colors-dark.alpha=0.55"]
+
+[[bindings]]
+key = "leader+Shift+r"
+action = "reload"
+
+[[bindings]]
+key = "leader+f"
+action = "toggle_floating"
+
+[[bindings]]
+key = "leader+q"
+action = "close_focused"
+
+[[bindings]]
+key = "leader+Escape"
+action = "quit"

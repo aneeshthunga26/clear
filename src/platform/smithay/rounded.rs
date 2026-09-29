@@ -271,7 +271,7 @@ pub(super) const SHAPE: &str = r#"
 uniform vec4 outline;
 uniform vec4 radii;
 uniform float target_height;
-float coverage(vec2 point, vec4 box, vec4 r) {
+float shape_distance(vec2 point, vec4 box, vec4 r) {
     vec2 p = point - box.xy;
     vec2 s = box.zw;
     float d = min(min(p.x, s.x - p.x), min(p.y, s.y - p.y));
@@ -283,7 +283,10 @@ float coverage(vec2 point, vec4 box, vec4 r) {
         d = min(d, r.z - length(p - vec2(s.x - r.z, s.y - r.z)));
     if (p.x < r.w && p.y > s.y - r.w)
         d = min(d, r.w - length(p - vec2(r.w, s.y - r.w)));
-    return smoothstep(-0.5, 0.5, d);
+    return d;
+}
+float coverage(vec2 point, vec4 box, vec4 r) {
+    return smoothstep(-0.5, 0.5, shape_distance(point, box, r));
 }
 vec2 desktop_point() { return vec2(gl_FragCoord.x, target_height - gl_FragCoord.y); }
 "#;

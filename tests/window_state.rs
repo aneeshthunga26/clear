@@ -168,7 +168,8 @@ fn unsupported_roles_invalid_ids_and_late_role_changes_are_safe() {
 fn shortcuts_rhai_actions_and_alt_tab_restore_minimized_windows() {
     for config in [
         Config::from_source("[keys]\nleader='Ctrl+Alt'").unwrap(),
-        Config::from_source(include_str!("../examples/vm.toml")).unwrap(),
+        Config::from_source(include_str!("../examples/dual-virtual-monitors.toml")).unwrap(),
+        Config::from_source(include_str!("../examples/single-monitor.toml")).unwrap(),
     ] {
         let bindings = Bindings::new(&config.bindings).unwrap();
         let mods = Modifiers {

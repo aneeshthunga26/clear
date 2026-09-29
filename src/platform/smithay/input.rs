@@ -139,7 +139,9 @@ mod tests {
     }
 
     fn vm_bindings() -> Bindings {
-        let config = Config::from_source(include_str!("../../../examples/vm.toml")).unwrap();
+        let config =
+            Config::from_source(include_str!("../../../examples/dual-virtual-monitors.toml"))
+                .unwrap();
         Bindings::new(&config.bindings).unwrap()
     }
 

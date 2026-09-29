@@ -16,7 +16,8 @@ fn global_blur_defaults_off_and_accepts_bounded_fractional_radii() {
     }
     for example in [
         include_str!("../examples/config.toml"),
-        include_str!("../examples/vm.toml"),
+        include_str!("../examples/dual-virtual-monitors.toml"),
+        include_str!("../examples/single-monitor.toml"),
     ] {
         Config::from_source(example).unwrap();
     }

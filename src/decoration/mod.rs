@@ -4,6 +4,8 @@ use serde::{Deserialize, Deserializer, de::Error};
 
 mod titlebar;
 pub use titlebar::{ControlsSide, TitlebarControls, TitlebarTheme};
+mod liquid_glass;
+pub use liquid_glass::LiquidGlass;
 
 /// Logical-pixel outer corner radii, clockwise from top-left.
 /// Deserialize a scalar or a list of one, two (top/bottom), or four values.
@@ -86,6 +88,8 @@ pub struct Theme {
     pub blur_radius: f32,
     /// Kawase pyramid depth (1..=6); Gaussian always uses two filtering passes.
     pub blur_passes: u8,
+    /// Optional refraction and edge lighting applied to either filtered backdrop.
+    pub liquid_glass: LiquidGlass,
     /// Styling and optional icon resources for negotiated server-side titlebars.
     pub titlebar: TitlebarTheme,
 }
@@ -101,6 +105,7 @@ impl Default for Theme {
             blur_method: BlurMethod::default(),
             blur_radius: 0.0,
             blur_passes: 3,
+            liquid_glass: LiquidGlass::default(),
             titlebar: TitlebarTheme::default(),
         }
     }
@@ -131,6 +136,7 @@ impl Theme {
         if !(1..=6).contains(&self.blur_passes) {
             return Err("theme.blur_passes must be in 1..=6".into());
         }
+        self.liquid_glass.validate()?;
         self.titlebar.validate()
     }
 }

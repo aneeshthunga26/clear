@@ -253,6 +253,7 @@ The smoke runner accepts:
   These are smoke-runner defaults; compositor defaults and filter units are in
   the [rendering specification](../specs/rendering.md).
 - `--passes`: integer `1..=6`, default `3`; forwarded to theme `blur_passes`.
+- `--liquid-glass`: enable default optics and the independent optical oracle.
 
 Ten cases compare radius zero and the selected radius against independent Gaussian
 or Dual Kawase pixel oracles: XDG, rounded SSD, all four layer-shell categories,
@@ -291,6 +292,45 @@ images, fractional radii, depths 1/3/6, clamping, CLI/config propagation, and as
 sampling. These self-tests do not validate GPU pixels. GPU smokes check final captures
 and protocol state, not physical pointer/keyboard gestures; config validation/reload
 is covered by `cargo test --locked --test blur`.
+
+### Liquid-glass validation
+
+Contract: [liquid glass](../specs/rendering.md#liquid-glass). The same fixture can
+apply a scalar Snell-refraction, dispersion and edge-light oracle after either
+filter. It also checks that the expected image differs enough from ordinary blur
+to catch an omitted optical pass. Use separate artifact directories:
+
+```sh
+python3 -B scripts/vm-blur-smoke.py --liquid-glass --method gaussian --radius 2 --case xdg --case rounded-ssd --case layer-top --case popup --case stacking --case output-boundary-odd --artifacts target/glass-gaussian
+python3 -B scripts/vm-blur-smoke.py --liquid-glass --method kawase --artifacts target/glass-kawase
+python3 -B scripts/test_vm_blur_smoke.py
+```
+
+Recorded liquid-glass validation used **private local virtual KWin, not a VM**:
+
+| Configuration | Passed cases | Artifacts |
+| --- | --- | --- |
+| Glass + Gaussian radius 2 | XDG, rounded SSD, top layer, popup, stacking, odd output boundary | `target/glass-gaussian/` |
+| Glass + Kawase radius 2/passes 3 | XDG, rounded SSD | `target/glass-kawase/` |
+| Glass + Kawase radius 2/passes 3 | All four layers, popup, stacking, both output boundaries | `target/glass-kawase-layers/` |
+| Glass disabled, Gaussian radius 2 | XDG, odd output boundary | `target/glass-disabled-regression/` |
+| Glass disabled, Kawase radius 2/passes 3 | XDG, odd output boundary | `target/glass-disabled-kawase/` |
+
+The first Kawase run stopped at an overly strict harness sensitivity threshold;
+its layer pixels matched the oracle. That guard was corrected to the actual
+four-value per-channel tolerance, and the affected case passed in the layers run.
+Radius-zero XDG and odd-boundary captures were byte-identical with glass on/off.
+The full 221 Rust tests, 14 CPU harness/oracle tests, fmt/check/build, and
+rust-analyzer error diagnostics passed. A bounded nested run of
+`examples/liquid-glass.toml` with a real translucent foot client was captured and
+visually inspected in `target/glass-demo/`. No physical input was tested.
+
+Radius-zero captures still bypass optics. CPU schema/reload coverage is in
+`tests/liquid_glass.rs`; halo bounds are tested inline in `blur.rs`. The optical
+oracle uses default glass parameters and opaque lower-scene RGB; it does not
+establish arbitrary optical settings, nonopaque framebuffer alpha, live GPU reload,
+or physical pointer/keyboard behavior. For interactive local testing, use the
+[README nested example](../README.md#liquid-glass-in-nested-mode).
 
 ## Optional shell integration
 

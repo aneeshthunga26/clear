@@ -8,19 +8,19 @@
 unreadable, or invalid startup configuration MUST fall back to the complete safe
 default configuration rather than partly applying invalid declarations.
 
-| Setting | Default | Validation/meaning |
-| --- | --- | --- |
-| `outputs` | `virtual-1`, `virtual-2`, each 800×600 | 1–16 entries; unique nonblank names; integer width/height 1–32768 |
-| `workspaces` | IDs 1–9, names `1`–`9`, mode `columns` | 1–256 declarations; unique positive IDs; nonblank names |
-| Workspace `mode` | `columns` | Nonblank mode string, at most 256 bytes |
-| Workspace `output_modes` | Empty | Configured output names mapped to mode strings |
-| `gaps` | 8 | Integer logical pixels, 0–4096 |
-| `script` | Absent | Optional Rhai path; empty path disables extensions |
-| `keys.leader` | `Super` | Explicit modifier combination; see [input](input.md) |
-| `bindings` | [Default shortcuts](input.md#default-shortcuts) | Flat `key`/`action` maps with action-specific fields |
-| `theme` | [Rendering defaults](rendering.md#theme) | Includes [titlebar](decorations.md#titlebar-configuration) settings |
-| `wallpaper` | No image, `fill` | [Wallpaper selection](wallpaper.md#selection) |
-| `shell` | `wofi` launcher; `waybar` top-layer rule | [Shell rules](#shell-rules) |
+| Setting                  | Default                                         | Validation/meaning                                                  |
+| ------------------------ | ----------------------------------------------- | ------------------------------------------------------------------- |
+| `outputs`                | `virtual-1`, `virtual-2`, each 800×600          | 1–16 entries; unique nonblank names; integer width/height 1–32768   |
+| `workspaces`             | IDs 1–9, names `1`–`9`, mode `columns`          | 1–256 declarations; unique positive IDs; nonblank names             |
+| Workspace `mode`         | `columns`                                       | Nonblank mode string, at most 256 bytes                             |
+| Workspace `output_modes` | Empty                                           | Configured output names mapped to mode strings                      |
+| `gaps`                   | 8                                               | Integer logical pixels, 0–4096                                      |
+| `script`                 | Absent                                          | Optional Rhai path; empty path disables extensions                  |
+| `keys.leader`            | `Super`                                         | Explicit modifier combination; see [input](input.md)                |
+| `bindings`               | [Default shortcuts](input.md#default-shortcuts) | Flat `key`/`action` maps with action-specific fields                |
+| `theme`                  | [Rendering defaults](rendering.md#theme)        | Includes [titlebar](decorations.md#titlebar-configuration) settings |
+| `wallpaper`              | No image, `fill`                                | [Wallpaper selection](wallpaper.md#selection)                       |
+| `shell`                  | `wofi` launcher; `waybar` top-layer rule        | [Shell rules](#shell-rules)                                         |
 
 Unknown fields and malformed typed values MUST be rejected. Supplied output,
 workspace, and binding arrays replace their default declarations. Empty bindings
@@ -40,6 +40,20 @@ file's directory when loading a file. Pure `Config::from_source` leaves them
 relative. Paths do not expand `~` or environment variables. Wallpaper/control
 paths MUST be nonblank and NUL-free. Resource contents are prepared separately
 from TOML parsing.
+
+## Monitor examples
+
+[`single-monitor.toml`](../examples/single-monitor.toml) explicitly replaces the
+output defaults with one `virtual-1` output, initially 1280×720, and retains three
+workspaces without second-output overrides or multi-output shortcuts.
+[`dual-virtual-monitors.toml`](../examples/dual-virtual-monitors.toml) retains the
+two default virtual outputs and the multi-output controls. Both remain nested
+configurations: output geometry follows the [host framebuffer](platform.md#virtual-outputs),
+not physical monitor modes. Switching between them requires restart under the
+[reload contract](#reload).
+
+Evidence: `monitor_examples_select_their_intended_topologies` in
+[configuration tests](../tests/extensions.rs).
 
 ## Startup resources
 

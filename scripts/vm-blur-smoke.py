@@ -9,6 +9,8 @@ input injection, or logged-in desktop is used. Only the existing C fixture build
 Cases capture radius zero and --radius; xdg also captures an omitted blur_radius
 (default-zero regression). Gaussian defaults to radius 12; Kawase to radius 2 and
 3 passes. --seconds bounds EACH capture, not the entire suite.
+Add --liquid-glass to verify refraction, dispersion and edge lighting against
+an independent scalar optical oracle after either filter. Radius zero still bypasses optics.
 Focused Kawase runs: --method kawase --case stacking --case output-boundary-odd
 with --radius 1.5 and --passes 1, 3, or 6 (use separate --artifacts).
 output-boundary-odd filters a 321x241 viewport at (319, 0), beside solid magenta;
@@ -304,7 +306,63 @@ def foreground(case, x, y):
     return value
 
 
-def oracle(case, radius, method="gaussian", passes=3):
+def glass_filter(source, clip, box, radius):
+    """Independent scalar Snell-law oracle for the default liquid-glass settings.
+
+    Coordinates are desktop pixel centers, unlike the shader's flipped UVs.
+    Samples use bilinear interpolation of the already quantized blur result.
+    """
+    bx, by, w, h = box
+    cx, cy, cw, ch = clip
+
+    def distance(x, y):
+        px, py = x - bx, y - by
+        d = min(px, py, w - px, h - py)
+        if radius:
+            qx = min(max(px, radius), w - radius)
+            qy = min(max(py, radius), h - radius)
+            d = min(d, radius - math.hypot(px - qx, py - qy))
+        return d
+
+    def sample(x, y):
+        x, y = max(cx, min(cx + cw - 1, x)), max(cy, min(cy + ch - 1, y))
+        ix, iy = math.floor(x), math.floor(y)
+        fx, fy = x - ix, y - iy
+        return tuple(sum(
+            source(min(ix + dx, cx + cw - 1), min(iy + dy, cy + ch - 1))[c] * wx * wy
+            for dx, wx in ((0, 1 - fx), (1, fx))
+            for dy, wy in ((0, 1 - fy), (1, fy))
+        ) for c in range(3))
+
+    def filtered(x, y):
+        px, py = x + 0.5, y + 0.5
+        d = distance(px, py)
+        if d < 0:
+            return source(x, y)
+        t = max(0, min(1, d / min(24, w / 2, h / 2)))
+        edge = 1 - t * t * (3 - 2 * t)
+        gx = distance(px - 0.5, py) - distance(px + 0.5, py)
+        gy = distance(px, py - 0.5) - distance(px, py + 0.5)
+        length = max(math.hypot(gx, gy), 0.0001)
+        gx, gy = gx / length, gy / length
+        nx = gx * edge * 2 + ((px - bx - w / 2) / (w / 2)) * 0.5 * 0.35
+        ny = gy * edge * 2 + ((py - by - h / 2) / (h / 2)) * 0.5 * 0.35
+        length = math.sqrt(nx * nx + ny * ny + 1)
+        nx, ny, nz = nx / length, ny / length, 1 / length
+        channels = []
+        for c, ior in enumerate((1.5 - 0.15 * 0.15, 1.5, 1.5 + 0.15 * 0.15)):
+            eta = 1 / ior
+            # Refract incident (0,0,-1) at the normalized surface normal.
+            factor = eta * nz - math.sqrt(1 - eta * eta * (1 - nz * nz))
+            channels.append(sample(x + nx * factor * 12, y + ny * factor * 12)[c])
+        light = max(-(gx + gy) / math.sqrt(2), 0)
+        reflection = min(1, 0.25 * (edge * edge * light * 0.6 + (1 - nz) ** 3))
+        return tuple(c * (1 - reflection) + 255 * reflection for c in channels)
+
+    return filtered
+
+
+def oracle(case, radius, method="gaussian", passes=3, liquid_glass=False):
     frame, body = geometry(case)
     clip = viewport(case)
     source = lambda x, y: background(case, x, y)
@@ -313,6 +371,9 @@ def oracle(case, radius, method="gaussian", passes=3):
         if method == "kawase"
         else gaussian(source, clip, radius)
     )
+
+    if liquid_glass and radius:
+        blurred = glass_filter(blurred, clip, frame, 24 if case == "rounded-ssd" else 0)
 
     def expected(x, y):
         original = source(x, y)
@@ -592,7 +653,7 @@ def drive(client, case):
     return checks
 
 
-def config_text(case, radius, method="gaussian", passes=3):
+def config_text(case, radius, method="gaussian", passes=3, liquid_glass=False):
     blur = "" if radius is None else f"blur_radius = {float(radius)}\n"
     # Leave Gaussian defaults implicit to retain coverage of the default method.
     if method != "gaussian" or passes != 3:
@@ -639,6 +700,8 @@ height = 241
 """
     else:
         text += '[[outputs]]\nname = "test"\nwidth = 640\nheight = 480\n'
+    if liquid_glass:
+        text += "[theme.liquid_glass]\nenabled = true\n"
     return text
 
 
@@ -667,7 +730,7 @@ def capture(args, fixture, directory, env, runtime, host_name, case, radius):
     if case in BOUNDARIES:
         png(directory / "right.png", 640 - width, height, lambda x, y: RIGHT)
     config = directory / "config.toml"
-    config.write_text(config_text(case, radius, args.method, args.passes))
+    config.write_text(config_text(case, radius, args.method, args.passes, args.liquid_glass))
     frame = directory / "frame.ppm"
     frame.unlink(missing_ok=True)
     name = f"clear-blur-{os.getpid()}-{case}-{radius}"
@@ -735,6 +798,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
     report = {
         "case": case,
         "method": args.method,
+        "liquid_glass": args.liquid_glass,
         "radius": args.radius,
         "passes": args.passes,
         "viewport": viewport(case),
@@ -750,7 +814,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
             image = capture(
                 args, fixture, directory / label, env, runtime, host_name, case, radius
             )
-            expected = oracle(case, radius or 0, args.method, args.passes)
+            expected = oracle(case, radius or 0, args.method, args.passes, args.liquid_glass)
             report["captures"][label] = check_frame(
                 image, case, radius or 0, args.method, args.passes, expected
             )
@@ -773,6 +837,19 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                 expected,
             )
         )
+        if args.liquid_glass and args.radius:
+            plain = oracle(case, args.radius, args.method, args.passes)
+            differences = [
+                max(abs(a - b) for a, b in zip(expected(x, y), plain(x, y)))
+                for x, y in sample_points(case)
+                if expected(x, y) is not None and plain(x, y) is not None
+            ]
+            # Ensure the oracle grid would actually catch an omitted glass pass.
+            report["glass_sensitive_pixels"] = sum(d > 4 for d in differences)
+            LAYER.require(
+                report["glass_sensitive_pixels"] > 20,
+                "glass test does not distinguish ordinary blur",
+            )
         report["passed"] = True
     except Exception as error:
         report["error"] = str(error)
@@ -803,6 +880,10 @@ def parse_args(argv=None):
         choices=range(1, 7),
         default=3,
         help="Kawase pyramid depth (default: 3); ignored by Gaussian",
+    )
+    parser.add_argument(
+        "--liquid-glass", action="store_true",
+        help="test default glass optics with either blur method",
     )
     parser.add_argument("--binary", default="target/debug/clear")
     parser.add_argument("--artifacts", default="target/vm-blur-smoke")
@@ -903,6 +984,7 @@ def main():
                 json.dumps(
                     {
                         "method": args.method,
+                        "liquid_glass": args.liquid_glass,
                         "radius": args.radius,
                         "passes": args.passes,
                         "selected": selected,

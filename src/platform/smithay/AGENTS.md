@@ -29,7 +29,8 @@ only directory allowed to depend on Smithay and Wayland types.
   placement; resource decoding and filesystem access stay in runtime.
 - `blur.rs`: renderer-owned backdrop scratch textures, bounded separable Gaussian
   and Dual Kawase filters, viewport-pyramid LRU, per-tree composition, and independent
-  coverage/alpha masks.
+  coverage/alpha masks. `liquid_glass.frag` treats either filtered backdrop with
+  bounded optical displacement and lighting in the existing composite pass.
 - `rounded.rs`: fitted outer/inner window outlines, shared body hit masks, and
   renderer-owned rounded shaders with offscreen surface-tree composition.
 
@@ -93,7 +94,9 @@ only directory allowed to depend on Smithay and Wayland types.
   coverage `C` versus premultiplied alpha `A`, with premultiplied foreground `F`:
   `F + (C-A) * blurred + (1-C) * original`. Layers and popups without explicit
   coverage use `A * (1-A)` blur weight to preserve holes. Neither method changes
-  client opacity or adds a glass treatment.
+  client opacity. Optional liquid-glass optics replace only the filtered backdrop;
+  retain original uncropped tree bounds, viewport clamps, premultiplied alpha, and
+  the expanded sampling halo. See [rendering](../../../specs/rendering.md#liquid-glass).
 - Global `blur_method` selects `gaussian` (default) or `kawase` (Dual Kawase).
   Finite `blur_radius` in `0..=32` defaults to zero, bypassing the effect exactly.
   Gaussian uses logical-pixel support and two separable passes. Kawase uses offsets

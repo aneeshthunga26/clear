@@ -130,6 +130,7 @@ pub(super) fn init(
                                 radius,
                                 state.runtime.config.theme.blur_method,
                                 state.runtime.config.theme.blur_passes,
+                                state.runtime.config.theme.liquid_glass,
                                 background,
                             )
                             .map_err(|e| format!("compose backdrop blur: {e}"))?;

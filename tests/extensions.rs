@@ -285,6 +285,26 @@ fn shipped_examples_work() {
 }
 
 #[test]
+fn monitor_examples_select_their_intended_topologies() {
+    let single = Config::from_source(include_str!("../examples/single-monitor.toml")).unwrap();
+    assert_eq!(single.outputs.len(), 1);
+    assert_eq!(single.outputs[0].name, "virtual-1");
+    assert_eq!(
+        (single.outputs[0].width, single.outputs[0].height),
+        (1280, 720)
+    );
+    assert_eq!(single.workspaces.len(), 3);
+    assert!(single.workspaces.iter().all(|w| w.output_modes.is_empty()));
+    Bindings::new(&single.bindings).unwrap();
+
+    let dual = Config::from_source(include_str!("../examples/dual-virtual-monitors.toml")).unwrap();
+    assert_eq!(dual.outputs.len(), 2);
+    assert_eq!(dual.outputs[0].name, "virtual-1");
+    assert_eq!(dual.outputs[1].name, "virtual-2");
+    Bindings::new(&dual.bindings).unwrap();
+}
+
+#[test]
 fn layouts_can_initialize_unconfigured_window_geometry() {
     let mut host = ScriptHost::from_source(include_str!("../examples/columns.rhai")).unwrap();
     let mut ctx = context();
