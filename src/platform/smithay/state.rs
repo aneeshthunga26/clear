@@ -9,6 +9,8 @@ use smithay::{
     output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        wayland_protocols::xdg::shell::server::xdg_toplevel::WmCapabilities,
+        wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode,
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -20,12 +22,17 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
+        shell::{
+            kde::decoration::KdeDecorationState,
+            wlr_layer::WlrLayerShellState,
+            xdg::{XdgShellState, decoration::XdgDecorationState},
+        },
         shm::ShmState,
         socket::ListeningSocketSource,
     },
 };
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     process::{Child, Command},
@@ -36,6 +43,10 @@ use std::{
 pub(super) struct ManagedWindow {
     pub window: Window,
     pub mapped: bool,
+    // XDG permits maximize requests before the first buffer enters desktop policy.
+    pub initial_maximized: bool,
+    // Exact frame hints survive hiding and decoration changes, including tiny frames.
+    pub last_frame: Cell<Option<Rect>>,
 }
 
 pub(super) struct OutputRegion {
@@ -48,7 +59,7 @@ pub(super) struct Drag {
     pub window: WindowId,
     pub origin: Point<f64, Logical>,
     pub rect: Rect,
-    pub edges: u32,
+    pub resize: Option<crate::core::ResizeSession>,
     pub button: u32,
 }
 
@@ -76,8 +87,12 @@ pub(super) struct Compositor {
     pub suppressed_keys: BTreeSet<u32>,
     pub suppressed_buttons: BTreeSet<u32>,
     pub drag: Option<Drag>,
+    pub titlebar_press: Option<(WindowId, super::titlebar::TitlebarPart)>,
+    pub titlebar_drag: Option<(WindowId, Point<f64, Logical>)>,
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub _xdg_decoration_state: XdgDecorationState,
+    pub kde_decoration_state: KdeDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub _output_manager_state: OutputManagerState,
@@ -128,7 +143,12 @@ impl Compositor {
             runtime,
             socket_name,
             compositor_state: CompositorState::new::<Self>(&dh),
-            xdg_shell_state: XdgShellState::new::<Self>(&dh),
+            xdg_shell_state: XdgShellState::new_with_capabilities::<Self>(
+                &dh,
+                [WmCapabilities::Maximize, WmCapabilities::Minimize],
+            ),
+            _xdg_decoration_state: XdgDecorationState::new::<Self>(&dh),
+            kde_decoration_state: KdeDecorationState::new::<Self>(&dh, KdeDefaultMode::Server),
             layer_shell_state: WlrLayerShellState::new::<Self>(&dh),
             shm_state: ShmState::new::<Self>(&dh, vec![]),
             _output_manager_state: OutputManagerState::new_with_xdg_output::<Self>(&dh),
@@ -156,6 +176,8 @@ impl Compositor {
             suppressed_keys: BTreeSet::new(),
             suppressed_buttons: BTreeSet::new(),
             drag: None,
+            titlebar_press: None,
+            titlebar_drag: None,
             popups: PopupManager::default(),
         })
     }

@@ -100,17 +100,19 @@ wrong types, duplicate fields, and unsupported versions are rejected.
 
 Each line above is a separate request. Available requests:
 
-| `type` | Additional fields | Behavior |
-| --- | --- | --- |
-| `snapshot` | None | Return a complete current state, without subscribing. |
-| `subscribe` | None | Return a complete state and subscribe to subsequent changes. Idempotent. |
-| `focus_output` | `output` | Focus a connected output. |
-| `switch_workspace` | `output`, `workspace` | Select the output, then switch its group using core workspace semantics. |
-| `focus_window` | `window` | Focus a mapped window; may reveal its hidden workspace. |
-| `set_mode` | `output`, `mode` | Set that output's override for its currently visible workspace, without stealing focus. |
-| `clear_mode` | `output` | Clear that override, retaining workspace policy. |
-| `stretch` | `output` | Focus the output and stretch its workspace across all outputs. |
-| `split` | `output` | Focus the output and split its group. |
+| `type`             | Additional fields               | Behavior                                                                                             |
+| ------------------ | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `snapshot`         | None                            | Return a complete current state, without subscribing.                                                |
+| `subscribe`        | None                            | Return a complete state and subscribe to subsequent changes. Idempotent.                             |
+| `focus_output`     | `output`                        | Focus a connected output.                                                                            |
+| `switch_workspace` | `output`, `workspace`           | Select the output, then switch its group using core workspace semantics.                             |
+| `focus_window`     | `window`                        | Restore a minimized window and focus it; may reveal its hidden workspace.                            |
+| `set_maximized`    | `window`, `maximized` (boolean) | Set maximize state on a normal window without explicitly changing focus or its saved floating state. |
+| `set_minimized`    | `window`, `minimized` (boolean) | Hide/restore a normal window without changing workspace; focus is repaired if necessary.             |
+| `set_mode`         | `output`, `mode`                | Set that output's override for its currently visible workspace, without stealing focus.              |
+| `clear_mode`       | `output`                        | Clear that override, retaining workspace policy.                                                     |
+| `stretch`          | `output`                        | Focus the output and stretch its workspace across all outputs.                                       |
+| `split`            | `output`                        | Focus the output and split its group.                                                                |
 
 Modes use core parsing, with canonical names in responses: `floating`,
 `scrolling`, `master_stack`, `columns`, `rows`, `grid`, `spiral`, `monocle`, or
@@ -148,13 +150,19 @@ recover; there is no resume cursor and clients should not replay stale commands.
   in workspace order, including windows on hidden workspaces.
 - `groups`: `{outputs, workspace}` describing which outputs jointly present a
   workspace. Do not infer presentation from a window's home output.
-- `windows`: `{id,title,app_id,workspace,output,role,floating,focused}`.
+- `windows`: `{id,title,app_id,workspace,output,role,floating,maximized,minimized,focused}`.
   `output` is its saved home or null; `role` is `normal` or `launcher`.
   `floating` is its saved exception flag, not its effective layout mode.
+  `maximized` fills the home output's usable area without changing that flag.
+  `minimized` windows remain in snapshots/docks but have no rendered placement;
+  explicit focus restores them and preserves their maximized state. These boolean
+  fields and the corresponding commands are additive extensions of v1. Launcher
+  targets reject maximize/minimize commands without mutating state.
 - `focused_output` and `focused_window`: IDs or null.
 - `switcher`: null or `{output,windows,selected}` while Alt+Tab is held.
   The candidate IDs belong to the active workspace; focus remains unchanged
-  until the physical Alt release. Escape cancels without changing focus.
+  until the physical Alt release. Minimized normal windows remain candidates;
+  accepting one restores it. Escape cancels without changing focus or minimization.
 
 ### Resource limits
 

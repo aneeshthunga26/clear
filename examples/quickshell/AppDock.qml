@@ -95,13 +95,18 @@ Item {
         PopupWindow {
             id: preview
             visible: !!dock.hoveredGroup && dock.hoveredGroup.windows.length > 0
-            color: "#111827"
+            color: "transparent"
             implicitWidth: 310
             implicitHeight: Math.min(360, 42 + (dock.hoveredGroup ? dock.hoveredGroup.windows.length : 0) * 62)
             anchor.window: dock.panelWindow
             anchor.rect.x: dock.previewX
             anchor.rect.y: 36
             grabFocus: false
+
+            Rectangle {
+                anchors.fill: parent
+                color: "#e6111827"
+            }
 
             Column {
                 anchors.fill: parent
@@ -121,6 +126,7 @@ Item {
                     spacing: 4
                     model: dock.hoveredGroup ? dock.hoveredGroup.windows : []
                     delegate: Rectangle {
+                        id: windowCard
                         required property var modelData
                         width: ListView.view.width
                         height: 56
@@ -129,6 +135,7 @@ Item {
                         Column {
                             anchors.fill: parent
                             anchors.margins: 7
+                            anchors.rightMargin: 76
                             spacing: 2
                             Text {
                                 width: parent.width
@@ -139,6 +146,7 @@ Item {
                             }
                             Text {
                                 text: "Workspace " + modelData.workspace
+                                    + (modelData.minimized ? " · minimized" : modelData.maximized ? " · maximized" : "")
                                 color: "#94a3b8"
                                 font.pixelSize: 11
                             }
@@ -152,6 +160,33 @@ Item {
                             onClicked: {
                                 dock.shellBridge.command({type: "focus_window", window: modelData.id});
                                 dock.hoveredApp = "";
+                            }
+                        }
+                        Row {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 6
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 3
+                            PanelButton {
+                                text: windowCard.modelData.minimized ? "↗" : "−"
+                                description: windowCard.modelData.minimized ? "Restore window" : "Minimize window"
+                                onClicked: {
+                                    if (windowCard.modelData.minimized)
+                                        dock.shellBridge.command({type: "focus_window", window: windowCard.modelData.id});
+                                    else
+                                        dock.shellBridge.command({type: "set_minimized", window: windowCard.modelData.id, minimized: true});
+                                    dock.hoveredApp = "";
+                                }
+                            }
+                            PanelButton {
+                                text: windowCard.modelData.maximized ? "❐" : "□"
+                                description: windowCard.modelData.maximized ? "Unmaximize window" : "Maximize window"
+                                onClicked: {
+                                    dock.shellBridge.command({type: "set_maximized", window: windowCard.modelData.id,
+                                        maximized: !windowCard.modelData.maximized});
+                                    dock.shellBridge.command({type: "focus_window", window: windowCard.modelData.id});
+                                    dock.hoveredApp = "";
+                                }
                             }
                         }
                     }

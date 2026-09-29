@@ -1,7 +1,8 @@
 # Clear uses $XDG_CONFIG_HOME/clear/config.toml, or ~/.config/clear/config.toml.
 # Missing fields use defaults. Invalid config falls back to all defaults at startup.
 # A supplied outputs/workspaces/bindings array REPLACES that whole default array.
-# Omit bindings to retain all 29 default shortcuts (including workspaces 1..9).
+# Omit bindings to retain all 32 default shortcuts (including workspaces 1..9).
+# leader+Up toggles maximize; leader+Down minimizes. Alt+Tab/dock focus restores.
 # Relative script paths resolve against the directory containing config.toml.
 gaps = 8
 script = "columns.rhai"
@@ -23,11 +24,50 @@ launcher_app_ids = ["wofi"]
 namespace = "waybar"
 layer = "top"
 
+# Optional PNG/JPEG wallpaper, independent of Quickshell.
+# Paths are relative to this config directory (or absolute); no ~/$VAR expansion.
+# Reload rereads images; failed reloads retain the last good configuration.
+# [wallpaper]
+# path = "wallpapers/desktop.png"
+# mode = "fill" # fill, fit, stretch, center
+# [wallpaper.outputs."virtual-2"]
+# path = "wallpapers/second.jpg"
+# mode = "fit" # Omitted fields inherit the global wallpaper selection.
+
 [theme]
 background = [0.07, 0.08, 0.10, 1.0]
 active_border = [0.40, 0.65, 0.95, 1.0]
 inactive_border = [0.22, 0.24, 0.28, 1.0]
 border_width = 2
+# Logical pixels: scalar or [all], [top, bottom], [top-left, top-right, bottom-right, bottom-left].
+corner_radius = 0 # Square by default. Try 12, [16, 4], or [16, 12, 4, 0].
+# Global backdrop filter for windows, panels, and popups; never changes client opacity.
+blur_method = "gaussian" # gaussian (default), kawase (Dual Kawase)
+blur_radius = 0 # Finite 0..32; zero disables either method.
+blur_passes = 3 # Kawase pyramid depth, 1..6; ignored by Gaussian.
+# Gaussian radius is logical-pixel kernel support. Kawase radius is sample offset
+# in each pyramid level's pixels; try method="kawase", radius=2, passes=3.
+
+# Applies only to negotiated server-side decorations, not client-side header bars.
+[theme.titlebar]
+# Straight RGBA: exactly four finite channels in 0..1; near-default dark visuals.
+active_background = [0.137, 0.157, 0.204, 1.0]
+inactive_background = [0.106, 0.118, 0.149, 1.0]
+active_foreground = [0.937, 0.953, 0.980, 1.0]
+inactive_foreground = [0.682, 0.718, 0.780, 1.0]
+height = 32 # Integer logical pixels, 16..128; default 32. Inset, not saved geometry.
+controls_side = "right" # Default; "left" mirrors close/maximize/minimize order.
+show_icon = false # Default; true uses bounded desktop-entry lookup or a generic icon.
+show_title = true # Default; false hides text without hiding controls.
+# Optional bounded local SVGs, relative to this config (or absolute), no ~/$VAR expansion.
+# Create the files before uncommenting. SVG colors/alpha are preserved, not recolored.
+# Omitted controls use built-ins; omitted restore first falls back to maximize SVG.
+# Startup resource errors use built-ins; failed reload retains the entire last-good set.
+# [theme.titlebar.controls]
+# minimize = "titlebar/minimize.svg"
+# maximize = "titlebar/maximize.svg"
+# restore = "titlebar/restore.svg"
+# close = "titlebar/close.svg"
 
 [[outputs]]
 name = "virtual-1"
@@ -42,6 +82,9 @@ height = 600
 # Float positions are unbounded; panel reservations retile without moving saved floats.
 # Built-in modes: floating, scrolling, master_stack, columns, rows, grid,
 # spiral (also fibonacci or dwindle), and monocle.
+# Super+right drag resizes floats or supported internal tile boundaries without
+# detaching. Spiral/monocle/script tiles do not resize; floating exceptions do.
+# Pointer gestures use Super independently of keys.leader.
 # Omitting workspaces gives nine workspaces, IDs 1..9, with mode "columns".
 # To replace the workspace list with a script-driven workspace, uncomment:
 # [[workspaces]]
@@ -87,5 +130,5 @@ height = 600
 #
 # Other tags: focus_next, focus_previous, cycle_output, move_to_output (output),
 # set_output_mode (mode), clear_output_mode, cycle_mode, stretch_all, unstretch,
-# toggle_floating, scroll (amount), close_focused, reload.
+# toggle_floating, toggle_maximized, minimize, scroll (amount), close_focused, reload.
 # Built-in mode names and output IDs are resolved by the platform.

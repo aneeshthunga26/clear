@@ -19,7 +19,7 @@ PanelWindow {
     implicitWidth: opened ? Math.min(390, targetScreen ? targetScreen.width - 16 : 390) : 1
     implicitHeight: opened ? Math.min(530, targetScreen ? targetScreen.height - 54 : 530) : 1
     exclusiveZone: 0
-    color: opened ? "#111827" : "transparent"
+    color: "transparent"
     mask: Region { width: center.opened ? center.width : 0; height: center.opened ? center.height : 0 }
     WlrLayershell.namespace: "clear-notifications"
     WlrLayershell.layer: WlrLayer.Overlay
@@ -27,6 +27,12 @@ PanelWindow {
 
     function toggle() {
         opened = !opened;
+    }
+
+    Rectangle {
+        visible: center.opened
+        anchors.fill: parent
+        color: "#e6111827"
     }
 
     ColumnLayout {

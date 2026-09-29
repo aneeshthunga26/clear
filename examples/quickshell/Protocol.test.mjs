@@ -31,6 +31,8 @@ test("newline requests preserve string IDs, u32 request IDs, and exact fields", 
         { type: "focus_output", output: state.outputs[0].id },
         { type: "switch_workspace", output: "2", workspace: "1" },
         { type: "focus_window", window: state.focused_window },
+        { type: "set_maximized", window: state.focused_window, maximized: true },
+        { type: "set_minimized", window: state.focused_window, minimized: false },
         { type: "set_mode", output: "2", mode: "script:columns" },
         { type: "clear_mode", output: "2" },
         { type: "stretch", output: "2" },
@@ -42,6 +44,18 @@ test("newline requests preserve string IDs, u32 request IDs, and exact fields", 
         assert.equal(line.split("\n").length, 2);
         assert.deepEqual(JSON.parse(line), { version: 1, id: 4294967295, request });
     }
+});
+
+test("minimized windows stay in the dock but not the visible-window list", () => {
+    const s = copyState();
+    s.windows[0].role = "normal";
+    s.windows[0].minimized = true;
+    s.windows[0].maximized = true;
+    assert.equal(protocol.visibleWindows(s, s.outputs[0]).length, 0);
+    const groups = protocol.appGroups(s, s.outputs[0], []);
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].windows[0].minimized, true);
+    assert.equal(groups[0].windows[0].maximized, true);
 });
 
 test("snapshot and full state update use the same state shape", () => {

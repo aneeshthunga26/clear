@@ -15,7 +15,10 @@ mode controls with SVG icons, a StatusNotifier tray, and a notification button.
 Hover an application to see cards for all of its open windows, including windows
 on other workspaces; click a card to reveal and focus it. Left click an app icon
 to focus its first window or launch its desktop entry. Right click to pin or unpin
-it. Pins are saved in Quickshell's per-shell state directory. The mode button
+it. Window cards have minimize/restore and maximize/unmaximize buttons, and show
+minimized/maximized status. Minimized windows remain in the dock; selecting one
+restores it. Maximizing respects panel reservations and preserves saved geometry
+and tiling state. Pins are saved in Quickshell's per-shell state directory. The mode button
 cycles built-in modes and the reset button clears the current output override.
 Rows, grid, and the Fibonacci-style spiral have their own mode icons.
 
@@ -46,6 +49,44 @@ The hover cards show window titles, app IDs, and workspaces. They are not live
 pixel thumbnails: Clear does not yet offer a toplevel capture protocol. The
 launcher uses Quickshell's desktop-entry index, so only installed desktop entries
 appear. Notification history exists for the life of the Quickshell process.
+
+## Translucent panels
+
+The top bar uses `#e60f172a`; launcher, notification, app-preview, and Alt+Tab
+panel backgrounds use `#e6111827` (QML `#AARRGGBB`). Alpha `0xe6` is 230/255,
+about 90.2% opacity. Window backing is transparent, and only the background
+rectangles have alpha: text, icons, controls, and window/notification cards stay
+opaque. Closed overlay layers remain fully transparent.
+
+Transparency is useful on its own and does not require blur. For optional
+compositor-side backdrop blur in Clear, set this in Clear's TOML configuration
+(merge into an existing `[theme]` table if present):
+
+```toml
+[theme]
+blur_method = "kawase"
+blur_radius = 2
+blur_passes = 3
+```
+
+These are the settings in `examples/vm.toml`; blur is not required to use this shell.
+`blur_method` is global and accepts `"gaussian"` (default) or `"kawase"` (Dual Kawase).
+`blur_radius` accepts finite values from 0 through 32, including fractions, and
+defaults to 0 (disables either method). Gaussian measures kernel support in logical
+pixels (try radius 12); Kawase measures sample offsets in source pyramid texels,
+not Gaussian-equivalent pixels. `blur_passes` is an integer from 1 through 6,
+default 3: Kawase downsamples through ceil-half levels and upsamples through the
+same levels in reverse, stopping early at `1×1`. Gaussian ignores this setting but
+it is always validated, even when blur is disabled.
+
+Clear owns the blur; the QML adds no blur shaders or effects. Neither method adds
+a glass treatment or changes client opacity: the panel colors and alpha described
+above remain client-owned, and foreground text/controls stay sharp. See
+[the blur test workflow](../../docs/vm-testing.md#backdrop-blur) for method/radius/depth
+options, oracle self-tests, and recorded results. Kawase passed all ten GPU cases
+at radius 2/passes 3 on private local virtual KWin (not a VM), plus
+`stacking`/`output-boundary-odd` at radius 1.5/passes 1 and 6. These were compositor
+fixture checks, not Quickshell or physical input tests.
 
 Modules:
 

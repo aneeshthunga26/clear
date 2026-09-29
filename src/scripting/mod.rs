@@ -451,6 +451,8 @@ fn decode_action(value: Dynamic) -> Result<Action, String> {
         "stretch_all" => Action::StretchAll,
         "unstretch" => Action::Unstretch,
         "toggle_floating" => Action::ToggleFloating,
+        "toggle_maximized" => Action::ToggleMaximized,
+        "minimize" => Action::Minimize,
         "scroll" => Action::Scroll {
             amount: take_i32(&mut map, "amount")?,
         },

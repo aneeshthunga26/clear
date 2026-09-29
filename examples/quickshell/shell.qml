@@ -41,10 +41,15 @@ Scope {
             anchors { top: true; left: true; right: true }
             implicitHeight: 36
             exclusiveZone: 36
-            color: "#0f172a"
+            color: "transparent"
             WlrLayershell.namespace: "clear-example-panel"
             WlrLayershell.layer: WlrLayer.Top
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+
+            Rectangle {
+                anchors.fill: parent
+                color: "#e60f172a"
+            }
 
             RowLayout {
                 anchors.fill: parent

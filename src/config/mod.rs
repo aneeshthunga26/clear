@@ -13,7 +13,9 @@ use std::{
 use serde::Deserialize;
 
 mod shell;
+mod wallpaper;
 pub use shell::{PanelLayer, PanelRule, ShellConfig};
+pub use wallpaper::{WallpaperConfig, WallpaperMode, WallpaperOverride};
 
 use crate::{
     decoration::Theme,
@@ -67,6 +69,8 @@ pub struct Config {
     pub script: Option<PathBuf>,
     /// Static renderer styling.
     pub theme: Theme,
+    /// Compositor-owned images behind all client surfaces.
+    pub wallpaper: WallpaperConfig,
     /// Launcher roles and namespace-specific panel policies.
     pub shell: ShellConfig,
 }
@@ -93,6 +97,7 @@ impl Default for Config {
             gaps: 8,
             script: None,
             theme: Theme::default(),
+            wallpaper: WallpaperConfig::default(),
             shell: ShellConfig::default(),
         }
     }
@@ -107,6 +112,7 @@ struct Source {
     gaps: i32,
     script: Option<PathBuf>,
     theme: Theme,
+    wallpaper: WallpaperConfig,
     shell: ShellConfig,
     keys: Keys,
 }
@@ -121,6 +127,7 @@ impl Default for Source {
             gaps: config.gaps,
             script: config.script,
             theme: config.theme,
+            wallpaper: config.wallpaper,
             shell: config.shell,
             keys: Keys::default(),
         }
@@ -175,11 +182,7 @@ impl Config {
         };
         match Self::from_source(&source) {
             Ok(mut config) => {
-                if let Some(script) = config.script.as_mut() {
-                    if script.is_relative() {
-                        *script = path.parent().unwrap_or(Path::new(".")).join(&*script);
-                    }
-                }
+                config.resolve_paths(path.parent().unwrap_or(Path::new(".")));
                 config
             }
             Err(error) => {
@@ -191,8 +194,9 @@ impl Config {
 
     /// Parse and validate TOML without filesystem access or environment mutation.
     ///
-    /// An empty script path disables extensions. Relative script paths are left
-    /// relative here; `load` resolves them against the config file directory.
+    /// An empty script path disables extensions; empty wallpaper/control paths are invalid.
+    /// Resource paths stay relative here; file loading resolves them against the
+    /// config directory without shell expansion.
     pub fn from_source(source: &str) -> Result<Self, String> {
         let mut source: Source = toml::from_str(source).map_err(|error| error.to_string())?;
         input::resolve_leader(&mut source.bindings, &source.keys.leader)?;
@@ -203,10 +207,22 @@ impl Config {
             gaps: source.gaps,
             script: source.script.filter(|p| !p.as_os_str().is_empty()),
             theme: source.theme,
+            wallpaper: source.wallpaper,
             shell: source.shell,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Resolve resource paths relative to the config directory, without shell expansion.
+    pub fn resolve_paths(&mut self, directory: &Path) {
+        if let Some(script) = self.script.as_mut() {
+            if script.is_relative() {
+                *script = directory.join(&*script);
+            }
+        }
+        self.wallpaper.resolve_paths(directory);
+        self.theme.titlebar.controls.resolve_paths(directory);
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -250,6 +266,7 @@ impl Config {
         if !(0..=4096).contains(&self.gaps) {
             return Err("gaps must be in 0..=4096".into());
         }
+        self.wallpaper.validate(&outputs)?;
         self.theme.validate()?;
         self.shell.validate()?;
         Bindings::new(&self.bindings)?;

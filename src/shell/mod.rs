@@ -44,6 +44,14 @@ pub enum RequestKind {
     FocusWindow {
         window: String,
     },
+    SetMaximized {
+        window: String,
+        maximized: bool,
+    },
+    SetMinimized {
+        window: String,
+        minimized: bool,
+    },
     SetMode {
         output: String,
         mode: String,
@@ -138,6 +146,8 @@ pub struct WindowSnapshot {
     pub role: String,
     /// Saved per-window floating flag, independent of workspace mode or role.
     pub floating: bool,
+    pub maximized: bool,
+    pub minimized: bool,
     pub focused: bool,
 }
 
@@ -204,6 +214,8 @@ pub fn snapshot(runtime: &Runtime) -> Snapshot {
                 }
                 .into(),
                 floating: window.floating,
+                maximized: window.maximized,
+                minimized: window.minimized,
                 focused: desktop.focused_window() == Some(window.id),
             })
             .collect(),
@@ -284,6 +296,26 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
                 .map(|window| window.id)
                 .ok_or_else(|| format!("unknown window {window:?}"))?;
             runtime.desktop.command(Command::Focus(window));
+        }
+        RequestKind::SetMaximized { window, .. } | RequestKind::SetMinimized { window, .. } => {
+            let window = runtime
+                .desktop
+                .windows()
+                .find(|candidate| candidate.id.0.to_string() == *window)
+                .ok_or_else(|| format!("unknown window {window:?}"))?;
+            if window.role != WindowRole::Normal {
+                return Err("launcher windows remain client-sized and cannot be minimized".into());
+            }
+            let command = match &request.request {
+                RequestKind::SetMaximized { maximized, .. } => {
+                    Command::SetMaximized(window.id, *maximized)
+                }
+                RequestKind::SetMinimized { minimized, .. } => {
+                    Command::SetMinimized(window.id, *minimized)
+                }
+                _ => unreachable!(),
+            };
+            runtime.desktop.command(command);
         }
         RequestKind::SetMode { output, .. } | RequestKind::ClearMode { output } => {
             let output = output_id(runtime, output)?;

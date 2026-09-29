@@ -57,7 +57,7 @@ function visibleWindows(state, output) {
     var group = groupForOutput(state, output);
     if (!group) return [];
     return state.windows.filter(function(window) {
-        return window.workspace === group.workspace && window.role === "normal";
+        return window.workspace === group.workspace && window.role === "normal" && !window.minimized;
     });
 }
 

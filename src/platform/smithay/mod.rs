@@ -1,17 +1,77 @@
 //! Smithay objects and Wayland protocol state never escape this adapter.
 
 mod backend;
+mod blur;
+mod decorations;
 mod input;
 mod layers;
 mod protocols;
+mod rounded;
 mod scene;
 mod shell;
 mod state;
+mod titlebar;
+mod wallpaper;
 
 use crate::runtime::{Options, Runtime};
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 use state::Compositor;
 use std::time::Duration;
+
+// Equivalent to Smithay's delegate_dispatch2!, with the missing decoration
+// destruction notification forwarded before any subsequent surface commit.
+impl<I, UserData> smithay::reexports::wayland_server::Dispatch<I, UserData> for Compositor
+where
+    I: smithay::reexports::wayland_server::Resource + 'static,
+    UserData: smithay::wayland::Dispatch2<I, Self>,
+{
+    fn request(
+        state: &mut Self,
+        client: &smithay::reexports::wayland_server::Client,
+        resource: &I,
+        request: I::Request,
+        data: &UserData,
+        handle: &smithay::reexports::wayland_server::DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        data.request(state, client, resource, request, handle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: smithay::reexports::wayland_server::backend::ClientId,
+        resource: &I,
+        data: &UserData,
+    ) {
+        data.destroyed(state, client, resource);
+        if let Some(decoration) = (resource as &dyn std::any::Any).downcast_ref::<
+            smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::ZxdgToplevelDecorationV1,
+        >() {
+            state.xdg_decoration_destroyed(decoration);
+        }
+    }
+}
+
+impl<I, UserData> smithay::reexports::wayland_server::GlobalDispatch<I, UserData> for Compositor
+where
+    I: smithay::reexports::wayland_server::Resource,
+    UserData: smithay::wayland::GlobalDispatch2<I, Self>,
+{
+    fn bind(
+        state: &mut Self,
+        handle: &smithay::reexports::wayland_server::DisplayHandle,
+        client: &smithay::reexports::wayland_server::Client,
+        resource: smithay::reexports::wayland_server::New<I>,
+        data: &UserData,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        data.bind(state, handle, client, resource, data_init);
+    }
+
+    fn can_view(client: smithay::reexports::wayland_server::Client, data: &UserData) -> bool {
+        data.can_view(&client)
+    }
+}
 
 /// Run the nested compositor until closed, a quit action, or the optional test deadline.
 pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {

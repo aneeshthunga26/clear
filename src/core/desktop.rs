@@ -7,14 +7,14 @@ use crate::management;
 #[derive(Debug, Clone)]
 pub struct Desktop {
     outputs: BTreeMap<OutputId, Output>,
-    windows: BTreeMap<WindowId, Window>,
-    workspaces: BTreeMap<WorkspaceId, Workspace>,
+    pub(super) windows: BTreeMap<WindowId, Window>,
+    pub(super) workspaces: BTreeMap<WorkspaceId, Workspace>,
     groups: Vec<OutputGroup>,
     detached_workspaces: BTreeMap<OutputId, WorkspaceId>,
     focused_output: Option<OutputId>,
     focused_window: Option<WindowId>,
     pending_workspace: WorkspaceId,
-    gaps: i32,
+    pub(super) gaps: i32,
 }
 
 impl Default for Desktop {
@@ -189,6 +189,8 @@ impl Desktop {
                 role: WindowRole::default(),
                 committed_size: None,
                 floating: false,
+                maximized: false,
+                minimized: false,
                 floating_rect,
             },
         );
@@ -211,6 +213,13 @@ impl Desktop {
                     region.focused = None;
                 }
             }
+            for workspace in self.workspaces.values_mut() {
+                for region in workspace.regions.values_mut() {
+                    for sizing in region.sizing.values_mut() {
+                        sizing.remove(id);
+                    }
+                }
+            }
             self.settle(true);
         }
     }
@@ -229,6 +238,10 @@ impl Desktop {
         if let Some(window) = self.windows.get_mut(&id) {
             if window.role != role {
                 window.role = role;
+                if role == WindowRole::Launcher {
+                    window.maximized = false;
+                    window.minimized = false;
+                }
                 self.settle(false);
             }
         }
@@ -278,7 +291,10 @@ impl Desktop {
     /// Applies a command, returning only host-owned side effects.
     pub fn command(&mut self, command: Command) -> Vec<Effect> {
         let valid = match &command {
-            Command::Focus(id) | Command::SetFloatingRect(id, _) => self.windows.contains_key(id),
+            Command::Focus(id)
+            | Command::SetFloatingRect(id, _)
+            | Command::SetMaximized(id, _)
+            | Command::SetMinimized(id, _) => self.windows.contains_key(id),
             Command::FocusOutput(id) | Command::MoveToOutput(id) => self.outputs.contains_key(id),
             Command::SwitchWorkspace(id) | Command::MoveToWorkspace(id) => {
                 self.workspaces.contains_key(id)
@@ -384,6 +400,36 @@ impl Desktop {
                     window.floating = !window.floating;
                 }
             }
+            Command::ToggleMaximized => {
+                if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
+                    if window.role == WindowRole::Normal {
+                        window.maximized = !window.maximized;
+                    }
+                }
+            }
+            Command::MinimizeFocused => {
+                if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
+                    if window.role == WindowRole::Normal {
+                        window.minimized = true;
+                    }
+                }
+            }
+            Command::SetMaximized(id, maximized) => {
+                reveal = false;
+                if let Some(window) = self.windows.get_mut(&id) {
+                    if window.role == WindowRole::Normal {
+                        window.maximized = maximized;
+                    }
+                }
+            }
+            Command::SetMinimized(id, minimized) => {
+                reveal = false;
+                if let Some(window) = self.windows.get_mut(&id) {
+                    if window.role == WindowRole::Normal {
+                        window.minimized = minimized;
+                    }
+                }
+            }
             Command::Scroll(delta) => {
                 reveal = false;
                 if let Some(output) = self.focused_output {
@@ -419,8 +465,9 @@ impl Desktop {
     /// Computes each region independently, calling the host only for script modes.
     /// `None` or a result with missing, duplicate, or foreign windows falls back to master-stack.
     /// The host owns script evaluation and detailed geometry validation. Floating exceptions
-    /// and launchers bypass the callback. Globally, normal tiles precede normal floats, then
-    /// launchers; focus raises a window only within its floating or launcher stratum.
+    /// and launchers bypass the callback, as do maximized and minimized windows.
+    /// Tiles precede floats and maximized windows; launchers remain above them all.
+    /// Focus can raise a normal window above a maximized neighbor on its output.
     pub fn placements_with(
         &self,
         mut custom: impl FnMut(&Mode, &LayoutContext) -> Option<Vec<Placement>>,
@@ -441,7 +488,13 @@ impl Desktop {
             } else {
                 None
             };
-            let mut region = scripted.unwrap_or_else(|| management::arrange(mode, &context));
+            let mut region = scripted.unwrap_or_else(|| {
+                management::arrange_with_sizing(
+                    mode,
+                    &context,
+                    self.layout_sizing(workspace, output, mode),
+                )
+            });
             for placement in &mut region {
                 placement.focused = self.focused_window == Some(placement.window);
                 placement.tiled = !matches!(mode, Mode::Floating);
@@ -452,6 +505,7 @@ impl Desktop {
                 self.region_windows(workspace, output)
                     .filter(|window| {
                         window.role == WindowRole::Launcher
+                            || window.maximized
                             || (window.floating && !matches!(mode, Mode::Floating))
                     })
                     .map(|window| {
@@ -461,13 +515,15 @@ impl Desktop {
                                 window.floating_rect.height,
                             ));
                             metadata.area.centered_unbounded(width, height)
+                        } else if window.maximized {
+                            metadata.area
                         } else {
                             window.floating_rect.normalized()
                         };
                         Placement {
                             window: window.id,
                             rect,
-                            clip: None,
+                            clip: window.maximized.then_some(metadata.area),
                             focused: self.focused_window == Some(window.id),
                             tiled: false,
                         }
@@ -475,9 +531,30 @@ impl Desktop {
             );
             placements.extend(region);
         }
+        // A focused normal window must remain reachable above a maximized neighbor.
+        let maximized_outputs: BTreeSet<_> = self
+            .windows
+            .values()
+            .filter(|window| {
+                window.maximized
+                    && !window.minimized
+                    && window.output.and_then(|id| self.workspace_for_output(id))
+                        == Some(window.workspace)
+            })
+            .filter_map(|window| window.output)
+            .collect();
         // Stable sorting preserves policy-defined tile order, notably monocle's focused tile.
         placements.sort_by_key(|placement| {
-            if self.windows[&placement.window].role == WindowRole::Launcher {
+            let window = &self.windows[&placement.window];
+            if window.role == WindowRole::Launcher {
+                (4, placement.focused)
+            } else if placement.focused
+                && window
+                    .output
+                    .is_some_and(|id| maximized_outputs.contains(&id))
+            {
+                (3, true)
+            } else if window.maximized {
                 (2, placement.focused)
             } else if !placement.tiled {
                 (1, placement.focused)
@@ -540,15 +617,16 @@ impl Desktop {
             .windows
             .iter()
             .filter_map(|id| self.windows.get(id))
-            .filter(move |window| window.output == Some(output))
+            .filter(move |window| window.output == Some(output) && !window.minimized)
     }
 
-    fn layout_context(&self, workspace: WorkspaceId, output: OutputId) -> LayoutContext {
+    pub(super) fn layout_context(&self, workspace: WorkspaceId, output: OutputId) -> LayoutContext {
         let mode = self.effective_mode(workspace, output).unwrap();
         let windows: Vec<_> = self
             .region_windows(workspace, output)
             .filter(|window| {
                 window.role == WindowRole::Normal
+                    && !window.maximized
                     && (!window.floating || matches!(mode, Mode::Floating))
             })
             .map(|window| LayoutWindow {
@@ -627,6 +705,7 @@ impl Desktop {
         if !self.groups.iter().any(|group| group.workspace == workspace) {
             self.switch_workspace(workspace);
         }
+        self.windows.get_mut(&id).unwrap().minimized = false;
         self.repair_homes();
         self.focused_output = self.windows[&id].output;
         self.focused_window = Some(id);
@@ -636,7 +715,12 @@ impl Desktop {
         if self.focused_output.is_none() {
             return;
         }
-        let windows = &self.workspaces[&self.active_workspace()].windows;
+        let windows: Vec<_> = self.workspaces[&self.active_workspace()]
+            .windows
+            .iter()
+            .copied()
+            .filter(|id| !self.windows[id].minimized)
+            .collect();
         if windows.is_empty() {
             return;
         }
@@ -719,7 +803,7 @@ impl Desktop {
         }
     }
 
-    fn settle(&mut self, reveal: bool) {
+    pub(super) fn settle(&mut self, reveal: bool) {
         self.groups.sort_by_key(|group| group.outputs[0]);
         if !self
             .focused_output
@@ -728,6 +812,7 @@ impl Desktop {
             self.focused_output = self.outputs.keys().next().copied();
         }
         self.repair_homes();
+        self.refresh_resize_environments();
         let Some(output) = self.focused_output else {
             self.focused_window = None;
             return;
@@ -736,7 +821,7 @@ impl Desktop {
         self.pending_workspace = workspace;
         let belongs = |id: WindowId| {
             self.windows.get(&id).is_some_and(|window| {
-                window.workspace == workspace && window.output == Some(output)
+                window.workspace == workspace && window.output == Some(output) && !window.minimized
             })
         };
         let remembered = self.workspaces[&workspace]
@@ -779,8 +864,11 @@ impl Desktop {
                 .entry(output)
                 .or_default();
             // First activation reveals focus; later mode/workspace switches restore manual scrolling.
-            region.scroll_offset =
-                management::scrolling_offset(&context, reveal || !region.scroll_initialized);
+            region.scroll_offset = management::scrolling_offset_with_sizing(
+                &context,
+                reveal || !region.scroll_initialized,
+                region.sizing.get(&Mode::Scrolling),
+            );
             region.scroll_initialized = true;
         }
     }

@@ -38,7 +38,11 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
 - Set/clear mode updates the current workspace/output pair through the core API
   without focusing that output. Switch/stretch/split first focus their validated
   output, then use the existing core command. Focus-window may reveal a hidden
-  workspace. Do not add separate shell policy or restore focus after core commands.
+  workspace and restores minimization. Additive v1 `maximized`/`minimized` fields
+  keep hidden windows in snapshots. Validated `set_maximized`/`set_minimized`
+  commands target normal windows without implicit workspace switches; launchers
+  reject them atomically. Minimize repairs focus through core; restore preserves
+  maximize state. Do not add separate shell policy or undo core focus decisions.
 - Snapshot/subscribe execution is a no-op; the transport supplies their responses.
   Snapshot responses carry an ID and `state`; unsolicited `state` responses omit
   the ID. Error responses carry `message` and an ID or JSON null.

@@ -20,11 +20,17 @@ PanelWindow {
     implicitWidth: activeSelection ? Math.min(600, targetScreen ? targetScreen.width - 24 : 600) : 1
     implicitHeight: activeSelection ? 110 : 1
     exclusiveZone: 0
-    color: activeSelection ? "#111827" : "transparent"
+    color: "transparent"
     mask: Region { width: switcher.activeSelection ? switcher.width : 0; height: switcher.activeSelection ? switcher.height : 0 }
     WlrLayershell.namespace: "clear-switcher"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+
+    Rectangle {
+        visible: switcher.activeSelection
+        anchors.fill: parent
+        color: "#e6111827"
+    }
 
     ListView {
         visible: switcher.activeSelection

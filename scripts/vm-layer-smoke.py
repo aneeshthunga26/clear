@@ -68,7 +68,7 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def build_fixture(directory, layer_xml=None, compile_commands=None):
+def build_fixture(directory, layer_xml=None, compile_commands=None, kde_xml=None):
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
     protocols = Path(
@@ -88,9 +88,29 @@ def build_fixture(directory, layer_xml=None, compile_commands=None):
         if not matches:
             raise RuntimeError("wlr layer XML not found; supply --layer-xml PATH")
         layer_xml = matches[-1]
+    if kde_xml is None:
+        cargo = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
+        matches = sorted(
+            (cargo / "registry/src").glob(
+                "*/wayland-protocols-misc-*/protocols/server-decoration.xml"
+            )
+        )
+        installed = protocols.parent / "plasma-wayland-protocols/server-decoration.xml"
+        if installed.is_file():
+            kde_xml = installed
+        elif matches:
+            kde_xml = matches[-1]
+        else:
+            raise RuntimeError(
+                "KDE server-decoration.xml not found; fetch Cargo dependencies or "
+                "pass kde_xml to build_fixture (--kde-xml in vm-decoration-smoke.py)"
+            )
     sources = {
         "xdg-shell": protocols / "stable/xdg-shell/xdg-shell.xml",
         "wlr-layer-shell": Path(layer_xml).resolve(),
+        "xdg-decoration": protocols
+        / "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
+        "server-decoration": Path(kde_xml).resolve(),
     }
     commands = []
     with (directory / "build.log").open("w") as log:

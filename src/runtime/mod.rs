@@ -2,6 +2,11 @@
 
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
+pub mod titlebar;
+pub mod wallpaper;
+pub use titlebar::TitlebarAssets;
+use wallpaper::Wallpapers;
+
 use crate::{
     config::Config,
     core::{
@@ -35,6 +40,10 @@ pub struct Runtime {
     pub desktop: Desktop,
     /// Last successfully loaded configuration.
     pub config: Config,
+    /// CPU wallpaper resources from the last successful preparation.
+    pub wallpapers: Wallpapers,
+    /// Bounded CPU titlebar resources; the adapter owns any uploaded textures.
+    pub titlebar_assets: TitlebarAssets,
     /// Compiled bindings for backend-normalized key events.
     pub bindings: Bindings,
     /// Pending Alt-Tab selection, committed by the physical modifier release.
@@ -72,8 +81,19 @@ impl Runtime {
             eprintln!("clear: {error}; scripted layouts will use master_stack");
             None
         });
+        let wallpapers = Wallpapers::prepare(&config).unwrap_or_else(|error| {
+            eprintln!("clear: {error}; using solid theme background");
+            Wallpapers::default()
+        });
+        let titlebar_assets =
+            TitlebarAssets::prepare(&config.theme.titlebar).unwrap_or_else(|error| {
+                eprintln!("clear: {error}; using built-in titlebar controls");
+                TitlebarAssets::builtins(&config.theme.titlebar)
+            });
         let mut runtime = Self {
             desktop: Desktop::new(),
+            wallpapers,
+            titlebar_assets,
             config,
             bindings,
             switcher: None,
@@ -114,6 +134,7 @@ impl Runtime {
 
     /// Apply launcher policy after mapping, late app-ID changes, or config reload.
     pub fn classify_window(&mut self, id: crate::core::WindowId, app_id: &str) {
+        self.titlebar_assets.prepare_app_icon(app_id);
         let role = if self.config.shell.is_launcher(app_id) {
             crate::core::WindowRole::Launcher
         } else {
@@ -153,7 +174,11 @@ impl Runtime {
         }
         let bindings = Bindings::new(&config.bindings)?;
         let script = load_script(&config)?;
+        let wallpapers = Wallpapers::prepare(&config)?;
+        let titlebar_assets = TitlebarAssets::prepare(&config.theme.titlebar)?;
         self.config = config;
+        self.wallpapers = wallpapers;
+        self.titlebar_assets = titlebar_assets;
         self.bindings = bindings;
         self.script = script;
         self.failed_functions.clear();
@@ -207,6 +232,8 @@ impl Runtime {
                 Action::StretchAll => Command::StretchAll,
                 Action::Unstretch => Command::Unstretch,
                 Action::ToggleFloating => Command::ToggleFloating,
+                Action::ToggleMaximized => Command::ToggleMaximized,
+                Action::Minimize => Command::MinimizeFocused,
                 Action::Scroll { amount } => Command::Scroll(amount),
                 Action::CloseFocused => Command::CloseFocused,
                 Action::Spawn { command } => Command::Spawn(command),
@@ -376,13 +403,6 @@ fn read_config(path: &std::path::Path) -> Result<Config, String> {
     let source =
         std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let mut config = Config::from_source(&source)?;
-    if let Some(script) = config.script.as_mut() {
-        if script.is_relative() {
-            *script = path
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join(&*script);
-        }
-    }
+    config.resolve_paths(path.parent().unwrap_or(std::path::Path::new(".")));
     Ok(config)
 }

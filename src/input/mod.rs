@@ -33,6 +33,10 @@ pub enum Action {
     StretchAll,
     Unstretch,
     ToggleFloating,
+    /// Toggle maximization without changing the saved layout or floating rectangle.
+    ToggleMaximized,
+    /// Hide the focused window; explicit focus or Alt-Tab restores it.
+    Minimize,
     Scroll {
         amount: i32,
     },
@@ -270,6 +274,8 @@ pub fn default_bindings() -> Vec<Binding> {
         ("leader+s", Action::StretchAll),
         ("leader+Shift+s", Action::Unstretch),
         ("leader+f", Action::ToggleFloating),
+        ("leader+Up", Action::ToggleMaximized),
+        ("leader+Down", Action::Minimize),
         ("leader+j", Action::FocusNext),
         ("leader+k", Action::FocusPrevious),
         ("leader+Shift+r", Action::Reload),

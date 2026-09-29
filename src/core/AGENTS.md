@@ -9,6 +9,9 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 - `geometry.rs`: backend-neutral logical rectangle operations.
 - `desktop.rs`: window/workspace ownership, output groups, focus, persistent
   geometry, mode overrides, and ordered placement computation.
+- `resize.rs`: opaque baseline resize sessions, region lifecycle validation, and
+  persistent per-workspace/output/mode sizing. Floating gestures edit only saved
+  rectangles; tiled gestures edit only layout proportions.
 - `mod.rs`: module exports.
 
 ## Invariants
@@ -17,6 +20,20 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   is visible in at most one group. Never duplicate a window across workspaces.
 - Output mode overrides, scroll positions, and remembered focus belong to a
   workspace/output pair. Preserve them through mode and topology changes.
+- Layout sizing is additionally mode-scoped. Keep it across mode switches and
+  remove all window-keyed sizing entries when a window is unmapped, including
+  entries retained in former workspaces. LayoutContext remains sizing-independent.
+- Resize displacement is TOTAL from the captured session baseline. Region mode,
+  usable area, gaps, group membership, and window membership/role/floating/state changes
+  invalidate sessions, including changes subsequently reversed. Focus and client
+  commits do not invalidate sessions. Drop the session to end a gesture; a false
+  update result means the adapter must cancel it.
+- Tiled resizing changes internal boundaries only: adjacent columns/rows, the
+  master divider and adjacent stack heights, grid rows and cells within a row.
+  Scrolling widths are independent viewport-relative proportions; prefix widths
+  drive positions, focus reveal, and content clamps. Floats retain opposite edges
+  with 64x48 minima and may extend offscreen. Spiral, monocle, script tiles, and
+  launchers cannot be resized; normal floating exceptions remain resizable.
 - Commands mutate policy and return explicit effects; never spawn processes,
   access protocol objects, or perform rendering here. Invalid IDs are safe no-ops.
 - Saved floating rectangles are independent of tiles and committed client sizes.
@@ -25,14 +42,25 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 - Launcher roles bypass layout inputs and scrolling content. Center them using
   committed size in their home output's usable area without shrinking them or
   changing saved floating state. Role classification belongs to runtime.
-- Placements are back-to-front: tiles, floats, then launchers. The adapter owns
-  protocol layer stacking and clips to the visible output-group union.
+- Maximize/minimize are independent window flags, not modes or client unmaps.
+  Both exclude normal layout inputs without erasing saved geometry, order, or
+  proportions. Maximized rectangles use only the home output's usable area.
+  Minimized windows have no placements, focus-cycle entries, or remembered-focus
+  eligibility. Explicit focus restores them; workspace switching does not.
+  Launchers reject these states, and launcher reclassification clears both.
+- Placements are back-to-front: tiles, floats, maximized windows, then launchers.
+  A focused normal window can rise above a maximized neighbor on its visible output.
+  The adapter owns protocol layer stacking and visible output-group clips.
 - Keep custom-layout result validation and built-in fallback at this boundary,
   even though the scripting host also validates its output.
 
 ## Verification
 
-Start with `cargo test --locked --test core`, then the root workflow. Cover
+Start with `cargo test --locked --test core --test resize --test window_state`,
+then the root workflow.
+Core and resize tests can also be compiled directly using `rustc --edition=2024 --test` when
+platform dependencies are unavailable. Resize tests cover boundaries, baseline
+updates, lifecycle cancellation, state isolation, and randomized tiny layouts. Cover
 workspace/group invariants, topology changes, focus, persistent geometry,
 reservations, and launcher behavior. Extend deterministic command-sequence tests
 when changing ownership or focus semantics.

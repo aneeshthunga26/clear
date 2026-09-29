@@ -20,6 +20,8 @@ keyboard ownership, grabs, and pointer events belong in `platform/smithay/`.
 - Spawn actions carry executable/argument vectors, not shell command strings.
 - `alt_tab` is a declarative gesture advance. The Smithay adapter detects the
   physical Alt release and Escape cancellation; runtime retains pending selection.
+- `toggle_maximized` (leader+Up) and `minimize` (leader+Down) operate on the
+  focused normal window. Restore minimized windows via explicit focus/Alt-Tab.
 - When extending `Action`, update validation, runtime dispatch, Rhai action
   conversion as needed, and config examples together.
 

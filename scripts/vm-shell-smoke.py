@@ -476,17 +476,30 @@ def main():
             assert (magic, dimensions, maximum) == (b"P6", b"1280 480", b"255")
             assert len(pixels) == 1280 * 480 * 3
             if args.quickshell:
+                # QML #e60f172a over Clear's default background; the reserved
+                # bar area has no client underneath. Allow GPU byte rounding.
+                alpha = 230 / 255
+                panel_pixel = tuple(
+                    round(alpha * foreground + (1 - alpha) * background * 255)
+                    for foreground, background in zip((15, 23, 42), (0.07, 0.08, 0.10))
+                )
                 for x in (2, 642):
                     offset = (1 * 1280 + x) * 3
-                    assert tuple(pixels[offset : offset + 3]) == (15, 23, 42), (
-                        "missing panel pixels"
-                    )
+                    assert all(
+                        abs(actual - expected) <= 1
+                        for actual, expected in zip(
+                            pixels[offset : offset + 3], panel_pixel
+                        )
+                    ), "missing alpha-composited panel pixels"
                 # The open foot client must appear in each grouped-app dock.
                 for x in (330, 970):
                     offset = (10 * 1280 + x) * 3
-                    assert tuple(pixels[offset : offset + 3]) != (15, 23, 42), (
-                        "missing application button"
-                    )
+                    assert any(
+                        abs(actual - expected) > 1
+                        for actual, expected in zip(
+                            pixels[offset : offset + 3], panel_pixel
+                        )
+                    ), "missing application button"
                 log = (artifacts / "quickshell.log").read_text()
                 for failure in (
                     "WARN scene:",

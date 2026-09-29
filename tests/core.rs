@@ -95,7 +95,7 @@ fn assert_invariants(desktop: &Desktop) {
     );
     let visible: BTreeSet<_> = desktop
         .windows()
-        .filter(|window| presented.contains(&window.workspace))
+        .filter(|window| presented.contains(&window.workspace) && !window.minimized)
         .map(|window| window.id)
         .collect();
     assert_eq!(ids(&placements), visible, "hidden or lost placement");
@@ -123,10 +123,12 @@ fn assert_invariants(desktop: &Desktop) {
         if let Some(id) = desktop.focused_window() {
             let window = desktop.window(id).unwrap();
             assert_eq!(window.output, Some(output));
+            assert!(!window.minimized);
             assert_eq!(Some(window.workspace), desktop.workspace_for_output(output));
         } else {
             assert!(!desktop.windows().any(|window| {
                 window.output == Some(output)
+                    && !window.minimized
                     && Some(window.workspace) == desktop.workspace_for_output(output)
             }));
         }
@@ -136,6 +138,8 @@ fn assert_invariants(desktop: &Desktop) {
 #[test]
 fn initial_state_and_exact_public_api() {
     let desktop = Desktop::default();
+    let resize: Option<ResizeSession> = desktop.begin_resize(WindowId(1), ResizeEdges::default());
+    assert!(resize.is_none());
     assert_eq!(
         desktop
             .workspaces()
@@ -1702,7 +1706,7 @@ fn deterministic_random_commands_preserve_all_global_invariants() {
             7 => Mode::Monocle,
             _ => Mode::Script("test".into()),
         };
-        match (state >> 16) % 24 {
+        match (state >> 16) % 28 {
             0 => output(&mut desktop, output_id.0),
             1 => desktop.remove_output(output_id),
             2 | 3 => window(&mut desktop, id),
@@ -1761,6 +1765,18 @@ fn deterministic_random_commands_preserve_all_global_invariants() {
             ),
             21 => desktop.set_gaps((state % 2000) as i32 - 10),
             22 => desktop.configure_workspace(workspace, format!("workspace-{id}"), mode),
+            24 => {
+                desktop.command(Command::ToggleMaximized);
+            }
+            25 => {
+                desktop.command(Command::MinimizeFocused);
+            }
+            26 => {
+                desktop.command(Command::SetMaximized(WindowId(id), state & 1 != 0));
+            }
+            27 => {
+                desktop.command(Command::SetMinimized(WindowId(id), state & 1 != 0));
+            }
             _ => {
                 desktop.command(Command::CycleOutput);
             }

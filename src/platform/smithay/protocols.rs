@@ -1,6 +1,7 @@
 use super::{
     scene::logical,
     state::{ClientState, Compositor, ManagedWindow},
+    titlebar::content_rect,
 };
 use crate::core::{Command, WindowId};
 use smithay::{
@@ -67,6 +68,10 @@ impl CompositorHandler for Compositor {
                 let has_buffer =
                     with_renderer_surface_state(&root, |state| state.buffer().is_some())
                         .unwrap_or(false);
+                let unmapped = !has_buffer && entry.mapped;
+                if surface == &root {
+                    entry.commit_decoration(has_buffer);
+                }
                 if has_buffer && !entry.mapped {
                     entry.mapped = true;
                     let (title, app_id) = metadata(&root);
@@ -81,23 +86,62 @@ impl CompositorHandler for Compositor {
                     if is_dialog {
                         self.runtime.desktop.command(Command::ToggleFloating);
                     }
+                    self.runtime
+                        .desktop
+                        .command(Command::SetMaximized(id, entry.initial_maximized));
+                    entry.initial_maximized = false;
                     eprintln!("clear: mapped window {}", id.0);
                 } else if !has_buffer && entry.mapped {
                     entry.mapped = false;
+                    entry.initial_maximized = false;
+                    top.with_pending_state(|pending| {
+                        pending.states.unset(xdg_toplevel::State::Maximized);
+                        pending.states.unset(xdg_toplevel::State::Suspended);
+                        pending.states.unset(xdg_toplevel::State::Resizing);
+                    });
                     self.space.unmap_elem(&entry.window);
                     self.runtime.desktop.remove_window(id);
                     eprintln!("clear: unmapped window {}", id.0);
                 }
                 if entry.mapped {
                     let size = entry.window.geometry().size;
-                    self.runtime
-                        .desktop
-                        .set_window_committed_size(id, size.w, size.h);
+                    self.runtime.desktop.set_window_committed_size(
+                        id,
+                        size.w,
+                        size.h.saturating_add(if entry.uses_ssd() {
+                            self.runtime.config.theme.titlebar.height
+                        } else {
+                            0
+                        }),
+                    );
                 }
-                if !top.is_initial_configure_sent() {
+                if !top.is_initial_configure_sent() && !unmapped {
+                    entry.prepare_decoration_configure();
+                    let pending_ssd = entry.pending_ssd();
                     let is_launcher = self.runtime.config.shell.is_launcher(&metadata(&root).1);
+                    let area = self
+                        .runtime
+                        .desktop
+                        .focused_output()
+                        .and_then(|id| self.runtime.desktop.output(id))
+                        .map(|o| o.area);
                     top.with_pending_state(|pending| {
-                        pending.size = (!is_launcher).then_some((640, 480).into());
+                        if entry.initial_maximized
+                            && !is_launcher
+                            && let Some(area) = area
+                        {
+                            entry.remember_frame(area);
+                            let content = content_rect(
+                                area,
+                                pending_ssd,
+                                self.runtime.config.theme.titlebar.height,
+                            );
+                            pending.size = Some((content.width, content.height).into());
+                            pending.states.set(xdg_toplevel::State::Maximized);
+                        } else {
+                            pending.size = (!is_launcher).then_some((640, 480).into());
+                            pending.states.unset(xdg_toplevel::State::Maximized);
+                        }
                     });
                     top.send_configure();
                 }
@@ -181,6 +225,8 @@ impl XdgShellHandler for Compositor {
             ManagedWindow {
                 window: Window::new_wayland_window(surface),
                 mapped: false,
+                initial_maximized: false,
+                last_frame: Default::default(),
             },
         );
     }
@@ -247,6 +293,21 @@ impl XdgShellHandler for Compositor {
             pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
         }
     }
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        self.set_client_maximized(surface, true);
+    }
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        self.set_client_maximized(surface, false);
+    }
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = self.window_id(surface.wl_surface()) {
+            self.runtime
+                .desktop
+                .command(Command::SetMinimized(id, true));
+            self.dirty = true;
+            self.reconcile();
+        }
+    }
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
         self.client_drag(surface, seat, serial, 0);
     }
@@ -262,6 +323,56 @@ impl XdgShellHandler for Compositor {
 }
 
 impl Compositor {
+    fn set_client_maximized(&mut self, surface: ToplevelSurface, maximized: bool) {
+        let Some(id) = self.window_id(surface.wl_surface()) else {
+            return;
+        };
+        if self.windows[&id].mapped {
+            self.runtime
+                .desktop
+                .command(Command::SetMaximized(id, maximized));
+            self.dirty = true;
+            self.reconcile();
+            // XDG requires a configure response even when the requested state is unchanged.
+            surface.send_configure();
+        } else {
+            self.windows.get_mut(&id).unwrap().initial_maximized = maximized;
+            if surface.is_initial_configure_sent() {
+                let launcher = self
+                    .runtime
+                    .config
+                    .shell
+                    .is_launcher(&metadata(surface.wl_surface()).1);
+                let pending_ssd = self.windows[&id].pending_ssd();
+                let area = self
+                    .runtime
+                    .desktop
+                    .focused_output()
+                    .and_then(|id| self.runtime.desktop.output(id))
+                    .map(|o| o.area);
+                surface.with_pending_state(|pending| {
+                    if maximized
+                        && !launcher
+                        && let Some(area) = area
+                    {
+                        pending.states.set(xdg_toplevel::State::Maximized);
+                        self.windows[&id].remember_frame(area);
+                        let content = content_rect(
+                            area,
+                            pending_ssd,
+                            self.runtime.config.theme.titlebar.height,
+                        );
+                        pending.size = Some((content.width, content.height).into());
+                    } else {
+                        pending.states.unset(xdg_toplevel::State::Maximized);
+                        pending.size = (!launcher).then_some((640, 480).into());
+                    }
+                });
+                surface.send_configure();
+            }
+        }
+    }
+
     fn metadata_changed(&mut self, surface: &WlSurface) {
         if let Some(id) = self.window_id(surface) {
             let (title, app_id) = metadata(surface);
@@ -324,14 +435,19 @@ impl Compositor {
         let Some(area) = area else { return };
         let mut target = logical(area);
         target.loc -= get_popup_toplevel_coords(&kind);
-        target.loc -= smithay::utils::Point::from((placement.rect.x, placement.rect.y));
+        let content = content_rect(
+            placement.rect,
+            self.windows[&id].uses_ssd(),
+            self.runtime.config.theme.titlebar.height,
+        );
+        target.loc -= smithay::utils::Point::from((content.x, content.y));
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target)
         });
     }
 }
 
-fn metadata(surface: &WlSurface) -> (String, String) {
+pub(super) fn metadata(surface: &WlSurface) -> (String, String) {
     with_states(surface, |states| {
         let Some(data) = states.data_map.get::<XdgToplevelSurfaceData>() else {
             return Default::default();
@@ -343,5 +459,3 @@ fn metadata(surface: &WlSurface) -> (String, String) {
         )
     })
 }
-
-smithay::delegate_dispatch2!(Compositor);

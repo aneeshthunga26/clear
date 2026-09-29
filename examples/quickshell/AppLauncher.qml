@@ -24,7 +24,7 @@ PanelWindow {
     implicitWidth: opened ? Math.min(540, targetScreen ? targetScreen.width - 24 : 540) : 1
     implicitHeight: opened ? 480 : 1
     exclusiveZone: 0
-    color: opened ? "#111827" : "transparent"
+    color: "transparent"
     mask: Region { width: launcher.opened ? launcher.width : 0; height: launcher.opened ? launcher.height : 0 }
     WlrLayershell.namespace: "clear-app-launcher"
     WlrLayershell.layer: WlrLayer.Overlay
@@ -40,6 +40,12 @@ PanelWindow {
         if (!entry) return;
         entry.execute();
         dismiss();
+    }
+
+    Rectangle {
+        visible: launcher.opened
+        anchors.fill: parent
+        color: "#e6111827"
     }
 
     ColumnLayout {

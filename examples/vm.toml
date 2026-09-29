@@ -2,6 +2,50 @@
 # This binding list replaces the defaults and exposes workspaces 1–3.
 gaps = 12
 
+# Bundled procedural aurora wallpaper; no shell process required.
+# Paths are relative to this config directory, or absolute (no ~/$VAR expansion).
+[wallpaper]
+path = "aurora.png"
+mode = "fill" # fill, fit, stretch, center
+# [wallpaper.outputs."virtual-2"]
+# path = "wallpapers/second.jpg"
+# mode = "fit" # Omitted fields inherit the global selection.
+
+[theme]
+# Outer radii in logical pixels: all corners, [top, bottom], or [TL, TR, BR, BL].
+corner_radius = 12
+# Dual Kawase behind translucent windows/layers. Radius zero disables either method.
+blur_method = "kawase" # Switch to "gaussian" for the original filter (try radius=12).
+blur_radius = 4 # Sample offset per pyramid level, not Gaussian-equivalent pixels.
+blur_passes = 3 # Downsample/upsample levels, 1..6.
+border_width = 0
+
+# Negotiated server-side titlebars; does not change client-side decorations.
+[theme.titlebar]
+# Straight RGBA, four finite channels in 0..1. Try background alpha 0.9 for translucency.
+active_background = [0.137, 0.157, 0.204, 1.0]
+inactive_background = [0.106, 0.118, 0.149, 1.0]
+active_foreground = [0.937, 0.953, 0.980, 1.0]
+inactive_foreground = [0.682, 0.718, 0.780, 1.0]
+height = 32 # Integer logical pixels, 16..128; default 32; never rewrites saved geometry.
+controls_side = "right" # Default; "left" mirrors close/maximize/minimize order.
+show_icon = true # Default false; exact desktop ID lookup, otherwise a generic icon.
+show_title = true # Default; false hides only text.
+# Optional local SVGs relative to this config (or absolute), no ~/$VAR expansion.
+# Create files before uncommenting; SVGs preserve their own colors/alpha.
+# Omitted controls use built-ins; restore falls back to maximize SVG when omitted.
+# Ctrl+Alt+Shift+R rereads resources atomically; failure keeps the last-good set.
+# Startup resource failures warn and use built-in controls.
+# [theme.titlebar.controls]
+# minimize = "titlebar/minimize.svg"
+# maximize = "titlebar/maximize.svg"
+# restore = "titlebar/restore.svg"
+# close = "titlebar/close.svg"
+
+# Super+right drag resizes floating windows or supported internal tile boundaries.
+# Master/stack: divider width and stack heights. Columns/rows/grid: adjacent sizes.
+# Scrolling: individual widths. Spiral/monocle/script tiles do not resize.
+# Floating exceptions remain resizable. Mouse gestures still use Super, not Ctrl+Alt.
 [keys]
 leader = "Ctrl+Alt"
 
@@ -131,6 +175,15 @@ mode = "scrolling"
 [[bindings]]
 key = "leader+f"
 action = "toggle_floating"
+
+# Maximize respects panel reservations; Alt+Tab or a dock click restores minimized windows.
+[[bindings]]
+key = "leader+Up"
+action = "toggle_maximized"
+
+[[bindings]]
+key = "leader+Down"
+action = "minimize"
 
 [[bindings]]
 key = "leader+j"

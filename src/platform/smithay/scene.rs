@@ -1,14 +1,21 @@
-use super::state::Compositor;
+use super::{
+    blur::BlurMask,
+    rounded::{RoundedShaders, RoundedSurface, WindowOutline},
+    state::Compositor,
+    titlebar::{TitlebarCache, TitlebarPart, content_rect, titlebar_hit},
+    wallpaper::WallpaperCache,
+};
 use crate::core::{Desktop, OutputId, Placement, Rect, WindowId, WindowRole};
 use smithay::{
     backend::renderer::{
         element::{
-            AsRenderElements, Kind,
+            Kind,
             solid::{SolidColorBuffer, SolidColorRenderElement},
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+            texture::TextureRenderElement,
             utils::CropRenderElement,
         },
-        gles::GlesRenderer,
+        gles::{GlesError, GlesRenderer, GlesTexture},
     },
     desktop::{PopupManager, WindowSurfaceType, layer_map_for_output},
     reexports::{
@@ -24,6 +31,21 @@ smithay::backend::renderer::element::render_elements! {
     pub(super) SceneElement<=GlesRenderer>;
     Surface=CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     Border=SolidColorRenderElement,
+    Titlebar=CropRenderElement<TextureRenderElement<GlesTexture>>,
+    RoundedSurface=RoundedSurface,
+    Wallpaper=TextureRenderElement<GlesTexture>,
+}
+
+/// Elements and logical trees are both front-to-back. A tree is blurred only once.
+pub(super) struct Scene {
+    pub elements: Vec<SceneElement>,
+    pub groups: Vec<SceneGroup>,
+}
+
+pub(super) struct SceneGroup {
+    pub elements: std::ops::Range<usize>,
+    pub clip: Rectangle<i32, Physical>,
+    pub mask: Option<BlurMask>,
 }
 
 pub(super) fn logical(rect: Rect) -> Rectangle<i32, Logical> {
@@ -38,6 +60,7 @@ fn contains(rect: Rect, point: Point<f64, Logical>) -> bool {
 
 pub(super) enum HitOwner {
     Window(WindowId),
+    Decoration(WindowId, TitlebarPart),
     Layer(WlSurface),
 }
 
@@ -75,12 +98,62 @@ impl Compositor {
                 self.runtime.desktop.set_output_area(region.id, usable);
             }
         }
+        if self.drag.as_ref().is_some_and(|drag| {
+            self.runtime
+                .desktop
+                .window(drag.window)
+                .is_none_or(|w| w.minimized || w.maximized)
+        }) {
+            self.end_drag();
+        }
+        if self.titlebar_drag.as_ref().is_some_and(|(id, _)| {
+            self.windows.get(id).is_none_or(|entry| !entry.uses_ssd())
+                || self
+                    .runtime
+                    .desktop
+                    .window(*id)
+                    .is_none_or(|window| window.minimized || window.maximized)
+        }) {
+            self.titlebar_drag = None;
+        }
+        // Launcher frames are client-sized. Recalculate the inset before placement
+        // after a theme reload, even if the client has not committed another buffer.
+        let titlebar_height = self.runtime.config.theme.titlebar.height;
+        for (id, entry) in &self.windows {
+            if entry.mapped {
+                let size = entry.window.geometry().size;
+                self.runtime.desktop.set_window_committed_size(
+                    *id,
+                    size.w,
+                    size.h
+                        .saturating_add(if entry.uses_ssd() { titlebar_height } else { 0 }),
+                );
+            }
+        }
         let placements = self.runtime.placements();
         for (id, entry) in &self.windows {
+            if let Some(window) = self.runtime.desktop.window(*id)
+                && let Some(top) = entry.window.toplevel()
+            {
+                top.with_pending_state(|pending| {
+                    if window.maximized {
+                        pending.states.set(xdg_toplevel::State::Maximized);
+                    } else {
+                        pending.states.unset(xdg_toplevel::State::Maximized);
+                    }
+                    if window.minimized {
+                        pending.states.set(xdg_toplevel::State::Suspended);
+                    } else {
+                        pending.states.unset(xdg_toplevel::State::Suspended);
+                    }
+                });
+            }
             if !placements.iter().any(|p| p.window == *id) {
                 self.space.unmap_elem(&entry.window);
                 entry.window.set_activated(false);
-                if let Some(top) = entry.window.toplevel() {
+                if let Some(top) = entry.window.toplevel()
+                    && top.is_initial_configure_sent()
+                {
                     top.send_pending_configure();
                 }
             }
@@ -90,6 +163,11 @@ impl Compositor {
                 continue;
             };
             let window = &entry.window;
+            entry.remember_frame(placement.rect);
+            entry.prepare_decoration_configure();
+            let requested_content =
+                content_rect(placement.rect, entry.pending_ssd(), titlebar_height);
+            let content = content_rect(placement.rect, entry.uses_ssd(), titlebar_height);
             if let Some(top) = window.toplevel() {
                 top.with_pending_state(|pending| {
                     // Launcher geometry is client-owned; a size hint here creates
@@ -99,8 +177,8 @@ impl Compositor {
                         .desktop
                         .window(placement.window)
                         .is_some_and(|window| window.role == WindowRole::Launcher);
-                    pending.size =
-                        (!launcher).then_some((placement.rect.width, placement.rect.height).into());
+                    pending.size = (!launcher)
+                        .then_some((requested_content.width, requested_content.height).into());
                     for tiled in [
                         xdg_toplevel::State::TiledLeft,
                         xdg_toplevel::State::TiledRight,
@@ -119,7 +197,7 @@ impl Compositor {
                 top.send_pending_configure();
             }
             self.space
-                .map_element(window.clone(), (placement.rect.x, placement.rect.y), false);
+                .map_element(window.clone(), (content.x, content.y), false);
             self.space.raise_element(window, false);
         }
         self.placements = placements;
@@ -191,7 +269,9 @@ impl Compositor {
         &self,
         point: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.hit_test(point).map(|hit| (hit.surface, hit.origin))
+        self.hit_test(point).and_then(|hit| {
+            (!matches!(hit.owner, HitOwner::Decoration(..))).then_some((hit.surface, hit.origin))
+        })
     }
 
     pub fn hit_test(&self, point: Point<f64, Logical>) -> Option<SurfaceHit> {
@@ -209,11 +289,18 @@ impl Compositor {
             let Some(entry) = self.windows.get(&p.window) else {
                 continue;
             };
-            let origin: Point<i32, Logical> = (p.rect.x, p.rect.y).into();
+            let ssd = entry.uses_ssd();
+            let content = content_rect(p.rect, ssd, self.runtime.config.theme.titlebar.height);
+            let origin: Point<i32, Logical> = (content.x, content.y).into();
             let surface_origin = origin - entry.window.geometry().loc;
             if let Some((surface, offset)) = entry.window.surface_under(
                 point - surface_origin.to_f64(),
-                if p.tiled && !contains(p.rect, point) {
+                if ((p.tiled || ssd) && !contains(content, point))
+                    || (self.runtime.config.theme.corner_radius.is_rounded()
+                        && !WindowOutline::new(p.rect, &self.runtime.config.theme)
+                            .inner
+                            .contains(point))
+                {
                     WindowSurfaceType::POPUP
                 } else {
                     WindowSurfaceType::ALL
@@ -223,6 +310,19 @@ impl Compositor {
                     surface,
                     origin: (surface_origin + offset).to_f64(),
                     owner: HitOwner::Window(p.window),
+                });
+            }
+            if ssd
+                && WindowOutline::new(p.rect, &self.runtime.config.theme)
+                    .inner
+                    .contains(point)
+                && let Some(part) = titlebar_hit(p.rect, point, &self.runtime.config.theme.titlebar)
+                && let Some(top) = entry.window.toplevel()
+            {
+                return Some(SurfaceHit {
+                    surface: top.wl_surface().clone(),
+                    origin: origin.to_f64(),
+                    owner: HitOwner::Decoration(p.window, part),
                 });
             }
         }
@@ -237,23 +337,70 @@ impl Compositor {
         )
     }
 
-    pub fn scene_elements(&self, renderer: &mut GlesRenderer) -> Vec<SceneElement> {
+    pub fn scene_elements(
+        &self,
+        renderer: &mut GlesRenderer,
+        wallpapers: &mut WallpaperCache,
+        titlebars: &mut TitlebarCache,
+        rounded: Option<&RoundedShaders>,
+        blur: bool,
+    ) -> Result<Scene, GlesError> {
         let mut elements = Vec::new();
-        self.layer_elements(renderer, &[Layer::Overlay, Layer::Top], &mut elements);
+        let mut groups = Vec::new();
+        titlebars.retain(|id| self.windows.get(&id).is_some_and(|entry| entry.uses_ssd()));
+        self.layer_elements(
+            renderer,
+            &[Layer::Overlay, Layer::Top],
+            &mut elements,
+            &mut groups,
+        );
 
         for placement in self.placements.iter().rev() {
             let Some(entry) = self.windows.get(&placement.window) else {
                 continue;
             };
+            let theme = &self.runtime.config.theme;
+            let rounded = rounded.filter(|_| theme.corner_radius.is_rounded());
+            let outline = WindowOutline::new(placement.rect, theme);
+            let ssd = entry.uses_ssd();
+            let content = content_rect(placement.rect, ssd, theme.titlebar.height);
             for clip in self.placement_clips(placement) {
+                let titlebar = if ssd {
+                    let window = self
+                        .runtime
+                        .desktop
+                        .window(placement.window)
+                        .expect("placed window");
+                    let title = if window.title.is_empty() {
+                        &window.app_id
+                    } else {
+                        &window.title
+                    };
+                    titlebars.elements(
+                        renderer,
+                        placement.window,
+                        title,
+                        placement.rect,
+                        placement.focused
+                            && self.host_focused
+                            && self.layer_keyboard_focus().is_none(),
+                        window.maximized,
+                        clip,
+                        &theme.titlebar,
+                        &self.runtime.titlebar_assets,
+                        &window.app_id,
+                    )?
+                } else {
+                    Vec::new()
+                };
                 let Some(top) = entry.window.toplevel() else {
                     continue;
                 };
                 // Popups may extend beyond the parent, but not its workspace viewport.
                 for (popup, offset) in PopupManager::popups_for_surface(top.wl_surface()) {
                     let location: Point<i32, Physical> = (
-                        placement.rect.x + offset.x - popup.geometry().loc.x,
-                        placement.rect.y + offset.y - popup.geometry().loc.y,
+                        content.x + offset.x - popup.geometry().loc.x,
+                        content.y + offset.y - popup.geometry().loc.y,
                     )
                         .into();
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
@@ -265,16 +412,22 @@ impl Compositor {
                             1.0,
                             Kind::Unspecified,
                         );
+                    let start = elements.len();
                     elements.extend(
                         surfaces
                             .into_iter()
                             .filter_map(|e| CropRenderElement::from_element(e, 1.0, physical(clip)))
                             .map(SceneElement::Surface),
                     );
+                    groups.push(SceneGroup {
+                        elements: start..elements.len(),
+                        clip: physical(clip),
+                        mask: Some(BlurMask::ClientAlpha),
+                    });
                 }
                 let offset = entry.window.geometry().loc;
                 let location: Point<i32, Physical> =
-                    (placement.rect.x - offset.x, placement.rect.y - offset.y).into();
+                    (content.x - offset.x, content.y - offset.y).into();
                 let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                     render_elements_from_surface_tree(
                         renderer,
@@ -284,10 +437,42 @@ impl Compositor {
                         1.0,
                         Kind::Unspecified,
                     );
+                let color = if placement.focused {
+                    theme.active_border
+                } else {
+                    theme.inactive_border
+                };
+                let start = elements.len();
+                if let Some(shaders) = rounded {
+                    if let Some(window) = shaders.window(
+                        renderer,
+                        surfaces,
+                        content,
+                        titlebar,
+                        outline,
+                        color,
+                        self.host_size.h,
+                        physical(clip),
+                    )? {
+                        elements.push(SceneElement::RoundedSurface(window));
+                    }
+                    groups.push(SceneGroup {
+                        elements: start..elements.len(),
+                        clip: physical(clip),
+                        mask: Some(BlurMask::Window(outline.outer)),
+                    });
+                    continue;
+                }
                 // A client can commit an old or oversized buffer after a new configure.
                 // Constrain its body without clipping the separately rendered popups.
-                let body_clip = if placement.tiled {
-                    physical(clip).intersection(physical(placement.rect))
+                elements.extend(
+                    titlebar
+                        .into_iter()
+                        .filter_map(|bar| CropRenderElement::from_element(bar, 1.0, physical(clip)))
+                        .map(SceneElement::Titlebar),
+                );
+                let body_clip = if placement.tiled || ssd {
+                    physical(clip).intersection(physical(content))
                 } else {
                     Some(physical(clip))
                 };
@@ -299,21 +484,9 @@ impl Compositor {
                             .map(SceneElement::Surface),
                     );
                 }
-                let theme = &self.runtime.config.theme;
                 let b = theme.border_width;
                 if b > 0 {
-                    let rect = Rect::new(
-                        placement.rect.x - b,
-                        placement.rect.y - b,
-                        placement.rect.width + 2 * b,
-                        placement.rect.height + 2 * b,
-                    );
-                    if let Some(rect) = logical(rect).intersection(logical(clip)) {
-                        let color = if placement.focused {
-                            theme.active_border
-                        } else {
-                            theme.inactive_border
-                        };
+                    for rect in square_border_regions(outline, clip, blur || ssd) {
                         let buffer = SolidColorBuffer::new(rect.size, premultiply(color));
                         elements.push(SceneElement::Border(SolidColorRenderElement::from_buffer(
                             &buffer,
@@ -324,10 +497,37 @@ impl Compositor {
                         )));
                     }
                 }
+                groups.push(SceneGroup {
+                    elements: start..elements.len(),
+                    clip: physical(clip),
+                    mask: Some(BlurMask::SquareWindow(outline.outer)),
+                });
             }
         }
-        self.layer_elements(renderer, &[Layer::Bottom, Layer::Background], &mut elements);
-        elements
+        self.layer_elements(
+            renderer,
+            &[Layer::Bottom, Layer::Background],
+            &mut elements,
+            &mut groups,
+        );
+        wallpapers.retain(&self.runtime.wallpapers);
+        for region in &self.outputs {
+            if let Some(element) = wallpapers.element(
+                renderer,
+                &self.runtime.wallpapers,
+                &region.output.name(),
+                region.rect,
+            ) {
+                let start = elements.len();
+                elements.push(SceneElement::Wallpaper(element));
+                groups.push(SceneGroup {
+                    elements: start..elements.len(),
+                    clip: physical(region.rect),
+                    mask: None,
+                });
+            }
+        }
+        Ok(Scene { elements, groups })
     }
 
     fn layer_elements(
@@ -335,6 +535,7 @@ impl Compositor {
         renderer: &mut GlesRenderer,
         kinds: &[Layer],
         elements: &mut Vec<SceneElement>,
+        groups: &mut Vec<SceneGroup>,
     ) {
         for kind in kinds {
             for region in &self.outputs {
@@ -348,18 +549,43 @@ impl Compositor {
                         region.rect.y + geometry.loc.y,
                     )
                         .into();
-                    // Layer menus are separate XDG popup trees, not subsurfaces.
-                    // Smithay includes them in the same order as surface_under.
-                    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                        layer.render_elements(renderer, location, 1.0.into(), 1.0);
-                    elements.extend(
-                        surfaces
-                            .into_iter()
-                            .filter_map(|e| {
-                                CropRenderElement::from_element(e, 1.0, physical(region.rect))
-                            })
-                            .map(SceneElement::Surface),
-                    );
+                    // Match Smithay's front-to-back order, retaining separate popup
+                    // trees so each menu samples the scene including its parent.
+                    let popups = PopupManager::popups_for_surface(layer.wl_surface());
+                    for (surface, location) in popups
+                        .map(|(popup, offset)| {
+                            let offset = offset - popup.geometry().loc;
+                            (
+                                popup.wl_surface().clone(),
+                                location + Point::from((offset.x, offset.y)),
+                            )
+                        })
+                        .chain(std::iter::once((layer.wl_surface().clone(), location)))
+                    {
+                        let start = elements.len();
+                        let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                            render_elements_from_surface_tree(
+                                renderer,
+                                &surface,
+                                location,
+                                1.0,
+                                1.0,
+                                Kind::Unspecified,
+                            );
+                        elements.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|e| {
+                                    CropRenderElement::from_element(e, 1.0, physical(region.rect))
+                                })
+                                .map(SceneElement::Surface),
+                        );
+                        groups.push(SceneGroup {
+                            elements: start..elements.len(),
+                            clip: physical(region.rect),
+                            mask: Some(BlurMask::ClientAlpha),
+                        });
+                    }
                 }
             }
         }
@@ -431,10 +657,50 @@ fn placement_clips(
         .collect()
 }
 
+// Preserve the legacy backing only for undecorated, unblurred clients. SSD bars
+// can be transparent too: their backdrop must never be filled with border color.
+fn square_border_regions(
+    outline: WindowOutline,
+    clip: Rect,
+    ring_only: bool,
+) -> Vec<Rectangle<i32, Logical>> {
+    let Some(rect) = logical(outline.outer.rect).intersection(logical(clip)) else {
+        return Vec::new();
+    };
+    if ring_only {
+        Rectangle::subtract_rects_many_in_place(vec![rect], [logical(outline.inner.rect)])
+    } else {
+        vec![rect]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::{Command, WorkspaceId};
+
+    #[test]
+    fn square_blur_or_ssd_border_does_not_fill_translucent_content() {
+        let mut theme = crate::decoration::Theme::default();
+        theme.border_width = 2;
+        let outline = WindowOutline::new(Rect::new(10, 10, 20, 20), &theme);
+        let clip = Rect::new(0, 0, 100, 100);
+        let ring = square_border_regions(outline, clip, true);
+        assert!(
+            ring.iter()
+                .all(|rect| rect.intersection(logical(outline.inner.rect)).is_none())
+        );
+        assert_eq!(
+            ring.iter()
+                .map(|rect| rect.size.w * rect.size.h)
+                .sum::<i32>(),
+            24 * 24 - 20 * 20
+        );
+        assert_eq!(
+            square_border_regions(outline, clip, false),
+            vec![logical(outline.outer.rect)]
+        );
+    }
 
     fn fixture() -> (Desktop, Placement, [(OutputId, Rect); 2]) {
         let mut desktop = Desktop::new();

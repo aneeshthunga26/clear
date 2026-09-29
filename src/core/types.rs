@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::Rect;
 
@@ -19,14 +19,14 @@ pub struct WorkspaceId(pub u64);
 pub enum Mode {
     /// All windows use their saved floating geometry.
     Floating,
-    /// Horizontally scrolling, equal-width columns.
+    /// Horizontally scrolling columns, initially equal-width.
     Scrolling,
     /// One master window and a vertically divided stack.
     #[default]
     MasterStack,
-    /// Equal-width tiled columns.
+    /// Weighted tiled columns, initially equal-width.
     Columns,
-    /// Equal-height tiled rows.
+    /// Weighted tiled rows, initially equal-height.
     Rows,
     /// Tiled rows and columns with balanced cell counts.
     Grid,
@@ -106,7 +106,8 @@ pub enum WindowRole {
 pub struct LayoutContext {
     /// Usable output area, already excluding host-managed reservations.
     pub area: Rect,
-    /// Windows in stable workspace order, excluding launchers and tiled-mode floating exceptions.
+    /// Layout participants in stable order, excluding launchers, minimized/maximized
+    /// windows, and tiled-mode floating exceptions.
     pub windows: Vec<LayoutWindow>,
     /// Globally focused window, if it belongs to this region.
     pub focused: Option<WindowId>,
@@ -173,6 +174,14 @@ pub enum Command {
     Unstretch,
     /// Toggle a per-window floating exception without discarding its saved rectangle.
     ToggleFloating,
+    /// Toggle maximization of the focused normal window within its usable output.
+    ToggleMaximized,
+    /// Hide the focused normal window without unmapping or discarding its state.
+    MinimizeFocused,
+    /// Set maximization without changing focus, floating state, or saved geometry.
+    SetMaximized(WindowId, bool),
+    /// Set minimization; restoring this way does not reveal its workspace or focus it.
+    SetMinimized(WindowId, bool),
     /// Scroll the active scrolling region by logical pixels, clamped to its content.
     Scroll(i32),
     /// Update saved floating geometry without changing the window's floating flag.
@@ -235,6 +244,10 @@ pub struct Window {
     pub committed_size: Option<(i32, i32)>,
     /// Per-window exception to nonfloating layouts.
     pub floating: bool,
+    /// Fill the home output's usable area, independently of saved layout state.
+    pub maximized: bool,
+    /// Hidden from placements and ordinary focus cycling; explicit focus restores it.
+    pub minimized: bool,
     /// Saved geometry, not overwritten by tiling or temporary output constraints.
     pub floating_rect: Rect,
 }
@@ -279,4 +292,7 @@ pub(crate) struct RegionState {
     pub scroll_offset: i32,
     pub scroll_initialized: bool,
     pub focused: Option<WindowId>,
+    pub sizing: HashMap<Mode, super::LayoutSizing>,
+    pub resize_revision: u64,
+    pub(super) resize_environment: Option<super::resize::ResizeEnvironment>,
 }

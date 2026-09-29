@@ -1,6 +1,10 @@
 use super::{
+    blur::BackdropBlur,
+    rounded::RoundedShaders,
     scene::premultiply,
     state::{Compositor, OutputRegion},
+    titlebar::TitlebarCache,
+    wallpaper::WallpaperCache,
 };
 use crate::core::{OutputId, Rect};
 use smithay::{
@@ -58,6 +62,10 @@ pub(super) fn init(
     resize(state, backend.window_size());
     state.runtime.configure_output_modes();
     let mut damage = OutputDamageTracker::new(backend.window_size(), 1.0, Transform::Flipped180);
+    let mut wallpapers = WallpaperCache::default();
+    let mut titlebars = TitlebarCache::default();
+    let mut rounded = None;
+    let mut blur = None;
     event_loop
         .handle()
         .insert_source(events, move |event, _, state| match event {
@@ -70,6 +78,8 @@ pub(super) fn init(
                 state.host_focused = focused;
                 if !focused {
                     state.end_drag();
+                    state.titlebar_press = None;
+                    state.titlebar_drag = None;
                 }
                 state.dirty = true;
             }
@@ -83,16 +93,62 @@ pub(super) fn init(
                     let (renderer, mut framebuffer) = backend
                         .bind()
                         .map_err(|e| format!("bind framebuffer: {e}"))?;
-                    let elements = state.scene_elements(renderer);
-                    damage
-                        .render_output(
+                    let radius = state.runtime.config.theme.blur_radius;
+                    if !radius.is_finite() || !(0.0..=32.0).contains(&radius) {
+                        return Err("blur radius must be finite and in 0..=32".into());
+                    }
+                    if state.runtime.config.theme.corner_radius.is_rounded() && rounded.is_none() {
+                        rounded = Some(
+                            RoundedShaders::new(renderer)
+                                .map_err(|e| format!("compile rounded window shaders: {e}"))?,
+                        );
+                    }
+                    let scene = state
+                        .scene_elements(
                             renderer,
-                            &mut framebuffer,
-                            0,
-                            &elements,
-                            premultiply(state.runtime.config.theme.background),
+                            &mut wallpapers,
+                            &mut titlebars,
+                            rounded.as_ref(),
+                            radius > 0.0,
                         )
-                        .map_err(|e| format!("render frame: {e}"))?;
+                        .map_err(|e| format!("compose scene: {e}"))?;
+                    let background = premultiply(state.runtime.config.theme.background);
+                    if radius > 0.0 {
+                        if blur.is_none() {
+                            blur = Some(
+                                BackdropBlur::new(renderer)
+                                    .map_err(|e| format!("compile backdrop shaders: {e}"))?,
+                            );
+                        }
+                        let composed = blur
+                            .as_mut()
+                            .expect("blur initialized")
+                            .render(
+                                renderer,
+                                &scene,
+                                size,
+                                radius,
+                                state.runtime.config.theme.blur_method,
+                                state.runtime.config.theme.blur_passes,
+                                background,
+                            )
+                            .map_err(|e| format!("compose backdrop blur: {e}"))?;
+                        // render_output explicitly restores the window target after all
+                        // offscreen passes; never submit the last scratch framebuffer.
+                        damage
+                            .render_output(renderer, &mut framebuffer, 0, &[composed], [0.0; 4])
+                            .map_err(|e| format!("present blurred scene: {e}"))?;
+                    } else {
+                        damage
+                            .render_output(
+                                renderer,
+                                &mut framebuffer,
+                                0,
+                                &scene.elements,
+                                background,
+                            )
+                            .map_err(|e| format!("render frame: {e}"))?;
+                    }
                     if state.start.elapsed() >= capture_after {
                         if let Some(path) = capture.take() {
                             use std::io::Write;
