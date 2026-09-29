@@ -23,7 +23,7 @@ border_width = 0
 # Negotiated server-side titlebars; does not change client-side decorations.
 [theme.titlebar]
 # Straight RGBA, four finite channels in 0..1. Try background alpha 0.9 for translucency.
-active_background = [0.137, 0.157, 0.204, 1.0]
+active_background = [0.137, 0.157, 0.204, 0.5] 
 inactive_background = [0.106, 0.118, 0.149, 1.0]
 active_foreground = [0.937, 0.953, 0.980, 1.0]
 inactive_foreground = [0.682, 0.718, 0.780, 1.0]
