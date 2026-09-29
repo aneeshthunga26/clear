@@ -16,9 +16,9 @@ Hover an application to see cards for all of its open windows, including windows
 on other workspaces; click a card to reveal and focus it. Left click an app icon
 to focus its first window or launch its desktop entry. Right click to pin or unpin
 it. Window cards have minimize/restore and maximize/unmaximize buttons, and show
-minimized/maximized status. Minimized windows remain in the dock; selecting one
-restores it. Maximizing respects panel reservations and preserves saved geometry
-and tiling state. Pins are saved in Quickshell's per-shell state directory. The mode button
+minimized/maximized status, following Clear's
+[window-state contract](../../specs/desktop.md#maximize-and-minimize).
+Pins are saved in Quickshell's per-shell state directory. The mode button
 cycles built-in modes and the reset button clears the current output override.
 Rows, grid, and the Fibonacci-style spiral have their own mode icons.
 
@@ -39,11 +39,9 @@ bus:
 dbus-run-session -- ./target/debug/clear --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
-Alt+Tab opens a selection overlay for normal windows on the active workspace.
-Repeated Tab presses advance the selection, releasing Alt commits it, and Escape
-cancels. The VM example binds Alt+Tab explicitly; the default bindings include
-it as well. Clear owns the gesture and focus change. The Quickshell view only
-renders its state.
+The Alt+Tab overlay displays Clear's
+[switcher state](../../specs/shell.md#snapshot-fields). Gesture, acceptance, and
+cancellation behavior is defined by the [input specification](../../specs/input.md#alt-tab).
 
 The hover cards show window titles, app IDs, and workspaces. They are not live
 pixel thumbnails: Clear does not yet offer a toplevel capture protocol. The
@@ -70,23 +68,11 @@ blur_passes = 3
 ```
 
 These are the settings in `examples/vm.toml`; blur is not required to use this shell.
-`blur_method` is global and accepts `"gaussian"` (default) or `"kawase"` (Dual Kawase).
-`blur_radius` accepts finite values from 0 through 32, including fractions, and
-defaults to 0 (disables either method). Gaussian measures kernel support in logical
-pixels (try radius 12); Kawase measures sample offsets in source pyramid texels,
-not Gaussian-equivalent pixels. `blur_passes` is an integer from 1 through 6,
-default 3: Kawase downsamples through ceil-half levels and upsamples through the
-same levels in reverse, stopping early at `1×1`. Gaussian ignores this setting but
-it is always validated, even when blur is disabled.
-
-Clear owns the blur; the QML adds no blur shaders or effects. Neither method adds
-a glass treatment or changes client opacity: the panel colors and alpha described
-above remain client-owned, and foreground text/controls stay sharp. See
-[the blur test workflow](../../docs/vm-testing.md#backdrop-blur) for method/radius/depth
-options, oracle self-tests, and recorded results. Kawase passed all ten GPU cases
-at radius 2/passes 3 on private local virtual KWin (not a VM), plus
-`stacking`/`output-boundary-odd` at radius 1.5/passes 1 and 6. These were compositor
-fixture checks, not Quickshell or physical input tests.
+The QML adds no blur shaders or effects. See the
+[rendering specification](../../specs/rendering.md) for accepted values, defaults,
+filter units, composition, and resource limits, and
+[the blur test workflow](../../docs/vm-testing.md#backdrop-blur) for oracle coverage
+and recorded compositor fixture results.
 
 Modules:
 
@@ -116,4 +102,5 @@ python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell qu
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --exercise-overlays
 ```
 
-See [the integration guide](../../docs/shell-integration.md) for the IPC contract.
+See [the integration guide](../../docs/shell-integration.md) for setup and
+[the shell specification](../../specs/shell.md) for the IPC contract.

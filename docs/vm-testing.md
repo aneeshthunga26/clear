@@ -1,5 +1,10 @@
 # Isolated compositor testing
 
+The [component specifications](../specs/README.md) define expected behavior.
+This guide owns test setup, commands, fixture coverage, troubleshooting, and
+historical validation records. Scenario assertions below describe what each
+fixture checks; they are not a second behavior specification or a claim of a new run.
+
 These instructions are portable across Linux development environments. Prefer
 an isolated VM for compositor integration tests. Install Rust, the native build
 requirements listed in the README, Python 3, KWin, D-Bus tools, and foot in that
@@ -34,6 +39,9 @@ PPM captures can be viewed directly or converted with ImageMagick.
 
 ## Maximize, minimize, and restore
 
+Contract: [window state](../specs/desktop.md#maximize-and-minimize) and
+[XDG lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures).
+
 ```sh
 python3 -B scripts/vm-window-state-smoke.py --binary target/debug/clear
 ```
@@ -53,6 +61,8 @@ guests or repeat `--case maximized`, `--case minimized`, `--case restored`, and
 captures remain under `target/vm-window-state-smoke/` by default.
 
 ## Wallpapers
+
+Contract: [wallpaper selection, placement, and resources](../specs/wallpaper.md).
 
 ```sh
 python3 -B scripts/vm-wallpaper-smoke.py --binary target/debug/clear --artifacts target/vm-wallpaper-smoke
@@ -74,6 +84,8 @@ This checks rendered wallpaper behavior, not keyboard reloads or pointer drags;
 resource reload/failure semantics and resize geometry are covered by Rust tests.
 
 ## Rounded window outlines
+
+Contract: [rounded outlines](../specs/rendering.md#rounded-outlines).
 
 ```sh
 python3 -B scripts/vm-rounded-smoke.py --binary target/debug/clear
@@ -99,6 +111,8 @@ shape hit regions, accepted/rejected configuration forms, and atomic reload;
 interactive pointer routing still needs manual verification.
 
 ## Server-side decorations
+
+Contract: [decoration negotiation, titlebars, and resources](../specs/decorations.md).
 
 ```sh
 python3 -B scripts/vm-decoration-smoke.py --binary target/debug/clear --artifacts target/vm-decoration-smoke
@@ -208,6 +222,8 @@ title normalization, negotiation state, drag thresholds and modifier precedence.
 
 ## Backdrop blur
 
+Contract: [backdrop composition and filters](../specs/rendering.md#backdrop-composition).
+
 ```sh
 python3 -B scripts/vm-blur-smoke.py --binary target/debug/clear --artifacts target/vm-blur-gaussian
 python3 -B scripts/vm-blur-smoke.py --binary target/debug/clear --method kawase --radius 2 --passes 3 --artifacts target/vm-blur-kawase
@@ -234,12 +250,9 @@ The smoke runner accepts:
 
 - `--method gaussian|kawase`: default `gaussian`.
 - `--radius`: finite `0..=32`; defaults to `12` for Gaussian or `2` for Kawase.
-  Unlike the smoke defaults, the compositor theme defaults to zero (disabled).
-  Gaussian radius is logical-pixel support; Kawase radius is an offset in source
-  pyramid texels, not a Gaussian-equivalent radius.
-- `--passes`: integer `1..=6`, default `3`; Kawase downsample depth, followed by
-  the same number of upsample levels (early stop at `1×1`). Ignored by Gaussian
-  but always validated.
+  These are smoke-runner defaults; compositor defaults and filter units are in
+  the [rendering specification](../specs/rendering.md).
+- `--passes`: integer `1..=6`, default `3`; forwarded to theme `blur_passes`.
 
 Ten cases compare radius zero and the selected radius against independent Gaussian
 or Dual Kawase pixel oracles: XDG, rounded SSD, all four layer-shell categories,
@@ -281,6 +294,8 @@ is covered by `cargo test --locked --test blur`.
 
 ## Optional shell integration
 
+Contract: [shell IPC](../specs/shell.md). Setup: [shell integration](shell-integration.md).
+
 The shell IPC smoke needs only the base test dependencies. Quickshell is an
 optional separately installed client, not a build or runtime requirement:
 
@@ -312,11 +327,16 @@ the selected artifacts directory. The optional Quickshell process starts its
 notification and tray services on the private test bus; the smoke does not send
 notifications or tray items.
 
-For the contract and example, see [shell-integration.md](shell-integration.md).
+For the protocol contract, see [shell IPC](../specs/shell.md); for the example,
+see [shell integration](shell-integration.md).
 Test its pure message/model helpers without a GUI using
 `node --test examples/quickshell/Protocol.test.mjs`.
 
 ## Layer-shell and launcher integration fixture
+
+Contract: [layer lifecycle](../specs/platform.md#layer-shell-lifecycle),
+[launcher geometry](../specs/platform.md#launcher-geometry), and
+[scene clips and priority](../specs/platform.md#scene-and-hit-testing).
 
 `scripts/vm-layer-smoke.py` drives real SHM-backed layer-shell and XDG clients
 from `scripts/layer-smoke-client.c`. It compiles only this small C fixture, using
@@ -441,6 +461,10 @@ asks for a longer bound; it never accepts a stale frame. Assertion failures are
 real failures, not expected failures or automatic skips.
 
 ## Interactive run
+
+Expected gesture and state behavior is defined by [input](../specs/input.md),
+[resizing](../specs/layouts.md#resize-sessions), and
+[window state](../specs/desktop.md#maximize-and-minimize).
 
 Log into a graphical desktop in the test environment, then run from the checkout
 root in a terminal belonging to that session:

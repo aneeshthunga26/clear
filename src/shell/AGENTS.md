@@ -15,7 +15,8 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
   mutations before acknowledging/publishing; model snapshot reads remain pure.
 - Preserve optional operation: no shell process is required, and no arbitrary
   toolkit-specific actions belong in the wire contract. Future native shells can
-  consume the same model. See `docs/shell-integration.md` for the v1 contract.
+  consume the same model. See [the shell specification](../../specs/shell.md)
+  for the v1 contract and update it with every implemented protocol change.
 - `parse_request` rejects malformed/unknown fields and unsupported versions.
   `execute` independently checks the version and validates every target and mode
   before mutation, including when callers construct requests directly.

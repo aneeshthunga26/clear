@@ -3,6 +3,10 @@
 Read [the project guidance](../AGENTS.md) first. This file applies to all Rust
 source; each module's guidance adds its local responsibilities and invariants.
 
+Read the relevant [component specification](../specs/README.md) before changing
+behavior, and update it in the same change as the implementation. Module guidance
+describes ownership and engineering practice; specs own the behavior contract.
+
 ## Entry points
 
 - `lib.rs` declares the public modules. Keep its exports backend-independent
@@ -31,4 +35,5 @@ source; each module's guidance adds its local responsibilities and invariants.
 
 Follow the root Rust verification workflow. CLI changes should extend the unit
 tests in `main.rs`; `cargo test --locked --bin clear` runs them specifically.
-Update `README.md` when flags or supported behavior change.
+Update [the platform specification](../specs/platform.md) when flags or supported
+behavior change, and adjust README usage examples or links where necessary.

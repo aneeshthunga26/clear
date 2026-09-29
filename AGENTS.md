@@ -33,9 +33,12 @@ responsibilities, invariants, or verification workflows change; use the standard
 | Backend-independent theme descriptions                  | [src/decoration/AGENTS.md](src/decoration/AGENTS.md)             |
 | Platform entry point and adapter boundary               | [src/platform/AGENTS.md](src/platform/AGENTS.md)                 |
 | Smithay protocols, rendering, input, and nested backend | [src/platform/smithay/AGENTS.md](src/platform/smithay/AGENTS.md) |
+| Behavior specifications                                  | [specs/AGENTS.md](specs/AGENTS.md)                              |
+| Architecture, integration, and testing guides              | [docs/AGENTS.md](docs/AGENTS.md)                                |
 
-See [docs/architecture.md](docs/architecture.md) for the full design and
-[README.md](README.md) for supported behavior and current limitations.
+See [specs/README.md](specs/README.md) for implemented behavior and limitations,
+[docs/architecture.md](docs/architecture.md) for code organization, and
+[README.md](README.md) for setup.
 
 ## Shared boundaries
 
@@ -54,71 +57,44 @@ See [docs/architecture.md](docs/architecture.md) for the full design and
   UI toolkit. Quickshell is an optional example client, never a compositor
   dependency or mandatory startup process. Preserve bounded private IPC.
 
-## Configuration and behavior
+## Specifications and behavior changes
 
-See `examples/config.toml` and `examples/vm.toml` for the current schema. The XDG
-path is `clear/config.toml`. Missing or invalid startup config falls back to safe
-defaults. Failed reloads retain the last good configuration. Output topology
-changes currently require a restart.
+[specs/README.md](specs/README.md) is the canonical reference for implemented
+behavior. Read the relevant component specification alongside its module guidance
+before changing code. Every new implementation, behavior change, or bug fix that
+changes a contract MUST add or update the relevant specification in the same
+change. This includes defaults, validation, state transitions, failure handling,
+resource limits, and supported/unsupported behavior. Work is not complete while
+implemented behavior is missing from or contradicts its specification.
 
-Workspaces own windows; output groups present workspaces. A workspace can be
-visible in only one group. Per-output modes are workspace-specific overrides.
-Preserve window state when changing modes or output topology. Do not conflate
-client-committed geometry with compositor-requested geometry.
+For a new component, add a focused specification and link it from the spec index.
+Ground requirements in code and tests, and link to that evidence. For internal
+refactors that preserve behavior, confirm that the existing spec still describes
+the result; do not invent a behavior change. Keep proposals clearly separate from
+implemented contracts, and surface discrepancies rather than silently broadening
+support claims.
 
-Floating rectangles may extend offscreen; never clamp saved geometry because of
-panel reservations or temporary output sizes. Rendering and hit-testing must use
-the same visible workspace/output-group clips. Launcher geometry is client-sized
-and separate from saved floating geometry. Tiled resize gestures change persistent
-layout proportions, not floating flags or saved floating rectangles. Spiral tiles
-cannot resize; floating exceptions can. Wallpapers are optional and compositor-
-rendered behind all layer-shell surfaces, using full output rectangles.
-Rounded window bodies share the same original outline for rendering and hit tests;
-output crops must not create new rounded corners. Panels and popups keep their
-own shapes. Composite body subsurfaces before applying rounded coverage once.
-Server-side titlebars default on negotiated XDG/KDE decorations; honor explicit
-client-side requests and leave non-negotiating clients alone. Use pending mode for
-configure sizes, committed mode for rendering/input. Core placements are total
-frames; titlebar insets belong to the adapter, never saved-geometry mutations.
-`[theme.titlebar]` has four straight RGBA colors (`active_background`,
-`inactive_background`, `active_foreground`, `inactive_foreground`), exactly four
-finite channels in `0..=1`; integer height `16..=128` (default 32), controls_side
-left/right (default right), show_icon false, and show_title true. Controls mirror
-minimize/maximize-or-restore/close on the right to close/maximize-or-restore/minimize
-on the left. `[theme.titlebar.controls]` optionally supplies local SVG paths for
-minimize/maximize/restore/close relative to the config; omitted restore falls back
-to maximize SVG, then built-ins. Keep nonexistent SVG examples commented out.
-Runtime prepares bounded SVG/app-icon CPU resources outside rendering; minimal
-resvg disables external/network/embedded images, SVG text/fonts, and SVGZ. Reject
-DTD/entities and use/pattern/marker/mask/clipPath/filter elements before usvg
-conversion, including unused/namespaced definitions; only the restrictive path/
-gradient subset is supported, not masks/clips/filters. App icons use exact desktop IDs and
-bounded hicolor/direct-icon/pixmaps lookup, not a full theme resolver. Missing app
-icons use a generic glyph; startup control resource failures use built-ins; failed
-reloads retain the whole last-good config/resource set. Reload rereads same-path
-SVGs. Preserve RGBA alpha through source-over and rounded shaders, with no forced
-opaque fill or accent stripe. Square SSD borders are rings even without blur; keep
-legacy square unblurred CSD backing unchanged. Dynamic height changes frame insets/configures, never
-saved geometry. Titlebar texture cache limits are both 64 MiB and 128 entries,
-excluding outstanding elements/driver overhead; see architecture for resource bounds.
-Backdrop blur is global: `blur_method` is `gaussian` (default) or `kawase` (Dual
-Kawase); finite `blur_radius` in `0..=32` defaults to zero, disabling either method.
-Gaussian radius is logical-pixel support; Kawase radius is a source-pyramid-texel
-offset. Integer `blur_passes` in `1..=6` defaults to 3, ignored by Gaussian but always
-validated. Kawase uses ceil-half downsample levels and the same upsample levels,
-stopping early at `1×1`; the VM example uses radius 2/passes 3. Filter the lower
-scene, not foreground content, once per composed window/layer/popup tree. Keep
-rounded coverage distinct from client alpha; preserve holes, stacking, and
-output/workspace sample boundaries. Neither method adds a glass treatment.
+Keep each contract in one specification. README and `docs/` should point to it
+instead of restating defaults, lifecycle rules, protocol schemas, or invariants.
+Guides retain setup, examples, architecture rationale, testing procedures, and
+historical validation records. Module `AGENTS.md` files retain ownership and
+engineering guidance and should link to specs for detailed behavior.
 
-Maximize uses a window's home output usable area, not the whole output group.
-Maximize/minimize preserve saved geometry, floating flags, and layout proportions.
-Minimized windows remain owned/mapped but have no placements; explicit focus or
-Alt-Tab restores them, while workspace switching does not. Launchers stay client-sized.
+Key cross-component contracts:
 
-Layer-shell panels stay above normal windows on top/overlay layers. Reservations
-and keyboard ownership follow mapping lifecycle, not merely object existence.
-Track suppressed key releases by physical code.
+- [Desktop state](specs/desktop.md): ownership, groups, focus, preserved floating
+  geometry, maximize/minimize, and explicit effects.
+- [Layouts](specs/layouts.md) and [input](specs/input.md): saved proportions,
+  resize invalidation, gesture authorization, and physical release suppression.
+- [Configuration](specs/configuration.md) and [Rhai](specs/scripting.md): defaults,
+  atomic reload, shell classification, declarative scripts, and bounded execution.
+- [Platform](specs/platform.md): requested versus committed geometry, common
+  render/input clips, launcher sizing, and layer mapping/focus lifecycle.
+- [Decorations](specs/decorations.md), [rendering](specs/rendering.md), and
+  [wallpapers](specs/wallpaper.md): negotiated insets, prepared resources, alpha,
+  outlines, output-local filtering, and cache bounds.
+- [Shell IPC](specs/shell.md): optional toolkit-independent model, strict allowlist,
+  private endpoints, and bounded transport.
 
 ## Style
 
@@ -128,6 +104,10 @@ doc comments. Inline comments should explain non-obvious protocol timing, state
 ownership, or safety—not restate assignments.
 
 ## Verification
+
+For Markdown-only changes, read the relevant code and tests and review the text
+and links. Do not run builds, tests, formatters, or compositor sessions unless
+the user requests them; reading a test is not evidence of a passing run.
 
 After Rust changes run `cargo fmt`, `cargo check --locked`, and `cargo test --locked`.
 Check editor diagnostics. Use a bounded runtime for compositor tests, such as
