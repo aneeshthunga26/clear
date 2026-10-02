@@ -21,7 +21,7 @@ cargo run -- --command foot
 With VM-friendly shortcuts and a mixed-mode workspace:
 
 ```sh
-cargo run -- --config examples/vm.toml --command foot
+cargo run -- --config examples/single-monitor.toml --command foot
 ```
 
 For a bounded run and framebuffer capture:
