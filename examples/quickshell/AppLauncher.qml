@@ -7,6 +7,7 @@ import "Protocol.js" as Protocol
 
 PanelWindow {
     id: launcher
+    property ShellStyle appearance: ShellStyle {}
     required property var pinStore
     required property var targetScreen
     property bool opened: false
@@ -20,13 +21,13 @@ PanelWindow {
     // surface on hide disconnects Quickshell from this nested compositor.
     visible: targetScreen !== null
     anchors { top: true }
-    margins.top: 64
+    margins.top: appearance.glass ? 70 : 64
     implicitWidth: opened ? Math.min(540, targetScreen ? targetScreen.width - 24 : 540) : 1
     implicitHeight: opened ? 480 : 1
     exclusiveZone: 0
     color: "transparent"
-    mask: Region { width: launcher.opened ? launcher.width : 0; height: launcher.opened ? launcher.height : 0 }
-    WlrLayershell.namespace: "clear-app-launcher"
+    mask: Region { radius: launcher.appearance.overlayRadius; width: launcher.opened ? launcher.width : 0; height: launcher.opened ? launcher.height : 0 }
+    WlrLayershell.namespace: appearance.glass ? "clear-glass-rounded-launcher" : "clear-app-launcher"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: opened ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
 
@@ -45,7 +46,11 @@ PanelWindow {
     Rectangle {
         visible: launcher.opened
         anchors.fill: parent
-        color: "#e6111827"
+        color: launcher.appearance.surfaceColor
+        radius: launcher.appearance.overlayRadius
+        border.width: launcher.appearance.outlineWidth
+        border.color: launcher.appearance.outlineColor
+        antialiasing: true
     }
 
     ColumnLayout {
@@ -63,7 +68,7 @@ PanelWindow {
                 font.bold: true
             }
             Item { Layout.fillWidth: true }
-            PanelButton { text: "×"; description: "Close launcher"; onClicked: launcher.dismiss() }
+            PanelButton { appearance: launcher.appearance; text: "×"; description: "Close launcher"; onClicked: launcher.dismiss() }
         }
 
         TextField {
@@ -90,8 +95,8 @@ PanelWindow {
                 readonly property var entry: modelData
                 width: ListView.view.width
                 height: 44
-                radius: 5
-                color: ListView.isCurrentItem || hit.containsMouse ? "#334155" : "#1e293b"
+                radius: launcher.appearance.glass ? 12 : 5
+                color: ListView.isCurrentItem || hit.containsMouse ? launcher.appearance.hoverColor : launcher.appearance.controlColor
                 Row {
                     anchors.fill: parent
                     anchors.margins: 7
@@ -120,6 +125,7 @@ PanelWindow {
                         }
                     }
                     PanelButton {
+                        appearance: launcher.appearance
                         text: launcher.pinStore.ids.indexOf(entry.startupClass || entry.id) === -1 ? "☆" : "★"
                         description: "Pin or unpin " + entry.name
                         onClicked: launcher.pinStore.toggle(entry.startupClass || entry.id)

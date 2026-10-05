@@ -109,11 +109,11 @@ pub(super) fn init(
                             &mut wallpapers,
                             &mut titlebars,
                             rounded.as_ref(),
-                            radius > 0.0,
+                            radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled,
                         )
                         .map_err(|e| format!("compose scene: {e}"))?;
                     let background = premultiply(state.runtime.config.theme.background);
-                    if radius > 0.0 {
+                    if radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled {
                         if blur.is_none() {
                             blur = Some(
                                 BackdropBlur::new(renderer)

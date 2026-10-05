@@ -39,9 +39,12 @@ bus:
 dbus-run-session -- ./target/debug/clear --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
-The Alt+Tab overlay displays Clear's
-[switcher state](../../specs/shell.md#snapshot-fields). Gesture, acceptance, and
-cancellation behavior is defined by the [input specification](../../specs/input.md#alt-tab).
+The Alt+Tab overlay displays each window's desktop-entry icon, app name, and
+title from Clear's [switcher state](../../specs/shell.md#snapshot-fields). It
+uses its bundled generic application icon when the app ID has no desktop-entry
+match or the icon theme cannot load the entry's icon.
+Gesture, acceptance, and cancellation behavior is defined by the
+[input specification](../../specs/input.md#alt-tab).
 
 The hover cards show window titles, app IDs, and workspaces. They are not live
 pixel thumbnails: Clear does not yet offer a toplevel capture protocol. The
@@ -49,6 +52,34 @@ launcher uses Quickshell's desktop-entry index, so only installed desktop entrie
 appear. Notification history exists for the life of the Quickshell process.
 
 ## Translucent panels
+
+### Liquid-glass variant
+
+Run the glass appearance with your existing liquid-glass compositor settings:
+
+```sh
+dbus-run-session -- ./target/debug/clear --config examples/liquid-glass.toml --command quickshell -p examples/quickshell/liquid-glass.qml
+```
+
+This interactive command has no exit timer. Ctrl+Alt+Return opens the configured
+translucent terminal, Ctrl+Alt+Shift+R reloads Clear's TOML, and Ctrl+Alt+Escape
+quits. The private bus keeps this example's notifications separate from the host.
+The compositor configuration uses the included cracked-earth image at
+`examples/liquid-glass-wallpaper.jpg` as its wallpaper.
+
+The floating top bars have low-opacity backgrounds and semicircular left/right
+ends, including matching input masks. Popups share the tint and rounded styling.
+Its explicit layer namespace also gives Clear the pill radius needed to fit the
+refraction and specular maps to the bar, so the glass follows the curved ends.
+The existing controls and services are shared with the standard example. Adjust
+glass colors, opacity, spacing, and sizing in [ShellStyle.qml](ShellStyle.qml);
+restart Quickshell after editing QML. Clear's TOML continues to control the
+compositor's glass/blur settings. See the
+[appearance contract](../../specs/shell.md#optional-quickshell-appearances) for
+exact geometry and opacity. Rounded input masks use Quickshell's
+[Region radius](https://quickshell.org/docs/v0.3.1/types/Quickshell/Region/).
+
+### Standard appearance
 
 The top bar uses `#e60f172a`; launcher, notification, app-preview, and Alt+Tab
 panel backgrounds use `#e6111827` (QML `#AARRGGBB`). Alpha `0xe6` is 230/255,
@@ -81,7 +112,9 @@ Modules:
 - `AppDock.qml`, `ModeIcon.qml`, `Tray.qml`: panel features.
 - `AppLauncher.qml`, `NotificationStore.qml`, `NotificationCenter.qml`: app and notification UI.
 - `Switcher.qml`: read-only Alt+Tab overlay.
-- `shell.qml`: assembly and per-output panel.
+- `DesktopShell.qml`: shared assembly and per-output panel.
+- `ShellStyle.qml`: standard and glass palettes/geometry.
+- `shell.qml` / `liquid-glass.qml`: appearance entry points.
 
 The bridge, notification service, tray, and small panel controls stay loaded so
 they can receive state and messages. The launcher, notification view, Alt-Tab
@@ -100,6 +133,7 @@ node --test examples/quickshell/Protocol.test.mjs
 qmllint examples/quickshell/*.qml
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --exercise-overlays
+python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --quickshell-style glass --exercise-overlays --artifacts target/vm-glass-shell
 ```
 
 See [the integration guide](../../docs/shell-integration.md) for setup and

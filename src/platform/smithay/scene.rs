@@ -1,6 +1,6 @@
 use super::{
     blur::BlurMask,
-    rounded::{RoundedShaders, RoundedSurface, WindowOutline},
+    rounded::{RoundedShaders, RoundedShape, RoundedSurface, WindowOutline},
     state::Compositor,
     titlebar::{TitlebarCache, TitlebarPart, content_rect, titlebar_hit},
     wallpaper::WallpaperCache,
@@ -55,6 +55,24 @@ fn client_tree_shape(elements: &[WaylandSurfaceRenderElement<GlesRenderer>]) -> 
         .map(|e| e.geometry(1.0.into()))
         .reduce(|a, b| a.merge(b))
         .map(|r| Rect::new(r.loc.x, r.loc.y, r.size.w, r.size.h))
+}
+
+fn glass_layer_shape(rect: Rect, namespace: &str, root: bool) -> Option<RoundedShape> {
+    if !root {
+        return None;
+    }
+    let fit = |radius: f32| radius.min(rect.width.min(rect.height).max(0) as f32 / 2.0);
+    let radius = if namespace.starts_with("clear-glass-pill-") {
+        fit(rect.height.min(rect.width).max(0) as f32 / 2.0)
+    } else if namespace.starts_with("clear-glass-rounded-") {
+        fit(24.0)
+    } else {
+        return None;
+    };
+    Some(RoundedShape {
+        rect,
+        radii: [radius; 4],
+    })
 }
 
 pub(super) fn logical(rect: Rect) -> Rectangle<i32, Logical> {
@@ -591,10 +609,15 @@ impl Compositor {
                                 })
                                 .map(SceneElement::Surface),
                         );
+                        let root = surface == *layer.wl_surface();
+                        let mask = shape.map(|rect| {
+                            glass_layer_shape(rect, layer.namespace(), root)
+                                .map_or(BlurMask::ClientAlpha(rect), BlurMask::GlassLayer)
+                        });
                         groups.push(SceneGroup {
                             elements: start..elements.len(),
                             clip: physical(region.rect),
-                            mask: shape.map(BlurMask::ClientAlpha),
+                            mask,
                         });
                     }
                 }
@@ -711,6 +734,18 @@ mod tests {
             square_border_regions(outline, clip, false),
             vec![logical(outline.outer.rect)]
         );
+    }
+
+    #[test]
+    fn glass_layer_namespace_supplies_only_fitted_optical_radii() {
+        let rect = Rect::new(12, 10, 616, 44);
+        let pill = glass_layer_shape(rect, "clear-glass-pill-panel", true).unwrap();
+        assert_eq!(pill.rect, rect);
+        assert_eq!(pill.radii, [22.0; 4]);
+        let rounded = glass_layer_shape(rect, "clear-glass-rounded-panel", true).unwrap();
+        assert_eq!(rounded.radii, [22.0; 4]);
+        assert!(glass_layer_shape(rect, "clear-example-panel", true).is_none());
+        assert!(glass_layer_shape(rect, "clear-glass-pill-panel", false).is_none());
     }
 
     fn fixture() -> (Desktop, Placement, [(OutputId, Rect); 2]) {

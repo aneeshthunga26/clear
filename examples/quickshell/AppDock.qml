@@ -5,6 +5,7 @@ import "Protocol.js" as Protocol
 
 Item {
     id: dock
+    property ShellStyle appearance: ShellStyle {}
     required property var shellBridge
     required property var currentOutput
     required property var panelWindow
@@ -46,9 +47,9 @@ Item {
                 readonly property var entry: DesktopEntries.heuristicLookup(modelData.id)
                 width: 38
                 height: 29
-                radius: 5
-                color: mouseArea.containsMouse ? "#334155"
-                    : modelData.windows.some(function(window) { return window.focused; }) ? "#1d4ed8" : "#1e293b"
+                radius: dock.appearance.glass ? 12 : 5
+                color: mouseArea.containsMouse ? dock.appearance.hoverColor
+                    : modelData.windows.some(function(window) { return window.focused; }) ? dock.appearance.selectedColor : dock.appearance.controlColor
 
                 Image {
                     anchors.centerIn: parent
@@ -96,16 +97,21 @@ Item {
             id: preview
             visible: !!dock.hoveredGroup && dock.hoveredGroup.windows.length > 0
             color: "transparent"
+            mask: Region { width: preview.width; height: preview.height; radius: dock.appearance.overlayRadius }
             implicitWidth: 310
             implicitHeight: Math.min(360, 42 + (dock.hoveredGroup ? dock.hoveredGroup.windows.length : 0) * 62)
             anchor.window: dock.panelWindow
             anchor.rect.x: dock.previewX
-            anchor.rect.y: 36
+            anchor.rect.y: dock.panelWindow.height + (dock.appearance.glass ? 8 : 0)
             grabFocus: false
 
             Rectangle {
                 anchors.fill: parent
-                color: "#e6111827"
+                color: dock.appearance.surfaceColor
+                radius: dock.appearance.overlayRadius
+                border.width: dock.appearance.outlineWidth
+                border.color: dock.appearance.outlineColor
+                antialiasing: true
             }
 
             Column {
@@ -130,8 +136,8 @@ Item {
                         required property var modelData
                         width: ListView.view.width
                         height: 56
-                        radius: 5
-                        color: modelData.focused ? "#1e40af" : hover.containsMouse ? "#334155" : "#1e293b"
+                        radius: dock.appearance.glass ? 12 : 5
+                        color: modelData.focused ? dock.appearance.cardSelectedColor : hover.containsMouse ? dock.appearance.hoverColor : dock.appearance.controlColor
                         Column {
                             anchors.fill: parent
                             anchors.margins: 7
@@ -168,6 +174,7 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             spacing: 3
                             PanelButton {
+                                appearance: dock.appearance
                                 text: windowCard.modelData.minimized ? "↗" : "−"
                                 description: windowCard.modelData.minimized ? "Restore window" : "Minimize window"
                                 onClicked: {
@@ -179,6 +186,7 @@ Item {
                                 }
                             }
                             PanelButton {
+                                appearance: dock.appearance
                                 text: windowCard.modelData.maximized ? "❐" : "□"
                                 description: windowCard.modelData.maximized ? "Unmaximize window" : "Maximize window"
                                 onClicked: {

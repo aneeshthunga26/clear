@@ -254,11 +254,16 @@ The smoke runner accepts:
   the [rendering specification](../specs/rendering.md).
 - `--passes`: integer `1..=6`, default `3`; forwarded to theme `blur_passes`.
 - `--liquid-glass`: enable default optics and the independent optical oracle.
+- `--specular-opacity`, `--specular-saturation`, and `--refraction-level` forward
+  the reference demo's three controls to the compositor and scalar oracle.
+- `--zoom-level` forwards the magnification multiplier (default 1, range 0–2).
+- `--refraction-width` forwards the rim-width multiplier (default 1, range 0–10).
 
-Ten cases compare radius zero and the selected radius against independent Gaussian
-or Dual Kawase pixel oracles: XDG, rounded SSD, all four layer-shell categories,
+Twelve cases compare radius zero and the selected radius against independent Gaussian
+or Dual Kawase pixel oracles: XDG, rounded SSD, asymmetric rounded CSD, a circular
+backdrop at a small corner, all four layer-shell categories,
 popups, stacking, `output-boundary`, and `output-boundary-odd`. The XDG case also
-compares omitted `blur_radius` with explicit zero (21 bounded captures per full run
+compares omitted `blur_radius` with explicit zero (25 bounded captures per full run
 with nonzero radius). Patterned PNG backgrounds and real SHM clients exercise
 transparent content, opaque glyph proxies, composed subsurfaces, holes, rounded
 cut-outs, and lower-versus-upper scene order. The Kawase oracle models ceil-half
@@ -280,7 +285,7 @@ python3 -B scripts/vm-blur-smoke.py --binary target/debug/clear --method kawase 
 The existing C fixture is reused; no extra Python packages or shell UI are required.
 Use repeated `--case` options for focused runs. Each compositor instance defaults
 to eight seconds, configurable with `--seconds 8..30`; this bounds each capture,
-not the whole suite. A full nonzero-radius run spends at least 168 seconds in
+not the whole suite. A full nonzero-radius run spends at least 200 seconds in
 captures, plus fixture build, startup, and CPU oracle time. `--build-only` checks
 fixture compilation without a compositor. Artifacts default to `target/vm-blur-smoke/`;
 use distinct `--artifacts` directories under `target/` to preserve each parameter
@@ -295,42 +300,118 @@ is covered by `cargo test --locked --test blur`.
 
 ### Liquid-glass validation
 
-Contract: [liquid glass](../specs/rendering.md#liquid-glass). The same fixture can
-apply a scalar Snell-refraction, dispersion and edge-light oracle after either
-filter. It also checks that the expected image differs enough from ordinary blur
-to catch an omitted optical pass. Use separate artifact directories:
+Contract: [liquid glass](../specs/rendering.md#liquid-glass). This implementation
+replaces the earlier lens/Snell/mirror experiments. Their optical tests and controls
+have been removed; old `target/glass-*` captures are historical, not evidence for
+the current filter.
+
+The runner decodes the exact reference PNGs independently of Rust, models the
+separate RGBA8 magnification pass, samples it with the second SVG displacement
+map, and applies saturation/masking/specular source-over operations. Glass stays
+active at radius zero. Existing blur-only paired-variance checks remain unchanged;
+glass runs use per-pixel oracles and require pixels that distinguish an omitted
+optical pass. Foreground glyph proxies, transparent holes, stacking, and viewport
+clamps remain part of the pixel oracle. The original maps and their SHA-256 hashes
+are recorded in [map provenance](../src/platform/smithay/glass-maps/README.md).
 
 ```sh
-python3 -B scripts/vm-blur-smoke.py --liquid-glass --method gaussian --radius 2 --case xdg --case rounded-ssd --case layer-top --case popup --case stacking --case output-boundary-odd --artifacts target/glass-gaussian
-python3 -B scripts/vm-blur-smoke.py --liquid-glass --method kawase --artifacts target/glass-kawase
+cargo build --locked
 python3 -B scripts/test_vm_blur_smoke.py
+python3 -B scripts/vm-blur-smoke.py --liquid-glass --radius 0 --case glass-corner --artifacts target/kube-glass-zero
+python3 -B scripts/vm-blur-smoke.py --liquid-glass --method gaussian --radius 2 --case rounded-asymmetric --case layer-top --case output-boundary-odd --artifacts target/kube-glass-fitted-gaussian
+python3 -B scripts/vm-blur-smoke.py --liquid-glass --method kawase --case rounded-ssd --case stacking --artifacts target/kube-glass-fitted-kawase
 ```
 
-Recorded liquid-glass validation used **private local virtual KWin, not a VM**:
+The replacement passed 221 Rust tests, 16 CPU oracle/harness tests, Cargo
+fmt/check/build, and rust-analyzer error diagnostics. Private local virtual KWin
+GPU validation (not a VM) passed the following current fitted-map selections:
 
-| Configuration | Passed cases | Artifacts |
+| Filter/settings | Cases | Artifacts |
 | --- | --- | --- |
-| Glass + Gaussian radius 2 | XDG, rounded SSD, top layer, popup, stacking, odd output boundary | `target/glass-gaussian/` |
-| Glass + Kawase radius 2/passes 3 | XDG, rounded SSD | `target/glass-kawase/` |
-| Glass + Kawase radius 2/passes 3 | All four layers, popup, stacking, both output boundaries | `target/glass-kawase-layers/` |
-| Glass disabled, Gaussian radius 2 | XDG, odd output boundary | `target/glass-disabled-regression/` |
-| Glass disabled, Kawase radius 2/passes 3 | XDG, odd output boundary | `target/glass-disabled-kawase/` |
+| Gaussian radius 0 and 2 | Circular backdrop, asymmetric rounded CSD, top layer, odd output boundary | `target/kube-glass-fitted-gaussian/` |
+| Kawase radius 0 and 2/passes 3 | Rounded SSD, stacking | `target/kube-glass-fitted-kawase/` |
+| No blur, opacity 0.2/saturation 3/refraction 0.35 | Circular backdrop | `target/kube-glass-fitted-controls/` |
+| No blur, opacity 0/saturation 1/refraction 0 | Fixed magnification remains active | `target/kube-glass-fitted-magnify-only/` |
 
-The first Kawase run stopped at an overly strict harness sensitivity threshold;
-its layer pixels matched the oracle. That guard was corrected to the actual
-four-value per-channel tolerance, and the affected case passed in the layers run.
-Radius-zero XDG and odd-boundary captures were byte-identical with glass on/off.
-The full 221 Rust tests, 14 CPU harness/oracle tests, fmt/check/build, and
-rust-analyzer error diagnostics passed. A bounded nested run of
-`examples/liquid-glass.toml` with a real translucent foot client was captured and
-visually inspected in `target/glass-demo/`. No physical input was tested.
+The fitted captures differed from the scalar oracle by at most four channel values;
+ordinary blur's existing tolerance is unchanged. Glass permits four at radius zero
+as well because its two RGBA8 displacement stages introduce additional interpolation
+and rounding. Sensitivity checks use the high-contrast glass-at-zero-blur capture;
+heavy Kawase blur can erase all detail needed to distinguish an omitted optical
+pass, even when the per-pixel oracle passes. A separate ordinary Kawase odd-output
+regression passed in `target/kube-glass-blur-regression/`. The real translucent foot
+capture `target/kube-glass/window.ppm` was visually inspected. Earlier unfitted
+capsule-map captures in `target/kube-glass-*` are superseded by these fitted runs.
 
-Radius-zero captures still bypass optics. CPU schema/reload coverage is in
-`tests/liquid_glass.rs`; halo bounds are tested inline in `blur.rs`. The optical
-oracle uses default glass parameters and opaque lower-scene RGB; it does not
-establish arbitrary optical settings, nonopaque framebuffer alpha, live GPU reload,
-or physical pointer/keyboard behavior. For interactive local testing, use the
-[README nested example](../README.md#liquid-glass-in-nested-mode).
+The added zoom control passed the same 221 Rust and 16 CPU tests, Cargo
+fmt/check/build, and rust-analyzer error diagnostics. Additional private local
+virtual KWin captures passed at zoom 0 (unblurred circular backdrop,
+`target/kube-zoom-zero/`), zoom 1 (Gaussian radius 0 and 2, circular backdrop,
+`target/kube-zoom-default/`), and zoom 2 (Kawase radius 0 and 2/passes 3, odd output
+boundary, `target/kube-zoom-max/`). The zoom-1 Gaussian radius-2 capture is
+byte-identical to the earlier default fitted-map capture. CPU coordinate-ramp
+checks isolate magnification at zoom 0, 0.5, 1, and 2; reload tests cover valid
+changes and atomic rejection of an out-of-range zoom value. These runs did not
+exercise physical input or live GPU reload.
+
+Extending refraction to 4 passed 221 Rust tests, 16 CPU tests, Cargo fmt/check/build,
+and rust-analyzer error diagnostics. The first maximum-strength circular-backdrop
+capture exposed half-precision refraction-map sampling (five checked pixels
+exceeded tolerance, maximum channel error 7). Explicit high-precision sampling
+fixed that discrepancy without widening the oracle tolerance. Private local
+virtual KWin reruns passed unblurred circular-backdrop checks at refraction 4 and
+1 (`target/kube-refraction-corner-highp/` and
+`target/kube-refraction-default-highp/`), plus refraction 4 at an odd output boundary
+with Kawase radius 0 and 2/passes 3 (`target/kube-refraction-boundary-highp/`).
+These were GPU capture checks, not physical input or live GPU reload tests.
+
+The subsequent limit increase to 10 passed the same 221 Rust and 16 CPU tests,
+Cargo fmt/check/build, and rust-analyzer error diagnostics. Private local virtual
+KWin GPU checks at refraction 10 passed the unblurred circular backdrop
+(`target/kube-refraction-10-corner/`) and the odd output boundary with Kawase
+radius 0 and 2/passes 3 (`target/kube-refraction-10-boundary/`). No physical input
+or live GPU reload was tested.
+
+The refraction-width control passed 221 Rust tests, 18 CPU oracle/harness tests,
+Cargo fmt/check/build, and rust-analyzer error diagnostics. CPU checks cover
+unchanged rim/center coordinates, continuity at map joins, widening into the
+formerly flat region, zero-width behavior, config bounds, and reload. GPU checks
+on private local virtual KWin passed these selections:
+
+| Width / refraction level | Cases | Artifacts |
+| --- | --- | --- |
+| 3 / 10, no blur | Circular backdrop, asymmetric rounded CSD | `target/kube-width-wide-precise/` |
+| 10 / 10, Kawase radius 0 and 2/passes 3 | Odd output boundary, rounded SSD | `target/kube-width-max-precise/` |
+| 0 / 10, no blur | Circular backdrop | `target/kube-width-zero/` |
+| 0.5 / 10, no blur | Circular backdrop | `target/kube-width-narrow/` |
+| 1 / 1, no blur | Circular backdrop, byte-identical to the previous default | `target/kube-width-default-precise/` |
+
+Initial width-3/10 captures exposed hardware interpolation-weight quantization
+amplified by displacement strength. Explicit interpolation of the refraction map
+at adjusted widths fixed it without changing oracle tolerances. Those initial
+`target/kube-width-wide/` and `target/kube-width-max/` runs are superseded by the
+`-precise` runs. The circular-backdrop comparison at width 1 versus 3 was visually
+inspected (`target/kube-width/comparison.png`). No physical input or live GPU
+reload was tested.
+
+A lifetime investigation ran the interactive glass configuration for 135 seconds
+on private local virtual KWin with a real translucent foot client (Gaussian
+radius 8, refraction level 1/width 5, zoom 0.5). It remained alive beyond 120
+seconds, memory stabilized after startup, and the explicit 135-second test
+deadline produced exit status 0. Logs, capture, and memory samples are in
+`target/glass-lifetime/`. This idle run does not establish stability under physical
+input or on another host backend. The interactive demo command omits
+`--exit-after`; that option is reserved for deliberately timed runs.
+
+For interactive local testing, use the [nested example](../README.md#liquid-glass-in-nested-mode).
+Refraction extends the reference slider range to 0–10; the added zoom multiplier
+ranges from 0 to 2. Removed settings in
+custom configs must be deleted rather than left in place. Tests do not synthesize
+physical clicks, keys, dragging, or live GPU reload. The pixel oracle uses opaque
+lower-scene RGB; it does not establish arbitrary translucent-framebuffer alpha or
+browser/compositor pixel parity at other device scales. The reference's capsule
+maps fit the original window corners and edge strips with nine-slice coordinates;
+the 210×150, radius-75 reference retains its original mapping.
 
 ## Optional shell integration
 
@@ -343,6 +424,7 @@ optional separately installed client, not a build or runtime requirement:
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --artifacts target/vm-shell-smoke
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --artifacts target/vm-quickshell
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --exercise-overlays --artifacts target/vm-overlays
+python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --quickshell-style glass --exercise-overlays --artifacts target/vm-glass-shell
 ```
 
 Each run uses a bounded compositor (25 seconds), a real foot client, a private
@@ -353,6 +435,8 @@ With `--quickshell`, it also runs the example on a private D-Bus session using Q
 Quick's software renderer, checks both output reservations, stops/restarts the
 shell without stopping Clear, confirms fresh subscription, and samples panel
 pixels in the capture. It does not automate physical clicks or keypresses.
+`--quickshell-style glass` selects `liquid-glass.qml` and checks its 54-pixel
+reservation, low-opacity fill, transparent corners, and both circular ends.
 The optional `--exercise-overlays` fixture requires Alacritty. It invokes
 Quickshell's launcher and other view methods in a copied QML config, launches
 Alacritty through its desktop entry, simulates switcher snapshot state, and
@@ -371,6 +455,33 @@ For the protocol contract, see [shell IPC](../specs/shell.md); for the example,
 see [shell integration](shell-integration.md).
 Test its pure message/model helpers without a GUI using
 `node --test examples/quickshell/Protocol.test.mjs`.
+
+The shared standard/glass appearance change passed all 12 Node model tests and
+`qmllint examples/quickshell/*.qml` without diagnostics. Both styles passed the
+full shell smoke with `--exercise-overlays` on private local virtual KWin (not
+a VM), including shell restart, subscriptions, per-output reservations, captured
+pixels, and overlay lifecycle: `target/glass-shell-standard/` and
+`target/glass-shell-variant/`. A separate 18-second capture used the current
+liquid-glass TOML, real Quickshell with its default Qt Quick backend, and a
+translucent foot client; `target/glass-shell-preview/frame.png` was visually
+inspected. That capture's settings snapshot and logs are in the same directory.
+These checks did not exercise physical clicks, keys, notifications, or tray items.
+
+The glass-style rerun after fitting its optical map to the pill outline also
+passed with `--exercise-overlays` at `target/glass-layers-shell-final/`. A paired
+18-second GPU capture using `examples/liquid-glass.toml` compared glass enabled
+against blur-only with the same wallpaper and Quickshell scene. Of 49,856 sampled
+panel pixels, 10,234 changed (maximum channel difference 13), confirming the glass
+pass contributes to the panel image; captures are in
+`target/glass-layers-ab/`. This verifies rendered pixels on private local virtual
+KWin, not physical input or behavior on other GPU drivers.
+
+The switcher icon update passed the glass-style `--exercise-overlays` smoke in
+the VM at `target/vm-glass-switcher-icons/`. Separate bounded captures with the
+liquid-glass TOML and real Quickshell displayed Foot and Alacritty desktop-entry
+icons (`target/vm-switcher-icons-preview/`) and a bundled generic fallback for an
+unmatched app ID (`target/vm-switcher-fallback-preview/`). These captures verify
+the overlay pixels; they do not synthesize a physical Alt+Tab gesture.
 
 ## Layer-shell and launcher integration fixture
 

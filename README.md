@@ -122,18 +122,54 @@ Alacritty's `[window] opacity = 0.85` in its own config.
 
 ### Liquid glass in nested mode
 
-The [liquid-glass example](examples/liquid-glass.toml) combines glass optics with
-Kawase blur, translucent titlebars, and a translucent foot terminal:
+The [liquid-glass example](examples/liquid-glass.toml) uses the kube.io magnifying-glass filter
+with translucent titlebars and a translucent foot terminal. The command
+matches the terminal tint and opacity to the demo titlebar so background features
+remain continuous across their boundary:
 
 ```sh
 cargo build --locked
-target/debug/clear --config examples/liquid-glass.toml --exit-after 120 --command foot -o colors-dark.alpha=0.55
+target/debug/clear --config examples/liquid-glass.toml --command foot -o colors-dark.alpha=0.55 -o colors-dark.background=232834
 ```
 
-Use Ctrl+Alt+Return for another terminal and Ctrl+Alt+Escape to quit. Edit
-`blur_method`/`blur_radius` to try Gaussian, then Ctrl+Alt+Shift+R to reload.
-Set `[theme.liquid_glass] enabled = false` to compare ordinary blur. See the
-[optical settings](specs/rendering.md#liquid-glass) for supported controls.
+This interactive command has no time limit. For a bounded test, add
+`--exit-after 120` before `--command`; that deliberately closes Clear and its
+launched clients after two minutes. Use Ctrl+Alt+Return for another terminal and
+Ctrl+Alt+Escape to quit. The optical
+controls in `[theme.liquid_glass]` match the reference demo:
+
+```toml
+enabled = true
+specular_opacity = 0.5
+specular_saturation = 50
+refraction_level = 1
+refraction_width = 10
+zoom_level = 1.5
+```
+
+Edit these values and press Ctrl+Alt+Shift+R to reload.
+`zoom_level` ranges from 0 (no magnification) to 2 (stronger magnification), with
+1 preserving the reference default. It is independent of `refraction_level`.
+Increase `refraction_level` up to 10 for stronger refraction; its default remains 1.
+The example sets `refraction_width = 10` for the widest refracting rim; 3 gives
+a narrower band without changing the window corners. Its range is 0–10, with
+1 preserving the original width and 0 disabling refraction. See the optical
+contract for the width mapping.
+The example uses a light Kawase blur; `blur_method`/`blur_radius` can select either filter independently. Set
+`enabled = false` to compare without glass. Previous lens/mirror settings must be
+removed from custom configurations. See the [optical contract](specs/rendering.md#liquid-glass)
+for the reference filter, control ranges, and how its maps scale to windows.
+The maps fit native window corners; smaller radii compress the reference's
+bezel and highlight into a narrower band. The demo uses a 24-pixel radius.
+
+For matching translucent Quickshell bars with pill-shaped ends:
+
+```sh
+dbus-run-session -- target/debug/clear --config examples/liquid-glass.toml --command quickshell -p examples/quickshell/liquid-glass.qml
+```
+
+See the [glass shell guide](examples/quickshell/README.md#liquid-glass-variant)
+for styling and controls.
 
 ### Server-side titlebars
 

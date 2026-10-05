@@ -9,7 +9,7 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            Bind, Frame, Offscreen, Renderer,
+            Bind, Frame, ImportMem, Offscreen, Renderer,
             element::{Element, Id, Kind, RenderElement, texture::TextureRenderElement},
             gles::{
                 GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
@@ -28,6 +28,8 @@ pub(super) enum BlurMask {
     SquareWindow(RoundedShape),
     /// No protocol blur region: weight blur by tree alpha, preserving transparent holes.
     ClientAlpha(crate::core::Rect),
+    /// Glass layer uses its namespace outline as independent geometric coverage.
+    GlassLayer(RoundedShape),
 }
 
 /// Four framebuffer-sized textures, reused across trees and frames; resize replaces them.
@@ -43,7 +45,51 @@ pub(super) struct BackdropBlur {
     gaussian: Option<GlesTexProgram>,
     kawase: Option<Kawase>,
     composite: GlesTexProgram,
+    glass: Option<GlassResources>,
     scratch: Option<Scratch>,
+}
+
+struct GlassResources {
+    magnify: GlesTexProgram,
+    maps: [GlesTexture; 3],
+}
+
+impl GlassResources {
+    fn new(renderer: &mut GlesRenderer) -> Result<Self, GlesError> {
+        let magnify = renderer.compile_custom_texture_shader(
+            format!(
+                "{TEXTURE_HEADER}\n{SHAPE}\n{}",
+                include_str!("magnify.frag")
+            ),
+            &[
+                UniformName::new("outline", UniformType::_4f),
+                UniformName::new("radii", UniformType::_4f),
+                UniformName::new("target_height", UniformType::_1f),
+                UniformName::new("magnifying_map", UniformType::_1i),
+                UniformName::new("glass_zoom", UniformType::_1f),
+                UniformName::new("glass_texel", UniformType::_2f),
+                UniformName::new("glass_bounds", UniformType::_4f),
+            ],
+        )?;
+        let mut upload = |bytes: &[u8]| {
+            let mut image = image::load_from_memory(bytes)
+                .expect("validated embedded glass map")
+                .into_rgba8();
+            let size = (image.width() as i32, image.height() as i32).into();
+            for pixel in image.pixels_mut() {
+                for c in 0..3 {
+                    pixel[c] = ((u16::from(pixel[c]) * u16::from(pixel[3]) + 127) / 255) as u8;
+                }
+            }
+            renderer.import_memory(image.as_raw(), Fourcc::Abgr8888, size, false)
+        };
+        let maps = [
+            upload(include_bytes!("glass-maps/magnifying.png"))?,
+            upload(include_bytes!("glass-maps/displacement.png"))?,
+            upload(include_bytes!("glass-maps/specular.png"))?,
+        ];
+        Ok(Self { magnify, maps })
+    }
 }
 
 impl BackdropBlur {
@@ -60,14 +106,17 @@ impl BackdropBlur {
                 UniformName::new("glass_enabled", UniformType::_1f),
                 UniformName::new("glass_texel", UniformType::_2f),
                 UniformName::new("glass_bounds", UniformType::_4f),
-                UniformName::new("glass_optics", UniformType::_4f),
-                UniformName::new("glass_highlight", UniformType::_1f),
+                UniformName::new("glass_controls", UniformType::_3f),
+                UniformName::new("glass_refraction_width", UniformType::_1f),
+                UniformName::new("glass_refraction_map", UniformType::_1i),
+                UniformName::new("glass_specular_map", UniformType::_1i),
             ],
         )?;
         Ok(Self {
             gaussian: None,
             kawase: None,
             composite,
+            glass: None,
             scratch: None,
         })
     }
@@ -86,8 +135,11 @@ impl BackdropBlur {
         background: [f32; 4],
     ) -> Result<TextureRenderElement<GlesTexture>, GlesError> {
         // Config validation owns finite 0..=32; the backend owns the exact zero path.
+        if glass.enabled && self.glass.is_none() {
+            self.glass = Some(GlassResources::new(renderer)?);
+        }
         match method {
-            BlurMethod::Gaussian if self.gaussian.is_none() => {
+            BlurMethod::Gaussian if radius > 0.0 && self.gaussian.is_none() => {
                 self.gaussian = Some(renderer.compile_custom_texture_shader(
                     format!("{TEXTURE_HEADER}\n{GAUSSIAN}"),
                     &[
@@ -99,7 +151,7 @@ impl BackdropBlur {
                     ],
                 )?);
             }
-            BlurMethod::Kawase if self.kawase.is_none() => {
+            BlurMethod::Kawase if radius > 0.0 && self.kawase.is_none() => {
                 self.kawase = Some(Kawase::new(renderer)?);
             }
             _ => {}
@@ -147,10 +199,14 @@ impl BackdropBlur {
                 draw_tree(frame, elements)
             })?;
 
-            // Refraction may read outside the tree. Initialize its entire bounded
-            // sampling halo (including bilinear neighbors) in either filter.
+            // The two SVG displacement stages can sample far from a cropped tree.
+            // Initialize the owning viewport when glass is enabled.
             let filter_area = glass_filter_area(area, clip, glass);
-            if method == BlurMethod::Kawase {
+            if radius == 0.0 {
+                offscreen(renderer, &mut scratch.vertical, size, |frame| {
+                    draw_texture(frame, &scratch.scene, size, filter_area, None, &[])
+                })?;
+            } else if method == BlurMethod::Kawase {
                 self.kawase.as_mut().expect("Kawase initialized").filter(
                     renderer,
                     scratch,
@@ -198,7 +254,9 @@ impl BackdropBlur {
             }
 
             let shape = match mask {
-                BlurMask::Window(shape) | BlurMask::SquareWindow(shape) => shape,
+                BlurMask::Window(shape)
+                | BlurMask::SquareWindow(shape)
+                | BlurMask::GlassLayer(shape) => shape,
                 BlurMask::ClientAlpha(rect) => RoundedShape {
                     rect,
                     radii: [0.0; 4],
@@ -211,29 +269,62 @@ impl BackdropBlur {
                 Uniform::new("glass_enabled", if glass.enabled { 1.0_f32 } else { 0.0 }),
                 Uniform::new("glass_texel", [1.0 / size.w as f32, 1.0 / size.h as f32]),
                 Uniform::new("glass_bounds", sample_bounds(clip, size)),
+                Uniform::new("glass_refraction_width", glass.refraction_width),
                 Uniform::new(
-                    "glass_optics",
+                    "glass_controls",
                     [
-                        glass.refraction_strength,
-                        glass.edge_width,
-                        glass.liquidity,
-                        glass.dispersion,
+                        glass.specular_opacity,
+                        glass.specular_saturation,
+                        glass.refraction_level,
                     ],
                 ),
-                Uniform::new("glass_highlight", glass.highlight),
+                Uniform::new("glass_refraction_map", 3_i32),
+                Uniform::new("glass_specular_map", 4_i32),
                 Uniform::new(
                     "client_shape",
                     match mask {
                         BlurMask::Window(_) => 0.0_f32,
                         BlurMask::ClientAlpha(_) => 1.0,
+                        BlurMask::GlassLayer(_) => 3.0,
                         BlurMask::SquareWindow(_) => 2.0,
                     },
                 ),
             ]);
-            // Horizontal is no longer needed. Reuse it for the resolved group, reading
-            // original/blurred/foreground from three *different* texture attachments.
-            offscreen(renderer, &mut scratch.horizontal, size, |frame| {
-                with_backdrops(frame, &scratch.vertical, &scratch.scene, |frame| {
+            if glass.enabled {
+                let resources = self.glass.as_ref().expect("glass initialized");
+                let mut zoom_uniforms = shape.uniforms(size.h);
+                zoom_uniforms.extend([
+                    Uniform::new("magnifying_map", 1_i32),
+                    Uniform::new("glass_zoom", glass.zoom_level),
+                    Uniform::new("glass_texel", [1.0 / size.w as f32, 1.0 / size.h as f32]),
+                    Uniform::new("glass_bounds", sample_bounds(clip, size)),
+                ]);
+                offscreen(renderer, &mut scratch.horizontal, size, |frame| {
+                    with_textures(frame, &[&resources.maps[0]], |frame| {
+                        draw_texture(
+                            frame,
+                            &scratch.vertical,
+                            size,
+                            clip,
+                            Some(&resources.magnify),
+                            &zoom_uniforms,
+                        )
+                    })
+                })?;
+            }
+            // Reuse the two filter targets; never sample the current attachment.
+            let (backdrop, target) = if glass.enabled {
+                (&scratch.horizontal, &mut scratch.vertical)
+            } else {
+                (&scratch.vertical, &mut scratch.horizontal)
+            };
+            let mut textures = vec![backdrop, &scratch.scene];
+            if glass.enabled {
+                let maps = &self.glass.as_ref().expect("glass initialized").maps;
+                textures.extend([&maps[1], &maps[2]]);
+            }
+            offscreen(renderer, target, size, |frame| {
+                with_textures(frame, &textures, |frame| {
                     draw_texture(
                         frame,
                         &scratch.foreground,
@@ -247,7 +338,7 @@ impl BackdropBlur {
             // Replace rather than source-over: the shader already included the original
             // backdrop, including its alpha. This also supports non-opaque theme colors.
             offscreen(renderer, &mut scratch.scene, size, |frame| {
-                draw_texture(frame, &scratch.horizontal, size, area, None, &[])
+                draw_texture(frame, target, size, area, None, &[])
             })?;
         }
         Ok(TextureRenderElement::from_static_texture(
@@ -624,22 +715,25 @@ fn draw_texture(
     )
 }
 
-/// Smithay owns unit zero. Preserve both auxiliary units and the active selector,
+/// Smithay owns unit zero. Preserve every auxiliary binding and the active selector,
 /// including when drawing fails, before any subsequent Smithay operation.
-fn with_backdrops(
+fn with_textures(
     frame: &mut GlesFrame<'_, '_>,
-    blurred: &GlesTexture,
-    original: &GlesTexture,
+    textures: &[&GlesTexture],
     draw: impl FnOnce(&mut GlesFrame<'_, '_>) -> Result<(), GlesError>,
 ) -> Result<(), GlesError> {
     let previous = frame.with_context(|gl| unsafe {
         let mut active = 0;
-        let mut bindings = [0; 2];
+        let mut bindings = vec![0; textures.len()];
         gl.GetIntegerv(ffi::ACTIVE_TEXTURE, &mut active);
-        for (i, texture) in [blurred, original].into_iter().enumerate() {
+        for (i, texture) in textures.iter().enumerate() {
             gl.ActiveTexture(ffi::TEXTURE1 + i as u32);
             gl.GetIntegerv(ffi::TEXTURE_BINDING_2D, &mut bindings[i]);
             gl.BindTexture(ffi::TEXTURE_2D, texture.tex_id());
+            // Imported maps never pass through Smithay's unit-zero draw setup.
+            // Explicit non-mipmapped filtering makes these auxiliary textures complete.
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
         }
         gl.ActiveTexture(active as u32);
         (active, bindings)
@@ -687,16 +781,7 @@ fn glass_filter_area(
     clip: Rectangle<i32, Physical>,
     glass: LiquidGlass,
 ) -> Rectangle<i32, Physical> {
-    if !glass.enabled || glass.refraction_strength == 0.0 {
-        return area;
-    }
-    let halo = glass.refraction_strength.ceil() as i32 + 1;
-    Rectangle::new(
-        (area.loc.x - halo, area.loc.y - halo).into(),
-        (area.size.w + 2 * halo, area.size.h + 2 * halo).into(),
-    )
-    .intersection(clip)
-    .expect("tree intersects viewport")
+    if glass.enabled { clip } else { area }
 }
 
 fn vertical_support(
@@ -765,10 +850,11 @@ void main() {
     float c = coverage(desktop_point(), outline, radii);
     // Square clients retain their existing overflow clipping; outside the frame,
     // use their alpha shape rather than inventing a larger frosted rectangle.
-    if (client_shape > 1.5) c = max(c, tree_coverage);
-    else if (client_shape > 0.5) c = tree_coverage;
+    if (client_shape > 1.5 && client_shape < 2.5) c = max(c, tree_coverage);
+    else if (client_shape > 0.5 && client_shape < 1.5) c = tree_coverage;
     c = max(c, a); // UNORM rounding can put stored alpha just above analytic coverage.
-    gl_FragColor = foreground + (c - a) * glass_backdrop(desktop_point())
+    vec4 optical = glass_backdrop(desktop_point());
+    gl_FragColor = foreground + (c - a) * optical
         + (1.0 - c) * texture2D(original, v_coords);
 }
 "#;
@@ -778,26 +864,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn glass_halo_covers_displaced_bilinear_samples_and_clamps_to_viewport() {
+    fn glass_initializes_the_whole_viewport_for_both_displacement_stages() {
         let clip = Rectangle::new((319, 0).into(), (321, 241).into());
         let area = Rectangle::new((320, 20).into(), (100, 60).into());
         let mut glass = LiquidGlass::default();
         assert_eq!(glass_filter_area(area, clip, glass), area);
         glass.enabled = true;
-        glass.refraction_strength = 0.0;
-        assert_eq!(glass_filter_area(area, clip, glass), area);
-        glass.refraction_strength = 12.5;
-        assert_eq!(
-            glass_filter_area(area, clip, glass),
-            Rectangle::new((319, 6).into(), (115, 88).into())
-        );
-        glass.refraction_strength = 64.0;
-        assert_eq!(
-            glass_filter_area(area, clip, glass),
-            Rectangle::new((319, 0).into(), (166, 145).into())
-        );
-        let one = Rectangle::new((639, 240).into(), (1, 1).into());
-        assert_eq!(glass_filter_area(one, one, glass), one);
+        assert_eq!(glass_filter_area(area, clip, glass), clip);
+        glass.refraction_level = 0.0;
+        assert_eq!(glass_filter_area(area, clip, glass), clip);
     }
 
     #[test]
@@ -1057,5 +1132,11 @@ mod tests {
             assert!(((c - a) - a * (1.0 - a)).abs() < 0.00001);
             assert!((compose(a, a, c, 1.0, 1.0) - 1.0).abs() < 0.00001);
         }
+        let alpha = 0.24_f32;
+        let alpha_derived = alpha + alpha * (1.0 - alpha);
+        let ordinary_weight = alpha_derived - alpha;
+        let glass_layer_weight = 1.0 - alpha;
+        assert!((ordinary_weight - 0.1824).abs() < 0.0001);
+        assert!((glass_layer_weight - 0.76).abs() < 0.0001);
     }
 }

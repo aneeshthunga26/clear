@@ -53,7 +53,8 @@ the current scale-1 single framebuffer, including its height.
 ## Backdrop composition
 
 Blur is global for application windows, popup trees, and every layer-shell kind.
-Radius zero MUST bypass the blur renderer for either method. Gaussian radius is
+Radius zero MUST bypass blur filtering for either method; the shared backdrop
+renderer still runs when liquid glass is enabled. Gaussian radius is
 logical-pixel kernel support; Kawase radius is a source-pyramid-texel sample
 offset. Those units are not equivalent. Gaussian ignores `blur_passes`, but the
 field is validated even for Gaussian or disabled blur.
@@ -78,15 +79,16 @@ and opaque foreground stays sharp. Client-shaped layers/popups have no separate
 frame shape; their blur contribution is `A * (1 - A)`, preserving fully transparent
 holes. Square client overflow outside the frame also uses its alpha-derived shape.
 Effective coverage is clamped to at least stored alpha to tolerate RGBA8 rounding.
-Square borders are rings when blur is enabled or SSD is in use; only square
+Square borders are rings when backdrop blur/glass is enabled or SSD is in use; only square
 unblurred CSD retains legacy backing. The SSD radius-zero ring preserves titlebar
 alpha independently of blur.
 
 ## Gaussian filter
 
 Gaussian uses two separable passes, sigma `max(radius / 3, 0.5)`, and at most 65
-samples per pass. Filtering is bounded to the tree plus any liquid-glass sampling halo and the
-required vertical blur halo. Sample positions clamp to the output/workspace viewport's texel centers;
+samples per pass. Filtering covers the tree and required vertical blur halo;
+enabled liquid glass expands that work to the owning viewport for its two sampling
+stages. Sample positions clamp to the output/workspace viewport's texel centers;
 one independent output MUST NOT contribute samples to another.
 
 ## Dual Kawase filter
@@ -108,49 +110,116 @@ The VM example's radius 2/passes 3 is not equivalent to Gaussian radius 2.
 
 ## Liquid glass
 
-`[theme.liquid_glass]` applies an optical treatment after either Gaussian or Dual
-Kawase filtering. It is independent of `blur_method`, disabled by default, and
-radius zero MUST still bypass the complete backdrop renderer, including glass.
-Unknown fields, wrong types, and nonfinite/out-of-range values MUST fail validation
-even when disabled. Reload uses the same atomic theme transaction.
+`[theme.liquid_glass]` translates the resting SVG filter of kube.io's
+[Magnifying Glass](https://kube.io/blog/liquid-glass-css-svg/#magnifying-glass).
+It replaces the previous lens/Snell/mirror implementation entirely. The three
+reference controls are joined by zoom and refraction-width controls, plus the
+existing enable switch:
 
 | Field | Default | Accepted value |
 | --- | --- | --- |
 | `enabled` | false | Boolean |
-| `refraction_strength` | 12 | Finite scalar 0–64; maximum per-axis displacement in logical pixels |
-| `edge_width` | 24 | Finite scalar 1–128 logical pixels; fitted to the smaller half-dimension |
-| `liquidity` | 0.5 | Finite scalar 0–1; interior dome curvature |
-| `dispersion` | 0.15 | Finite scalar 0–1; chromatic separation |
-| `highlight` | 0.25 | Finite scalar 0–1; directional edge reflection |
+| `specular_opacity` | 0.5 | Finite scalar 0–1 |
+| `specular_saturation` | 9 | Finite scalar 0–50 |
+| `refraction_level` | 1 | Finite scalar 0–10; values above 1 extend the reference's displacement strength |
+| `refraction_width` | 1 | Finite scalar 0–10; multiplier of the refraction rim's inward reach, zero disables refraction |
+| `zoom_level` | 1 | Finite scalar 0–2; multiplier of the reference magnification displacement |
 
-The fitted outline's distance gradient supplies an outward normal. A smooth curved
-edge and an interior dome produce a dielectric normal; Snell refraction samples the
-filtered backdrop with index 1.5. Dispersion offsets the red/blue indices by
-`-/+ 0.15 * dispersion`. A top-left light and grazing-angle reflection brighten
-the meniscus. This is a static optical approximation integrated with Clear's
-existing blur and premultiplied composition. No animation, noise or opacity
-override is added.
+Unknown/removed fields, invalid types, and nonfinite/out-of-range values MUST fail
+even when disabled. Reload retains the previous complete theme on failure.
+The previous optical controls are unsupported, not silently ignored.
 
-Glass replaces only `blurred_lower_scene` in the composition equation above.
-Foreground text, controls and opaque pixels MUST remain sharp; coverage and input
-shapes MUST remain unchanged. Refraction strength zero disables displacement;
-`highlight` remains independently effective. Setting both to zero is neutral.
-Dispersed channels are unpremultiplied individually and premultiplied using the
-green sample's alpha, preserving valid premultiplied RGBA for translucent backdrops.
+### Reference filter translation
 
-Windows use their original fitted outline, including SSD. Layers/popups use the
-original uncropped surface-tree bounding rectangle with square optical edges,
-while their existing alpha mask preserves transparent holes. Cropping MUST NOT
-create new optical edges. Square-window overflow outside its frame retains ordinary
-blur. Rounded cut-outs retain the original scene.
+Use the reference's three original RGBA8 maps, embedded locally with provenance
+in [glass maps](../src/platform/smithay/glass-maps/README.md). The reference map
+canvas is 210×150; refraction/specular maps contain 420×300 pixels and magnification
+contains 210×150. Magnification scales over the full original tree rectangle.
+Fit the refraction/specular maps with a nine-slice coordinate mapping: their
+75-pixel circular corners map to the corresponding fitted native corner radii,
+while their straight middle strips extend over the remaining frame. For unequal
+radii, interpolate each side's radius smoothly between its corner regions; floor
+zero radii at half a pixel to keep coordinates finite. The vertical middle strip
+maps to source Y=75; the horizontal strip maps to source X=75..135. Thus the source
+capsule's rim follows the actual window perimeter rather than appearing as a
+capsule inside it. Corner-size changes scale the map's local bezel/rim reach.
+At 210×150 with radius 75 this reduces to the original reference coordinates.
+`refraction_width = 1` preserves that mapping exactly. Other positive widths
+redistribute only the refraction map's radial coordinates within its existing
+corner/edge slices; specular coordinates, magnification, and native corners do
+not change. For source capsule radius 75, let `c = (clamp(x, 75, 135), 75)`
+and `t = length(p - c) / 75`. Sample at
+`c + (p - c) * width / (1 + (width - 1) * t)`.
+This keeps the outer rim and central line fixed, continuously expands the rim
+inward for widths above one, and narrows it below one. Near the rim the width
+multiplier is literal; farther inward the mapping compresses smoothly to keep
+the center continuous. Its reach remains bounded by the fitted corner/edge
+slices, rather than being an absolute pixel width or changing the window shape.
+Zero bypasses the second displacement, including its neutral-byte bias.
+For adjusted widths, interpolate the refraction map explicitly in high precision
+from its four neighboring texel centers; hardware interpolation-weight rounding
+would otherwise be amplified by high refraction strength. Width one retains
+the original sampling path.
+Existing coverage and input shapes remain authoritative and unchanged. No shadow,
+drag animation, or CSS transform is added. Output crops use original frame coordinates.
 
-All displaced samples MUST clamp to the owning output/workspace viewport's texel
-centers. Either filter initializes an expanded tree region of
-`ceil(refraction_strength) + 1` pixels per side when displacement is active,
-intersected with the viewport, so bilinear samples cannot read stale scratch data.
-Gaussian additionally initializes its vertical support halo; Kawase still filters
-the whole isolated viewport before copying this expanded region. Glass reuses the
-existing composite pass, samplers, and scratch textures; it adds no texture cache.
+The two displacement stages MUST remain separate, including the RGBA8
+magnified intermediate and its bilinear sampling. In sRGB channel space:
+
+1. Magnify the filtered lower scene using the magnification map, SVG displacement
+   `24 * zoom_level * (RG - 0.5)`. The default scale 24 is the demo's resting
+   value. Zero disables magnification only; one preserves the existing result;
+   two doubles the displacement (the reference's active scale 48). This controls
+   displacement strength, not a literal image magnification ratio, which depends
+   on the window dimensions. Refraction and specular controls remain independent.
+2. Displace the magnified intermediate using the refraction map with scale
+   `122.80891678834695 * 0.8 * refraction_level`. Values above one scale the
+   displacement linearly, up to ten times the reference strength. Sampling
+   remains clamped to the owning output viewport. Refraction map sampling uses
+   high precision so increased strength does not amplify low-precision rounding.
+   The fixed 0.8 is the demo's
+   resting multiplier. Each axis uses SVG's `channel - 0.5` convention, including
+   the slight bias of neutral byte 128; do not substitute a custom lens formula.
+3. Apply the SVG saturation matrix (luma coefficients 0.213, 0.715, 0.072) with
+   `specular_saturation`, clipped to valid channels. Mask that result by the
+   specular map alpha and source-over it onto the displaced image.
+4. Multiply the specular map alpha by `specular_opacity`, then source-over that
+   layer onto the prior result. Preserve premultiplied composition, including
+   premultiplied filtering of the specular map.
+
+The reference's internal Gaussian stage has standard deviation zero. Clear's
+existing optional Gaussian/Dual Kawase backdrop filter remains independent and
+precedes these stages. `blur_radius = 0` MUST allow glass without blur; both
+zero blur and disabled glass retain the original fast path. Refraction level
+zero disables the second displacement only: configured magnification and specular
+stages remain, just as in the reference. Specular opacity zero does not disable
+the separate saturation stage. Disabling glass bypasses all optical stages.
+
+Foreground text, controls, opacity, stacking, transparent holes, and rounded
+coverage MUST retain the shared composition contract. Windows use original
+frames including SSD; layers/popups use original tree bounds. Output cropping
+MUST NOT rescale maps or introduce another optical edge. All source reads clamp
+to the owning viewport's texel centers. Enabled glass initializes/filter-copies
+the entire owning viewport before magnification, preventing stale scratch reads.
+Square client overflow outside its frame retains ordinary backdrop pixels.
+Client-alpha layer trees may opt into geometric glass outlines with the
+`clear-glass-pill-*` and `clear-glass-rounded-*` layer-shell namespaces. Clear
+fits those opt-in radii to the original tree bounds before applying the optical
+maps. For these explicit glass layers, the fitted outline supplies independent
+backdrop coverage across the whole panel, including transparent interior pixels;
+client alpha still composites foreground text and controls sharply. Other
+layer-shell surfaces continue using alpha-derived backdrop coverage and square
+optical bounds because their protocol does not expose client corner radii.
+
+### Resources
+
+Glass adds one lazy shader and three immutable map textures (1,134,000 RGBA8
+bytes total), shared across every tree; no per-window cache or file/network IO
+occurs during rendering. Maps are embedded and decoded/uploaded once per renderer
+when glass is first enabled. The existing four framebuffer textures are reused
+for the magnified intermediate and final composite; read/write attachments MUST
+remain distinct. Auxiliary sampler bindings and the window framebuffer MUST be
+restored. Maps remain allocated until renderer destruction after disabling glass.
 
 ## Blur resource bounds and lifecycle
 
@@ -179,10 +248,12 @@ state restored, and the window framebuffer restored before presentation/capture.
   [scene assembly](../src/platform/smithay/scene.rs).
 - [Rounded schema/reload](../tests/rounded.rs) and [blur schema/reload](../tests/blur.rs)
   tests cover CPU policy, not rendered pixels.
-- [Glass schema/reload tests](../tests/liquid_glass.rs) cover independent filter
-  selection, strict disabled validation, and last-good reload retention.
-  The blur fixture’s `--liquid-glass` option compares GPU captures with a scalar
-  Snell/dispersion/lighting oracle and checks foreground/holes and output bounds.
+- [Glass schema/reload tests](../tests/liquid_glass.rs) cover the optical controls,
+  removed-field rejection, blur independence, and atomic reload.
+  The blur fixture's `--liquid-glass` option compares GPU captures against a
+  scalar translation of the reference SVG maps and two displacement passes.
+  CPU oracle tests check map provenance/dimensions, SVG displacement conventions,
+  independent controls, quantized magnification, and premultiplied specular blending.
 - [Rounded GPU fixture](../scripts/vm-rounded-smoke.py),
   [blur GPU fixture](../scripts/vm-blur-smoke.py), and
   [blur oracle self-tests](../scripts/test_vm_blur_smoke.py) separate independent

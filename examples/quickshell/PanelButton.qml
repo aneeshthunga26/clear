@@ -3,6 +3,7 @@ import QtQuick.Controls
 
 Button {
     id: control
+    property ShellStyle appearance: ShellStyle {}
 
     property bool selected: false
     property string description: text
@@ -29,8 +30,8 @@ Button {
         elide: Text.ElideRight
     }
     background: Rectangle {
-        radius: 4
-        color: control.down ? "#475569" : control.selected ? "#1d4ed8"
-            : control.hovered ? "#334155" : "#1e293b"
+        radius: control.appearance.glass ? height / 2 : 4
+        color: control.down ? control.appearance.pressedColor : control.selected ? control.appearance.selectedColor
+            : control.hovered ? control.appearance.hoverColor : control.appearance.controlColor
     }
 }

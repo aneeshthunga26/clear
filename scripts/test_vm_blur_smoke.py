@@ -210,46 +210,113 @@ class KawaseTests(unittest.TestCase):
 
 
 class GlassTests(unittest.TestCase):
-    def test_optical_sampling_is_bounded_to_nonzero_viewport(self):
-        clip = (319, 0, 321, 241)
-        def source(x, y):
-            self.assertTrue(SMOKE.inside(x, y, clip), (x, y))
-            return (48, 96, 144)
-        effect = SMOKE.glass_filter(source, clip, clip, 0)
-        for x, y in [(319, 0), (639, 240), (319, 120), (479, 120)]:
-            color = effect(x, y)
-            self.assertTrue(all(math.isfinite(c) and 0 <= c <= 255 for c in color))
-        self.assertEqual(effect(479, 120), (48, 96, 144))
+    def test_refraction_width_preserves_rim_center_and_continuity(self):
+        for width in (0.25, 1, 3, 10):
+            for x, y in ((0, 75), (75, 0), (135, 150), (210, 75), (105, 75),
+                         (75 - 75 / math.sqrt(2), 75 - 75 / math.sqrt(2))):
+                u, v = SMOKE.glass_refraction_uv(x / 210, y / 150, width)
+                self.assertAlmostEqual(u, x / 210)
+                self.assertAlmostEqual(v, y / 150)
+            # Both joins to the straight strips and the central line are continuous.
+            for x, y, dx, dy in ((75, 30, 1e-5, 0), (135, 120, 1e-5, 0),
+                                 (105, 75, 0, 1e-5)):
+                a = SMOKE.glass_refraction_uv((x - dx) / 210, (y - dy) / 150, width)
+                b = SMOKE.glass_refraction_uv((x + dx) / 210, (y + dy) / 150, width)
+                self.assertLess(math.dist(a, b), 1e-5)
+        for x, y in ((30, 60), (105, 12), (170, 85)):
+            self.assertEqual(SMOKE.glass_refraction_uv(x / 210, y / 150, 1),
+                             (x / 210, y / 150))
+        depths = [SMOKE.glass_refraction_uv(.5, .2, w)[1] for w in (.25, 1, 3, 10)]
+        self.assertTrue(all(a > b for a, b in zip(depths, depths[1:])))
+        # Twenty source pixels inward is almost flat originally, but refracts
+        # appreciably when widened; the unchanged PNG supplies this profile.
+        green = [SMOKE.glass_map_sample('displacement',
+                 *SMOKE.glass_refraction_uv(.5, 20 / 150, w))[1] for w in (1, 3, 10)]
+        self.assertLess(green[0], 129)
+        self.assertGreater(green[1], 150)
+        self.assertGreater(green[2], 200)
 
-    def test_zero_bypasses_glass_and_oracle_rejects_missing_optics(self):
-        for method, radius, passes in [("gaussian", 2, 3), ("kawase", 2, 3)]:
-            for case in ("xdg", "layer-top", "stacking", "output-boundary-odd"):
-                zero = SMOKE.oracle(case, 0, method, passes)
-                glass_zero = SMOKE.oracle(case, 0, method, passes, True)
-                plain = SMOKE.oracle(case, radius, method, passes)
-                glass = SMOKE.oracle(case, radius, method, passes, True)
-                points = SMOKE.sample_points(case)
-                self.assertTrue(all(zero(x, y) == glass_zero(x, y) for x, y in points))
-                with patch.object(SMOKE, "pixel", side_effect=lambda image, x, y: image(x, y)):
-                    with self.assertRaises(AssertionError):
-                        SMOKE.check_frame(plain, case, radius, method, passes, expected=glass)
-                if case == "layer-top":
-                    # A fully transparent client hole must expose the unfiltered scene.
-                    self.assertEqual(glass(320, 220), zero(320, 220))
-                if case == "xdg":
-                    self.assertEqual(glass(240, 200), SMOKE.INK)
+    def test_zero_refraction_width_disables_only_refraction(self):
+        args = (lambda x, y: (x, y, 50), (0, 0, 240, 180), (0, 0, 210, 150), 75)
+        disabled = SMOKE.glass_filter(*args, refraction_level=10, refraction_width=0)
+        zero_level = SMOKE.glass_filter(*args, refraction_level=0)
+        for x, y in ((52, 75), (105, 12), (150, 90)):
+            self.assertEqual(disabled(x, y), zero_level(x, y))
 
-    def test_glass_option_is_explicit_and_independent_of_filter(self):
-        self.assertFalse(SMOKE.parse_args([]).liquid_glass)
-        for method in ("gaussian", "kawase"):
-            args = SMOKE.parse_args(["--liquid-glass", "--method", method])
-            self.assertTrue(args.liquid_glass)
-            self.assertIn("[theme.liquid_glass]\nenabled = true", SMOKE.config_text("xdg", 2, method, liquid_glass=True))
+    def test_map_fitting_preserves_reference_coordinates_and_window_perimeter(self):
+        for x, y in ((0.5, 75.5), (60.5, 30.5), (105.5, 75.5), (190.5, 110.5)):
+            u, v = SMOKE.glass_edge_uv(x, y, (0, 0, 210, 150), (75,) * 4)
+            self.assertAlmostEqual(u, x / 210)
+            self.assertAlmostEqual(v, y / 150)
+        # The reference's arc must fit the native corner, not float inside a rectangle.
+        corner = 20 * (1 - 1 / math.sqrt(2))
+        u, v = SMOKE.glass_edge_uv(corner, corner, (0, 0, 400, 200), (20,) * 4)
+        self.assertAlmostEqual(math.hypot(u * 210 - 75, v * 150 - 75), 75)
+        for radii in ((0,) * 4, (20, 0, 40, 12), (0.5,) * 4):
+            for x, y in ((0.5, 0.5), (200, 100), (399.5, 199.5)):
+                self.assertTrue(all(math.isfinite(v) for v in
+                                    SMOKE.glass_edge_uv(x, y, (0, 0, 400, 200), radii)))
+
+    def test_reference_map_bytes_and_dimensions(self):
+        import hashlib
+        maps = (("magnifying", 210, 150, "991d5a0b7b8ce67a14e03e5ff4bea56d7432eaef87c8def94b8d4fbc5482e6b0"),
+                ("displacement", 420, 300, "4b65b346a2d5c50b3dae3e6436e4c9d6acb16104b317cdce256e090b9a4dfcff"),
+                ("specular", 420, 300, "f49768994e5f39532370c7c37d00487fbd8efd93046418ef10017cf1249b7d6a"))
+        for name, width, height, digest in maps:
+            path = Path(__file__).resolve().parents[1] / "src/platform/smithay/glass-maps" / (name + ".png")
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+            self.assertEqual(SMOKE.glass_map(name)[:2], (width, height))
+        self.assertEqual(SMOKE.glass_map('magnifying')[2][75][52], (192, 128, 0, 255))
+
+    def test_zoom_endpoints_and_default_are_independent_of_refraction(self):
+        for zoom, expected_x in ((0, 52), (0.5, 55), (1, 58), (2, 64)):
+            effect = SMOKE.glass_filter(lambda x, y: (x, y, 0), (0, 0, 240, 180),
+                                       (0, 0, 210, 150), 75, specular_opacity=0,
+                                       specular_saturation=1, refraction_level=0,
+                                       zoom_level=zoom)
+            # SVG scale*(channel/255-.5), followed by the RGBA8 intermediate.
+            self.assertEqual(effect(52, 75), (expected_x, 75, 0))
+
+    def test_svg_saturation_and_specular_opacity_are_independent(self):
+        color = (40, 100, 180)
+        transparent = (0, 0, 0, 0)
+        self.assertEqual(SMOKE.glass_specular(color, transparent, 1, 50), color)
+        # Saturation remains effective with specular opacity zero.
+        gray = SMOKE.glass_specular(color, (255, 255, 255, 255), 0, 0)
+        wanted = .213 * 40 + .715 * 100 + .072 * 180
+        for channel in gray:
+            self.assertAlmostEqual(channel, wanted)
+        self.assertEqual(SMOKE.glass_specular(color, (255, 255, 255, 255), 1, 9), (255, 255, 255))
+        result = SMOKE.glass_specular(color, (64, 64, 64, 128), .5, 1)
+        for actual, channel in zip(result, color):
+            self.assertAlmostEqual(actual, 32 + channel * (1 - 64 / 255))
+
+    def test_reference_glass_keeps_foreground_holes_and_output_clamps(self):
+        for case in ("xdg", "layer-top", "rounded-asymmetric", "output-boundary-odd"):
+            effect = SMOKE.oracle(case, 0, liquid_glass=True)
+            plain = SMOKE.oracle(case, 0)
+            self.assertEqual(effect(0, 0), plain(0, 0))
+            if case == "xdg":
+                self.assertEqual(effect(240, 200), SMOKE.INK)
+            cx, cy, cw, ch = SMOKE.viewport(case)
+            constant = SMOKE.glass_filter(lambda x, y: (20, 30, 40), (cx, cy, cw, ch),
+                                         SMOKE.geometry(case)[0], SMOKE.case_radii(case),
+                                         specular_opacity=0, specular_saturation=1)
+            for x, y in ((cx, cy), (cx + cw - 1, cy + ch - 1)):
+                for got, want in zip(constant(x, y), (20, 30, 40)):
+                    self.assertAlmostEqual(got, want)
 
 
 class HarnessTests(unittest.TestCase):
     def test_cli_defaults_and_bounds(self):
         args = SMOKE.parse_args([])
+        self.assertEqual(args.zoom_level, 1)
+        self.assertEqual(args.refraction_width, 1)
+        for width in (0, 0.5, 1, 3, 10):
+            self.assertEqual(SMOKE.parse_args(["--refraction-width", str(width)]).refraction_width, width)
+        for level in (0, 1, 4, 7.5, 10):
+            self.assertEqual(SMOKE.parse_args(["--refraction-level", str(level)]).refraction_level, level)
+        self.assertEqual((args.specular_opacity, args.specular_saturation, args.refraction_level), (.5, 9, 1))
         self.assertEqual((args.method, args.radius, args.passes), ("gaussian", 12, 3))
         args = SMOKE.parse_args(["--method", "kawase"])
         self.assertEqual((args.radius, args.passes), (2, 3))
@@ -264,6 +331,23 @@ class HarnessTests(unittest.TestCase):
             ["--radius", "inf"],
             ["--radius", "-1"],
             ["--radius", "33"],
+            ["--refraction-level", "nan"],
+            ["--refraction-width", "nan"],
+            ["--refraction-width", "inf"],
+            ["--refraction-width", "-0.01"],
+            ["--refraction-width", "10.01"],
+            ["--refraction-level", "10.01"],
+            ["--refraction-level", "inf"],
+            ["--refraction-level", "-0.01"],
+            ["--specular-opacity", "-1"],
+            ["--specular-saturation", "51"],
+            ["--glass-model", "lens"],
+            ["--lens-area", "25"],
+            ["--mirror-strength", "1"],
+            ["--zoom-level", "nan"],
+            ["--zoom-level", "inf"],
+            ["--zoom-level", "-1"],
+            ["--zoom-level", "2.01"],
         ):
             with (
                 contextlib.redirect_stderr(io.StringIO()),
@@ -272,6 +356,12 @@ class HarnessTests(unittest.TestCase):
                 SMOKE.parse_args(argv)
 
     def test_config_defaults_and_parameters(self):
+        self.assertIn("refraction_width = 3", SMOKE.config_text(
+            "xdg", 2, liquid_glass=True, refraction_width=3))
+        self.assertIn("zoom_level = 1.75", SMOKE.config_text(
+            "xdg", 2, liquid_glass=True, zoom_level=1.75))
+        self.assertIn("refraction_level = 10", SMOKE.config_text(
+            "xdg", 2, liquid_glass=True, refraction_level=10))
         default = SMOKE.config_text("xdg", None)
         self.assertNotIn("blur_", default)
         self.assertIn("blur_radius = 12.0", SMOKE.config_text("xdg", 12))
@@ -296,7 +386,7 @@ class HarnessTests(unittest.TestCase):
                 patch.object(
                     SMOKE, "capture", side_effect=lambda *a: a[-1] or 0
                 ) as capture,
-                patch.object(SMOKE, "oracle", side_effect=lambda *a: a) as oracle,
+                patch.object(SMOKE, "oracle", side_effect=lambda *a, **kw: a) as oracle,
                 patch.object(SMOKE, "check_frame", return_value={}) as check,
                 patch.object(SMOKE, "compare_pair", return_value={}) as compare,
                 contextlib.redirect_stdout(io.StringIO()),
@@ -312,6 +402,9 @@ class HarnessTests(unittest.TestCase):
                 [("xdg", r, "kawase", passes, False) for r in (0, 0, 1.5)],
             )
             self.assertEqual(check.call_args.args[2:5], (1.5, "kawase", passes))
+            self.assertTrue(all(c.kwargs == {"specular_opacity": 0.5, "specular_saturation": 9, "refraction_level": 1, "zoom_level": 1, "refraction_width": 1}
+                                for c in oracle.call_args_list))
+            self.assertEqual(report["refraction_level"], 1)
             self.assertEqual(compare.call_args.args[3:6], (1.5, "kawase", passes))
             self.assertEqual(
                 (report["method"], report["radius"], report["passes"]),

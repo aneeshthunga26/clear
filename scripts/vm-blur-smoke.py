@@ -9,8 +9,8 @@ input injection, or logged-in desktop is used. Only the existing C fixture build
 Cases capture radius zero and --radius; xdg also captures an omitted blur_radius
 (default-zero regression). Gaussian defaults to radius 12; Kawase to radius 2 and
 3 passes. --seconds bounds EACH capture, not the entire suite.
-Add --liquid-glass to verify refraction, dispersion and edge lighting against
-an independent scalar optical oracle after either filter. Radius zero still bypasses optics.
+Add --liquid-glass to verify the two displacement maps and SVG specular stages.
+Glass remains active at radius zero, matching the reference demo without blur.
 Focused Kawase runs: --method kawase --case stacking --case output-boundary-odd
 with --radius 1.5 and --passes 1, 3, or 6 (use separate --artifacts).
 output-boundary-odd filters a 321x241 viewport at (319, 0), beside solid magenta;
@@ -22,7 +22,7 @@ The independent Gaussian oracle uses direct exp() weights and separable filterin
 The Dual Kawase oracle uses ceil-half pyramids, center-aligned bilinear sampling,
 source-level offsets, edge clamping, and RGBA8 quantization after every step.
 It does not import renderer code or derive expected blur from captured imagery.
-Per-channel tolerances are 2 at radius zero and 4 with blur enabled, allowing SHM
+Per-channel tolerances are 2 without effects and 4 with blur/glass, allowing SHM
 premultiplication, UNORM intermediates, and GLES rounding, not spatial offsets.
 Window output is F + (C-A)*blurred + (1-C)*original. Layers/popups instead use
 blur weight A*(1-A): fully transparent holes stay clear. Transparent pixels INSIDE
@@ -55,6 +55,8 @@ SPEC.loader.exec_module(LAYER)
 CASES = (
     "xdg",
     "rounded-ssd",
+    "rounded-asymmetric",
+    "glass-corner",
     "layer-background",
     "layer-bottom",
     "layer-top",
@@ -255,16 +257,37 @@ def frame_size(case):
     return (640, viewport(case)[3])
 
 
-def rounded_coverage(x, y, box, radius):
-    # Signed distance at the pixel center, with one-pixel smoothstep AA. All
-    # tested outlines have uniform radius 24 and are too large to require fitting.
+def fitted_radii(box, radius):
+    values = (radius,) * 4 if isinstance(radius, (int, float)) else tuple(radius)
+    _, _, w, h = box
+    tl, tr, br, bl = values
+    scale = min([1.0] + [length / total for length, total in
+                ((w, tl + tr), (w, bl + br), (h, tl + bl), (h, tr + br)) if total])
+    return tuple(r * scale for r in values)
+
+
+def outline_distance(x, y, box, radii):
+    # Intersect every applicable arc, including opposite corners that overlap.
     bx, by, w, h = box
-    px, py = x + 0.5 - bx, y + 0.5 - by
+    px, py = x - bx, y - by
     distance = min(px, py, w - px, h - py)
-    if radius:
-        cx = min(max(px, radius), w - radius)
-        cy = min(max(py, radius), h - radius)
-        distance = min(distance, radius - math.hypot(px - cx, py - cy))
+    for r, dx, dy in zip(radii, (px, w - px, w - px, px),
+                        (py, py, h - py, h - py)):
+        if dx < r and dy < r:
+            distance = min(distance, r - math.hypot(dx - r, dy - r))
+    return distance
+
+
+def case_radii(case):
+    if case == "rounded-asymmetric":
+        return (8, 48, 80, 0)
+    if case == "glass-corner":
+        return 10
+    return 24 if case == "rounded-ssd" else 0
+
+
+def rounded_coverage(x, y, box, radius):
+    distance = outline_distance(x + 0.5, y + 0.5, box, fitted_radii(box, radius))
     t = max(0, min(1, distance + 0.5))
     return t * t * (3 - 2 * t)
 
@@ -278,7 +301,13 @@ def geometry(case):
 
 
 def window_case(case):
-    return case in ("xdg", "rounded-ssd", "stacking")
+    return case in ("xdg", "rounded-ssd", "rounded-asymmetric", "glass-corner", "stacking")
+
+
+def case_pattern(case, x, y):
+    if case == "glass-corner" and math.hypot(x + 0.5 - 415, y + 0.5 - 185) < 32:
+        return (240, 240, 224)
+    return pattern(x, y)
 
 
 def background(case, x, y):
@@ -290,7 +319,7 @@ def background(case, x, y):
         return LOWER
     if case == "popup" and y < 16:
         return LOWER
-    return pattern(x, y)
+    return case_pattern(case, x, y)
 
 
 def foreground(case, x, y):
@@ -306,63 +335,133 @@ def foreground(case, x, y):
     return value
 
 
-def glass_filter(source, clip, box, radius):
-    """Independent scalar Snell-law oracle for the default liquid-glass settings.
+@cache
+def glass_map(name):
+    """Decode the reference's RGBA8 PNG without a graphics-library dependency."""
+    path = Path(__file__).resolve().parents[1] / 'src/platform/smithay/glass-maps' / f'{name}.png'
+    data = path.read_bytes()
+    assert data[:8] == b'\x89PNG\r\n\x1a\n'
+    pos, packed = 8, bytearray()
+    while pos < len(data):
+        length = struct.unpack_from('>I', data, pos)[0]
+        kind, payload = data[pos + 4:pos + 8], data[pos + 8:pos + 8 + length]
+        if kind == b'IHDR':
+            width, height, depth, color, _, _, interlace = struct.unpack('>IIBBBBB', payload)
+            assert (depth, color, interlace) == (8, 6, 0)
+        elif kind == b'IDAT':
+            packed.extend(payload)
+        pos += length + 12
+    raw = zlib.decompress(packed)
+    stride, rows, previous = width * 4, [], bytearray(width * 4)
+    for y in range(height):
+        start = y * (stride + 1)
+        method, row = raw[start], bytearray(raw[start + 1:start + 1 + stride])
+        for i in range(stride):
+            a, b, c = (row[i - 4] if i >= 4 else 0), previous[i], (previous[i - 4] if i >= 4 else 0)
+            predictor = 0
+            if method == 1:
+                predictor = a
+            elif method == 2:
+                predictor = b
+            elif method == 3:
+                predictor = (a + b) // 2
+            elif method == 4:
+                p = a + b - c
+                predictor = min((a, b, c), key=lambda v: abs(p - v))
+            else:
+                assert method == 0
+            row[i] = (row[i] + predictor) & 255
+        rows.append(tuple(tuple((row[x + k] * row[x + 3] + 127) // 255 for k in range(3))
+                          + (row[x + 3],) for x in range(0, stride, 4)))
+        previous = row
+    return width, height, rows
 
-    Coordinates are desktop pixel centers, unlike the shader's flipped UVs.
-    Samples use bilinear interpolation of the already quantized blur result.
-    """
-    bx, by, w, h = box
+
+def glass_sample(source, clip, x, y):
     cx, cy, cw, ch = clip
+    x, y = max(cx, min(cx + cw - 1, x)), max(cy, min(cy + ch - 1, y))
+    ix, iy = math.floor(x), math.floor(y)
+    fx, fy = x - ix, y - iy
+    taps = [(source(min(ix + dx, cx + cw - 1), min(iy + dy, cy + ch - 1)), wx * wy)
+            for dx, wx in ((0, 1 - fx), (1, fx)) for dy, wy in ((0, 1 - fy), (1, fy))]
+    return tuple(sum(color[c] * weight for color, weight in taps) for c in range(len(taps[0][0])))
 
-    def distance(x, y):
-        px, py = x - bx, y - by
-        d = min(px, py, w - px, h - py)
-        if radius:
-            qx = min(max(px, radius), w - radius)
-            qy = min(max(py, radius), h - radius)
-            d = min(d, radius - math.hypot(px - qx, py - qy))
-        return d
 
-    def sample(x, y):
-        x, y = max(cx, min(cx + cw - 1, x)), max(cy, min(cy + ch - 1, y))
-        ix, iy = math.floor(x), math.floor(y)
-        fx, fy = x - ix, y - iy
-        return tuple(sum(
-            source(min(ix + dx, cx + cw - 1), min(iy + dy, cy + ch - 1))[c] * wx * wy
-            for dx, wx in ((0, 1 - fx), (1, fx))
-            for dy, wy in ((0, 1 - fy), (1, fy))
-        ) for c in range(3))
+def glass_map_sample(name, u, v):
+    width, height, rows = glass_map(name)
+    return glass_sample(lambda x, y: rows[y][x], (0, 0, width, height),
+                        u * width - 0.5, v * height - 0.5)
 
-    def filtered(x, y):
-        px, py = x + 0.5, y + 0.5
-        d = distance(px, py)
-        if d < 0:
+
+def glass_specular(displaced, specular, opacity, saturation):
+    """SVG saturation, in-composite, and two normal blends on an opaque backdrop."""
+    luminance = sum(c * w for c, w in zip(displaced, (0.213, 0.715, 0.072)))
+    saturated = [max(0, min(255, luminance + saturation * (c - luminance))) for c in displaced]
+    alpha = specular[3] / 255
+    masked = [c * alpha + original * (1 - alpha) for c, original in zip(saturated, displaced)]
+    return tuple(light * opacity + c * (1 - alpha * opacity) for c, light in zip(masked, specular[:3]))
+
+
+def glass_edge_uv(x, y, box, radii):
+    bx, by, w, h = box
+    x, y = x - bx, y - by
+    tl, tr, br, bl = (max(0.5, r) for r in radii)
+    def blend(p, size, first, last):
+        t = max(0, min(1, (p - first) / max(size - first - last, 0.0001)))
+        return t * t * (3 - 2 * t)
+    tx = blend(x, w, max(tl, bl), max(tr, br))
+    ty = blend(y, h, max(tl, tr), max(bl, br))
+    def strip(p, size, first, last, middle):
+        if p < first:
+            return 75 * p / first
+        if p > size - last:
+            return 75 + middle + 75 * (p - size + last) / last
+        return 75 + middle * (p - first) / max(size - first - last, 0.0001)
+    return (strip(x, w, tl * (1 - ty) + bl * ty, tr * (1 - ty) + br * ty, 60) / 210,
+            strip(y, h, tl * (1 - tx) + tr * tx, bl * (1 - tx) + br * tx, 0) / 150)
+
+
+def glass_refraction_uv(u, v, width):
+    if width == 0 or width == 1:
+        return u, v
+    x, y = u * 210, v * 150
+    cx, cy = max(75, min(135, x)), 75
+    dx, dy = x - cx, y - cy
+    t = max(0, min(1, math.hypot(dx, dy) / 75))
+    scale = width / ((1 - t) + width * t)
+    return (cx + dx * scale) / 210, (cy + dy * scale) / 150
+
+
+def glass_filter(source, clip, box, radius, specular_opacity=0.5, specular_saturation=9, refraction_level=1, zoom_level=1, refraction_width=1):
+    bx, by, w, h = box
+    radii = fitted_radii(box, radius)
+
+    @cache
+    def magnified(x, y):
+        if not inside(x, y, box):
             return source(x, y)
-        t = max(0, min(1, d / min(24, w / 2, h / 2)))
-        edge = 1 - t * t * (3 - 2 * t)
-        gx = distance(px - 0.5, py) - distance(px + 0.5, py)
-        gy = distance(px, py - 0.5) - distance(px, py + 0.5)
-        length = max(math.hypot(gx, gy), 0.0001)
-        gx, gy = gx / length, gy / length
-        nx = gx * edge * 2 + ((px - bx - w / 2) / (w / 2)) * 0.5 * 0.35
-        ny = gy * edge * 2 + ((py - by - h / 2) / (h / 2)) * 0.5 * 0.35
-        length = math.sqrt(nx * nx + ny * ny + 1)
-        nx, ny, nz = nx / length, ny / length, 1 / length
-        channels = []
-        for c, ior in enumerate((1.5 - 0.15 * 0.15, 1.5, 1.5 + 0.15 * 0.15)):
-            eta = 1 / ior
-            # Refract incident (0,0,-1) at the normalized surface normal.
-            factor = eta * nz - math.sqrt(1 - eta * eta * (1 - nz * nz))
-            channels.append(sample(x + nx * factor * 12, y + ny * factor * 12)[c])
-        light = max(-(gx + gy) / math.sqrt(2), 0)
-        reflection = min(1, 0.25 * (edge * edge * light * 0.6 + (1 - nz) ** 3))
-        return tuple(c * (1 - reflection) + 255 * reflection for c in channels)
+        u, v = (x + 0.5 - bx) / w, (y + 0.5 - by) / h
+        red, green, _, _ = glass_map_sample('magnifying', u, v)
+        return tuple(round(c) for c in glass_sample(source, clip,
+                     x + 24 * zoom_level * (red / 255 - 0.5), y + 24 * zoom_level * (green / 255 - 0.5)))
 
+    @cache
+    def filtered(x, y):
+        if outline_distance(x + 0.5, y + 0.5, box, radii) < 0:
+            return magnified(x, y)
+        u, v = glass_edge_uv(x + 0.5, y + 0.5, box, radii)
+        ref_u, ref_v = glass_refraction_uv(u, v, refraction_width)
+        red, green, _, _ = glass_map_sample('displacement', ref_u, ref_v)
+        scale = 122.80891678834695 * 0.8 * refraction_level if refraction_width else 0
+        displaced = glass_sample(magnified, clip, x + scale * (red / 255 - 0.5),
+                                 y + scale * (green / 255 - 0.5))
+        return glass_specular(displaced, glass_map_sample('specular', u, v),
+                              specular_opacity, specular_saturation)
     return filtered
 
 
-def oracle(case, radius, method="gaussian", passes=3, liquid_glass=False):
+def oracle(case, radius, method="gaussian", passes=3, liquid_glass=False,
+           specular_opacity=0.5, specular_saturation=9, refraction_level=1, zoom_level=1, refraction_width=1):
     frame, body = geometry(case)
     clip = viewport(case)
     source = lambda x, y: background(case, x, y)
@@ -372,8 +471,9 @@ def oracle(case, radius, method="gaussian", passes=3, liquid_glass=False):
         else gaussian(source, clip, radius)
     )
 
-    if liquid_glass and radius:
-        blurred = glass_filter(blurred, clip, frame, 24 if case == "rounded-ssd" else 0)
+    if liquid_glass:
+        blurred = glass_filter(blurred, clip, frame, case_radii(case),
+                               specular_opacity, specular_saturation, refraction_level, zoom_level, refraction_width)
 
     def expected(x, y):
         original = source(x, y)
@@ -381,7 +481,7 @@ def oracle(case, radius, method="gaussian", passes=3, liquid_glass=False):
         # window must never sample surfaces that will be composited above it.
         if case == "stacking" and inside(x, y, (308, 190, 24, 100)):
             return UPPER
-        coverage = rounded_coverage(x, y, frame, 24 if case == "rounded-ssd" else 0)
+        coverage = rounded_coverage(x, y, frame, case_radii(case))
         if not coverage:
             return original
         if case == "rounded-ssd" and y < body[1]:
@@ -395,7 +495,7 @@ def oracle(case, radius, method="gaussian", passes=3, liquid_glass=False):
         weight = (
             max(coverage, alpha) - alpha if window_case(case) else alpha * (1 - alpha)
         )
-        filtered = blurred(x, y) if radius and weight else original
+        filtered = blurred(x, y) if (radius or liquid_glass) and weight else original
         return tuple(
             round(f[c] + weight * filtered[c] + (1 - alpha - weight) * original[c])
             for c in range(3)
@@ -425,6 +525,10 @@ def sample_points(case):
             points.update(
                 (x, y) for y in range(cy, cy + 24) for x in range(cx, cx + 24)
             )
+    if case in ("rounded-asymmetric", "glass-corner"):
+        points.update((x, y) for y in range(by, by + h) for x in range(bx, bx + w)
+                      if -1 <= outline_distance(x + 0.5, y + 0.5, frame,
+                                                fitted_radii(frame, case_radii(case))) <= 5)
     if case == "output-boundary":
         points.update((x, y) for x in range(292, 349) for y in range(8, 232, 3))
         points.update((x, y) for x in range(8, 32) for y in range(13))
@@ -456,9 +560,9 @@ def pixel(image, x, y):
     return tuple(data[offset : offset + 3])
 
 
-def check_frame(image, case, radius, method="gaussian", passes=3, expected=None):
+def check_frame(image, case, radius, method="gaussian", passes=3, expected=None, liquid_glass=False):
     expected = expected or oracle(case, radius, method, passes)
-    tolerance = 4 if radius else 2
+    tolerance = 4 if radius or liquid_glass else 2
     maximum = checked = 0
     for x, y in sample_points(case):
         wanted = expected(x, y)
@@ -653,7 +757,8 @@ def drive(client, case):
     return checks
 
 
-def config_text(case, radius, method="gaussian", passes=3, liquid_glass=False):
+def config_text(case, radius, method="gaussian", passes=3, liquid_glass=False,
+                specular_opacity=0.5, specular_saturation=9, refraction_level=1, zoom_level=1, refraction_width=1):
     blur = "" if radius is None else f"blur_radius = {float(radius)}\n"
     # Leave Gaussian defaults implicit to retain coverage of the default method.
     if method != "gaussian" or passes != 3:
@@ -661,6 +766,8 @@ def config_text(case, radius, method="gaussian", passes=3, liquid_glass=False):
     # Layer/popup tests intentionally configure rounded windows to verify that
     # their own square surface trees do not acquire a window outline.
     corners = 0 if case in ("xdg", "stacking") or case in BOUNDARIES else 24
+    if case in ("rounded-asymmetric", "glass-corner"):
+        corners = list(case_radii(case)) if case == "rounded-asymmetric" else 10
     text = f"""gaps = 0
 [theme]
 border_width = 0
@@ -701,7 +808,7 @@ height = 241
     else:
         text += '[[outputs]]\nname = "test"\nwidth = 640\nheight = 480\n'
     if liquid_glass:
-        text += "[theme.liquid_glass]\nenabled = true\n"
+        text += f'[theme.liquid_glass]\nenabled = true\nspecular_opacity = {specular_opacity}\nspecular_saturation = {specular_saturation}\nrefraction_level = {refraction_level}\nzoom_level = {zoom_level}\nrefraction_width = {refraction_width}\n'
     return text
 
 
@@ -726,11 +833,11 @@ def focus_odd_output(runtime, name, clear):
 def capture(args, fixture, directory, env, runtime, host_name, case, radius):
     directory.mkdir(parents=True, exist_ok=True)
     width, height = viewport(case)[2:]
-    png(directory / "pattern.png", width, height, pattern)
+    png(directory / "pattern.png", width, height, lambda x, y: case_pattern(case, x, y))
     if case in BOUNDARIES:
         png(directory / "right.png", 640 - width, height, lambda x, y: RIGHT)
     config = directory / "config.toml"
-    config.write_text(config_text(case, radius, args.method, args.passes, args.liquid_glass))
+    config.write_text(config_text(case, radius, args.method, args.passes, args.liquid_glass, args.specular_opacity, args.specular_saturation, args.refraction_level, args.zoom_level, args.refraction_width))
     frame = directory / "frame.ppm"
     frame.unlink(missing_ok=True)
     name = f"clear-blur-{os.getpid()}-{case}-{radius}"
@@ -799,6 +906,10 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
         "case": case,
         "method": args.method,
         "liquid_glass": args.liquid_glass,
+        "specular_opacity": args.specular_opacity,
+        "specular_saturation": args.specular_saturation,
+        "refraction_level": args.refraction_level, "zoom_level": args.zoom_level,
+        "refraction_width": args.refraction_width,
         "radius": args.radius,
         "passes": args.passes,
         "viewport": viewport(case),
@@ -814,9 +925,9 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
             image = capture(
                 args, fixture, directory / label, env, runtime, host_name, case, radius
             )
-            expected = oracle(case, radius or 0, args.method, args.passes, args.liquid_glass)
+            expected = oracle(case, radius or 0, args.method, args.passes, args.liquid_glass, specular_opacity=args.specular_opacity, specular_saturation=args.specular_saturation, refraction_level=args.refraction_level, zoom_level=args.zoom_level, refraction_width=args.refraction_width)
             report["captures"][label] = check_frame(
-                image, case, radius or 0, args.method, args.passes, expected
+                image, case, radius or 0, args.method, args.passes, expected, liquid_glass=args.liquid_glass
             )
             images[radius] = image
         if case == "xdg":
@@ -826,30 +937,22 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
             )
             report["default_equals_zero"] = True
         assert expected is not None
-        report.update(
-            compare_pair(
-                images[0],
-                images[args.radius],
-                case,
-                args.radius,
-                args.method,
-                args.passes,
-                expected,
-            )
-        )
-        if args.liquid_glass and args.radius:
-            plain = oracle(case, args.radius, args.method, args.passes)
-            differences = [
-                max(abs(a - b) for a, b in zip(expected(x, y), plain(x, y)))
-                for x, y in sample_points(case)
-                if expected(x, y) is not None and plain(x, y) is not None
-            ]
-            # Ensure the oracle grid would actually catch an omitted glass pass.
-            report["glass_sensitive_pixels"] = sum(d > 4 for d in differences)
-            LAYER.require(
-                report["glass_sensitive_pixels"] > 20,
-                "glass test does not distinguish ordinary blur",
-            )
+        if not args.liquid_glass:
+            report.update(compare_pair(images[0], images[args.radius], case, args.radius,
+                                       args.method, args.passes, expected))
+        else:
+            # Glass now runs at radius zero too. Use that high-contrast capture
+            # for sensitivity: heavy Kawase filtering can erase all scene detail.
+            unblurred_glass = oracle(case, 0, args.method, args.passes, True,
+                                    specular_opacity=args.specular_opacity,
+                                    specular_saturation=args.specular_saturation,
+                                    refraction_level=args.refraction_level, zoom_level=args.zoom_level, refraction_width=args.refraction_width)
+            plain = oracle(case, 0, args.method, args.passes)
+            report["glass_sensitive_pixels"] = sum(
+                max(abs(a - b) for a, b in zip(unblurred_glass(x, y), plain(x, y))) > 4
+                for x, y in sample_points(case) if unblurred_glass(x, y) is not None)
+            LAYER.require(report["glass_sensitive_pixels"] > 20,
+                          "glass fixture does not distinguish an omitted optical pass")
         report["passed"] = True
     except Exception as error:
         report["error"] = str(error)
@@ -858,7 +961,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
         (directory / "result.json").write_text(json.dumps(report, indent=2) + "\n")
     print(
         f"PASS: {case}: {args.method} oracle, radius 0/{args.radius:g}, "
-        f"passes={args.passes}, paired variance, crisp/clear regions",
+        f"passes={args.passes}, pixel oracle, crisp/clear regions",
         flush=True,
     )
     return report
@@ -885,6 +988,11 @@ def parse_args(argv=None):
         "--liquid-glass", action="store_true",
         help="test default glass optics with either blur method",
     )
+    parser.add_argument("--specular-opacity", type=float, default=0.5)
+    parser.add_argument("--specular-saturation", type=float, default=9)
+    parser.add_argument("--refraction-level", type=float, default=1)
+    parser.add_argument("--zoom-level", type=float, default=1)
+    parser.add_argument("--refraction-width", type=float, default=1)
     parser.add_argument("--binary", default="target/debug/clear")
     parser.add_argument("--artifacts", default="target/vm-blur-smoke")
     parser.add_argument(
@@ -896,7 +1004,7 @@ def parse_args(argv=None):
         "--case",
         action="append",
         choices=CASES,
-        help="repeat to select cases; default: all ten",
+        help="repeat to select cases; default: all twelve",
     )
     parser.add_argument(
         "--build-only",
@@ -904,6 +1012,13 @@ def parse_args(argv=None):
         help="only compile the real C fixture; no GPU processes",
     )
     args = parser.parse_args(argv)
+    for name, value, high in (("specular-opacity", args.specular_opacity, 1),
+                               ("specular-saturation", args.specular_saturation, 50),
+                               ("refraction-level", args.refraction_level, 10),
+                               ("refraction-width", args.refraction_width, 10),
+                               ("zoom-level", args.zoom_level, 2)):
+        if not math.isfinite(value) or not 0 <= value <= high:
+            parser.error(f"--{name} must be finite and between 0 and {high}")
     if args.radius is None:
         args.radius = 2 if args.method == "kawase" else 12
     if not math.isfinite(args.radius) or not 0 <= args.radius <= 32:
@@ -985,6 +1100,10 @@ def main():
                     {
                         "method": args.method,
                         "liquid_glass": args.liquid_glass,
+                        "specular_opacity": args.specular_opacity,
+                        "specular_saturation": args.specular_saturation,
+                        "refraction_level": args.refraction_level, "zoom_level": args.zoom_level,
+                        "refraction_width": args.refraction_width,
                         "radius": args.radius,
                         "passes": args.passes,
                         "selected": selected,

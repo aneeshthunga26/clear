@@ -135,6 +135,37 @@ A snapshot exceeding the outgoing limit also disconnects rather than growing
 storage indefinitely. Unterminated input at EOF is discarded; a write-half-closed
 peer can still receive replies to complete requests before disconnection.
 
+## Optional Quickshell appearances
+
+The optional example provides two entry points sharing its bridge, services,
+controls, and overlay lifecycle: `examples/quickshell/shell.qml` retains the
+existing appearance, while `examples/quickshell/liquid-glass.qml` selects the
+glass appearance intended for `examples/liquid-glass.toml`.
+
+The glass variant uses a 44-pixel top panel on every output, inset 12 pixels
+from the left/right edges and 10 pixels from the top, reserving 54 pixels total.
+Its background and input
+region have radius 22, producing semicircular ends with transparent, noninteractive
+corners. Controls are inset beyond the end caps. Background tint is `#232834`
+at 18% opacity; text and icons retain their own opacity. Hover/selection fills
+are translucent, with a subtle light outline. No shadows are added.
+
+Launcher, notification, and app-preview surfaces share a 24%-opaque tint and
+rounded corners; the horizontal switcher uses capsule ends. Each switcher card
+shows the window title, app name, and a desktop-entry icon resolved from its app
+ID, falling back to a bundled generic application icon when lookup or icon
+loading fails. The switcher does not capture window pixels. These overlays
+retain their existing lazy creation and transparent 1×1 closed state. Glass
+styles change appearance only: shell commands, keyboard ownership, per-output
+placement, and compositor-side filtering retain their existing contracts.
+The QML draws its own rounded alpha and input masks; Clear's window corner-radius
+setting does not shape layer-shell panels. Its `clear-glass-pill-*` and
+`clear-glass-rounded-*` layer namespaces also tell Clear the opt-in optical outline
+to fit to the panel bounds. Other layer clients keep their own shape behavior.
+No client-side blur shader is added. Style values are centralized in
+`ShellStyle.qml`; the glass entry point does not copy the shell logic or autostart
+another shell.
+
 ## Implementation and evidence
 
 - [Model, validation, serialization](../src/shell/mod.rs),
@@ -145,5 +176,8 @@ peer can still receive replies to complete requests before disconnection.
 - [Window-state tests](../tests/window_state.rs): validated state setters.
 - [Shell fixture](../scripts/vm-shell-smoke.py): actual socket discovery,
   subscriptions, reconnects, disabled environment cleanup, optional real panels.
+  `--quickshell-style glass` checks capsule silhouettes, low-opacity pixels, and
+  the glass variant's output reservations; `--exercise-overlays` checks both
+  appearances' shared lifecycle without physical input injection.
   [Example model tests](../examples/quickshell/Protocol.test.mjs) cover its client
   helpers, not compositor protocol/GPU or physical input behavior.

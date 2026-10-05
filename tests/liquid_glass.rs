@@ -1,4 +1,4 @@
-use clear::{config::Config, decoration::LiquidGlass, runtime::Runtime};
+use clear::{config::Config, decoration::LiquidGlass, input::Action, runtime::Runtime};
 use std::{
     fs,
     sync::atomic::{AtomicU64, Ordering},
@@ -7,12 +7,18 @@ use std::{
 #[test]
 fn glass_is_optional_and_independent_of_blur_method() {
     assert!(!Config::default().theme.liquid_glass.enabled);
+    let defaults = LiquidGlass::default();
+    assert_eq!(defaults.specular_opacity, 0.5);
+    assert_eq!(defaults.specular_saturation, 9.0);
+    assert_eq!(defaults.refraction_level, 1.0);
+    assert_eq!(defaults.refraction_width, 1.0);
+    assert_eq!(defaults.zoom_level, 1.0);
+    let example = Config::from_source(include_str!("../examples/liquid-glass.toml")).unwrap();
+    assert!(example.theme.liquid_glass.enabled);
     assert!(
-        Config::from_source(include_str!("../examples/liquid-glass.toml"))
-            .unwrap()
-            .theme
-            .liquid_glass
-            .enabled
+        example.bindings.iter().any(|binding| {
+            binding.key == "Alt+Tab" && matches!(binding.action, Action::AltTab)
+        })
     );
     assert_eq!(
         Config::from_source("[theme.liquid_glass]")
@@ -34,12 +40,28 @@ fn glass_is_optional_and_independent_of_blur_method() {
 
 #[test]
 fn glass_parameters_are_strict_and_validated_even_when_disabled() {
+    for name in [
+        "model",
+        "lens_area",
+        "refraction_strength",
+        "edge_width",
+        "liquidity",
+        "dispersion",
+        "highlight",
+        "smooth_corners",
+        "reflection_strength",
+        "reflection_width",
+        "mirror_strength",
+        "mirror_width",
+    ] {
+        assert!(Config::from_source(&format!("[theme.liquid_glass]\n{name}=0")).is_err());
+    }
     for (field, low, high) in [
-        ("refraction_strength", 0.0, 64.0),
-        ("edge_width", 1.0, 128.0),
-        ("liquidity", 0.0, 1.0),
-        ("dispersion", 0.0, 1.0),
-        ("highlight", 0.0, 1.0),
+        ("specular_opacity", 0.0, 1.0),
+        ("specular_saturation", 0.0, 50.0),
+        ("refraction_level", 0.0, 10.0),
+        ("refraction_width", 0.0, 10.0),
+        ("zoom_level", 0.0, 2.0),
     ] {
         for value in [low, (low + high) / 2.0, high] {
             Config::from_source(&format!("[theme.liquid_glass]\n{field}={value}")).unwrap();
@@ -86,15 +108,19 @@ fn glass_reload_preserves_last_good_theme_and_can_switch_filters_or_disable() {
     let path = dir.join("config.toml");
     fs::write(&path, "[theme]\nblur_radius=12").unwrap();
     let mut runtime = Runtime::load(Some(path.clone())).unwrap();
-    for method in ["kawase", "gaussian"] {
-        fs::write(&path, format!("[theme]\nblur_method='{method}'\nblur_radius=2\n[theme.liquid_glass]\nenabled=true\nrefraction_strength=18.5")).unwrap();
+    for (method, zoom, width) in [("kawase", 0.0, 0.0), ("gaussian", 1.75, 10.0)] {
+        fs::write(&path, format!("[theme]\nblur_method='{method}'\nblur_radius=0\n[theme.liquid_glass]\nenabled=true\nspecular_opacity=0.75\nspecular_saturation=12\nrefraction_level=10\nrefraction_width={width}\nzoom_level={zoom}")).unwrap();
         runtime.reload().unwrap();
         assert!(runtime.config.theme.liquid_glass.enabled);
-        assert_eq!(runtime.config.theme.liquid_glass.refraction_strength, 18.5);
+        assert_eq!(runtime.config.theme.liquid_glass.specular_opacity, 0.75);
+        assert_eq!(runtime.config.theme.liquid_glass.specular_saturation, 12.0);
+        assert_eq!(runtime.config.theme.liquid_glass.refraction_level, 10.0);
+        assert_eq!(runtime.config.theme.liquid_glass.refraction_width, width);
+        assert_eq!(runtime.config.theme.liquid_glass.zoom_level, zoom);
         let before = runtime.config.theme.clone();
         fs::write(
             &path,
-            "[theme]\nborder_width=8\n[theme.liquid_glass]\nenabled=false\ndispersion=2",
+            "[theme]\nborder_width=8\n[theme.liquid_glass]\nenabled=false\nrefraction_width=10.01",
         )
         .unwrap();
         assert!(runtime.reload().is_err());

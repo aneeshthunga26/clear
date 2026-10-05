@@ -28,8 +28,10 @@ in `platform/smithay/`.
   always uses two filtering passes and ignores this field, but it is always validated,
   even with radius zero. The VM example selects Kawase radius 2/passes 3.
 - Blur describes neither client opacity nor foreground filtering.
-  `liquid_glass.rs` owns strict, defaulted optical parameters independent of blur
-  method; see [rendering](../../specs/rendering.md#liquid-glass). Shader resources,
+  `liquid_glass.rs` owns the strict/defaulted enable switch and three reference
+  magnifying-glass controls plus independent zoom and refraction-width multipliers,
+  independent of blur method;
+  see [rendering](../../specs/rendering.md#liquid-glass). Shader resources,
   grouping, optical sampling, and alpha/coverage handling stay in the adapter.
 - `Theme.titlebar` is strict/defaulted declarative data. Its four straight RGBA
   colors must be finite in `0..=1`; defaults are background 35/40/52 (active),

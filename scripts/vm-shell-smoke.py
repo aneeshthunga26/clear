@@ -93,8 +93,11 @@ def main():
     )
     parser.add_argument(
         "--quickshell-config",
-        default=str(Path(__file__).resolve().parents[1] / "examples/quickshell/shell.qml"),
         help="QML entry point for optional isolated Quickshell runs",
+    )
+    parser.add_argument(
+        "--quickshell-style", choices=("standard", "glass"), default="standard",
+        help="Example appearance and matching panel geometry/pixel oracle",
     )
     parser.add_argument(
         "--allow-focus-change", action="store_true",
@@ -111,6 +114,11 @@ def main():
     args = parser.parse_args()
     if args.exercise_overlays and not args.quickshell:
         parser.error("--exercise-overlays requires --quickshell")
+    glass = args.quickshell_style == "glass"
+    reserved = 54 if glass else 36
+    entry = "liquid-glass.qml" if glass else "shell.qml"
+    if args.quickshell_config is None:
+        args.quickshell_config = str(Path(__file__).resolve().parents[1] / "examples/quickshell" / entry)
     binary = str(Path(args.binary).resolve())
     artifacts = Path(args.artifacts).resolve()
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -118,8 +126,9 @@ def main():
         source = Path(__file__).resolve().parents[1] / "examples/quickshell"
         fixture = artifacts / f"overlay-fixture-{os.getpid()}"
         shutil.copytree(source, fixture)
-        qml = fixture / "shell.qml"
-        text = qml.read_text()
+        qml = fixture / entry
+        assembly = fixture / "DesktopShell.qml"
+        text = assembly.read_text()
         marker = "            screen: modelData\n"
         assert marker in text
         timers = """
@@ -219,7 +228,7 @@ def main():
                 }
             }
 """
-        qml.write_text(text.replace(marker, timers + marker, 1))
+        assembly.write_text(text.replace(marker, timers + marker, 1))
         args.quickshell_config = str(qml)
         args.allow_focus_change = True
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
@@ -377,7 +386,7 @@ def main():
                 )
                 wait_for(
                     lambda: all(
-                        o["area"]["y"] == 36 and o["area"]["height"] == 444
+                        o["area"]["y"] == reserved and o["area"]["height"] == 480 - reserved
                         for o in peer.state()["outputs"]
                     ),
                     "Quickshell reservations on both outputs",
@@ -415,7 +424,7 @@ def main():
                 )
                 wait_for(
                     lambda: all(
-                        o["area"]["y"] == 36 and o["area"]["height"] == 444
+                        o["area"]["y"] == reserved and o["area"]["height"] == 480 - reserved
                         for o in peer.state()["outputs"]
                     ),
                     "restarted shell restores reservations",
@@ -441,7 +450,7 @@ def main():
                     "launcher did not map Alacritty"
                 )
                 assert all(
-                    o["area"]["y"] == 36 for o in peer.state()["outputs"]
+                    o["area"]["y"] == reserved for o in peer.state()["outputs"]
                 ), "overlay dismissal disconnected the panel"
             disabled = subprocess.Popen(
                 [
@@ -478,22 +487,33 @@ def main():
             if args.quickshell:
                 # QML #e60f172a over Clear's default background; the reserved
                 # bar area has no client underneath. Allow GPU byte rounding.
-                alpha = 230 / 255
+                alpha = 46 / 255 if glass else 230 / 255
                 panel_pixel = tuple(
                     round(alpha * foreground + (1 - alpha) * background * 255)
-                    for foreground, background in zip((15, 23, 42), (0.07, 0.08, 0.10))
+                    for foreground, background in zip((35, 40, 52) if glass else (15, 23, 42), (0.07, 0.08, 0.10))
                 )
-                for x in (2, 642):
-                    offset = (1 * 1280 + x) * 3
+                for x in ((320, 960) if glass else (2, 642)):
+                    offset = ((12 if glass else 1) * 1280 + x) * 3
                     assert all(
                         abs(actual - expected) <= 1
                         for actual, expected in zip(
                             pixels[offset : offset + 3], panel_pixel
                         )
                     ), "missing alpha-composited panel pixels"
-                # The open foot client must appear in each grouped-app dock.
-                for x in (330, 970):
-                    offset = (10 * 1280 + x) * 3
+                if glass:
+                    background = tuple(round(c * 255) for c in (0.07, 0.08, 0.10))
+                    for origin in (0, 640):
+                        # Outside the capsule corners, but within its rectangular surface.
+                        for x, y in ((13, 11), (626, 11), (13, 52), (626, 52)):
+                            offset = (y * 1280 + origin + x) * 3
+                            assert all(abs(a - b) <= 1 for a, b in zip(pixels[offset:offset + 3], background)), "opaque capsule corner"
+                        # Midpoints of both circular ends must still contain the panel.
+                        for x in (15, 624):
+                            offset = (32 * 1280 + origin + x) * 3
+                            assert all(abs(a - b) <= 1 for a, b in zip(pixels[offset:offset + 3], panel_pixel)), "missing capsule end"
+                # Controls must remain visible instead of inheriting background alpha.
+                for x in ((75, 715) if glass else (330, 970)):
+                    offset = ((32 if glass else 10) * 1280 + x) * 3
                     assert any(
                         abs(actual - expected) > 1
                         for actual, expected in zip(

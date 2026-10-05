@@ -27,6 +27,8 @@ workspace, and binding arrays replace their default declarations. Empty bindings
 disable shortcuts; empty output/workspace declarations are invalid. Workspace
 declarations configure persistent IDs rather than deleting previously existing
 workspaces or their windows.
+The shipped liquid-glass example declares its own bindings, including `Alt+Tab`
+for the switcher, because default shortcuts do not carry into a supplied array.
 
 Mode strings starting with the literal `script:` prefix are checked for an ASCII
 function identifier of at most 128 bytes. Other nonempty bounded mode names can

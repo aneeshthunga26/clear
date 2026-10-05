@@ -29,8 +29,16 @@ only directory allowed to depend on Smithay and Wayland types.
   placement; resource decoding and filesystem access stay in runtime.
 - `blur.rs`: renderer-owned backdrop scratch textures, bounded separable Gaussian
   and Dual Kawase filters, viewport-pyramid LRU, per-tree composition, and independent
-  coverage/alpha masks. `liquid_glass.frag` treats either filtered backdrop with
-  bounded optical displacement and lighting in the existing composite pass.
+  coverage/alpha masks. `magnify.frag` and `liquid_glass.frag` translate the two
+  reference SVG displacement stages and specular compositing, using immutable
+  embedded maps in `glass-maps/`. Keep magnification as a separate RGBA8 pass;
+  collapsing sample coordinates changes interpolation. Initialize the whole
+  viewport for glass, preserve original-frame map coordinates across crops, and
+  restore every auxiliary sampler binding. Glass works with blur radius zero;
+  enable the scene's ring-only square borders for either backdrop effect.
+  Client-alpha layers default to square optical bounds and alpha-derived backdrop
+  coverage; `clear-glass-pill-*` / `clear-glass-rounded-*` opt into fitted radii
+  and independent geometric backdrop coverage across the panel interior.
 - `rounded.rs`: fitted outer/inner window outlines, shared body hit masks, and
   renderer-owned rounded shaders with offscreen surface-tree composition.
 
@@ -96,9 +104,10 @@ only directory allowed to depend on Smithay and Wayland types.
   coverage use `A * (1-A)` blur weight to preserve holes. Neither method changes
   client opacity. Optional liquid-glass optics replace only the filtered backdrop;
   retain original uncropped tree bounds, viewport clamps, premultiplied alpha, and
-  the expanded sampling halo. See [rendering](../../../specs/rendering.md#liquid-glass).
+  fully initialized viewport sources. See [rendering](../../../specs/rendering.md#liquid-glass).
 - Global `blur_method` selects `gaussian` (default) or `kawase` (Dual Kawase).
-  Finite `blur_radius` in `0..=32` defaults to zero, bypassing the effect exactly.
+  Finite `blur_radius` in `0..=32` defaults to zero, bypassing blur exactly;
+  enabled glass remains independent.
   Gaussian uses logical-pixel support and two separable passes. Kawase uses offsets
   in source pyramid texels, without an implicit half-texel offset; these are not
   Gaussian-equivalent radii. Integer `blur_passes` in `1..=6` defaults to 3 and is
@@ -212,8 +221,10 @@ Gaussian or 2 for Kawase; `--passes` defaults to 3 (range 1..6). Include
 `--case output-boundary-odd` for a 321×241 viewport at (319, 0) beside magenta,
 and focused fractional-radius runs at depths 1/3/6. Preserve separate artifact
 paths. `scripts/test_vm_blur_smoke.py` runs compositor-free oracle/harness
-regressions, not GPU validation. Recorded GPU passes on private local virtual KWin
-(not a VM) cover all ten Kawase cases at radius 2/passes 3, plus `stacking` and
+regressions, including reference map integrity, SVG stage order, independent
+controls, and source/foreground handling; these are not GPU validation.
+Recorded GPU passes on private local virtual KWin (not a VM) cover the original
+ten Kawase cases at radius 2/passes 3, plus `stacking` and
 `output-boundary-odd` at radius 1.5/passes 1 and 6. Gaussian radius 12 passed only
 `xdg`, `stacking`, and `output-boundary-odd` in this round. Full Cargo
 fmt/check/test/build and all 11 CPU oracle/harness tests also passed; no physical

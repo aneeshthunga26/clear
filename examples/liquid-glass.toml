@@ -1,5 +1,7 @@
 # Nested liquid-glass demo. See specs/rendering.md#liquid-glass for the contract.
-# Run: target/debug/clear --config examples/liquid-glass.toml --exit-after 120 --command foot -o colors-dark.alpha=0.55
+# Run: target/debug/clear --config examples/liquid-glass.toml --command foot -o colors-dark.alpha=0.55 -o colors-dark.background=232834
+# For a timed test, add --exit-after 120 before --command; it closes Clear after two minutes.
+# Glass panels: dbus-run-session -- target/debug/clear --config examples/liquid-glass.toml --command quickshell -p examples/quickshell/liquid-glass.qml
 gaps = 24
 
 [[outputs]]
@@ -13,37 +15,43 @@ name = "glass"
 mode = "floating"
 
 [wallpaper]
-path = "aurora.png"
+path = "liquid-glass-wallpaper.jpg"
 mode = "fill"
 
 [theme]
-corner_radius = 10
+corner_radius = 24 # Fit the reference bezel to a window with a standard titlebar.
 border_width = 1
 active_border = [0.8, 0.9, 1.0, 0.35]
 inactive_border = [0.6, 0.7, 0.8, 0.15]
-blur_method = "gaussian" # Or "gaussian" with blur_radius = 8.
-blur_radius = 2
-# blur_passes = 3
+blur_method = "kawase" # Or "kawase" with blur_radius = 2.
+blur_radius = 1 # Light blur; use 0 for the unblurred reference.
+blur_passes = 2
 
 [theme.liquid_glass]
 enabled = true
-refraction_strength = 32
-edge_width = 44
-liquidity = 1
-dispersion = 0.35
-highlight = 0.35
+specular_opacity = 0.5
+specular_saturation = 50
+refraction_width = 10 # Widest rim; 3 is narrower, 1 is original, 0 disables refraction.
+refraction_level = 1 # Up to 10 for stronger refraction; 1 is the reference default.
+zoom_level = 1.5 # 0: no zoom; 1: reference default; 2: stronger zoom.
 
 [theme.titlebar]
-active_background = [0.137, 0.157, 0.204, 0.35]
-inactive_background = [0.106, 0.118, 0.149, 0.45]
+# Match the demo terminal's tint/opacity so backdrop features remain continuous
+# across the titlebar/content boundary; client alpha is never overridden.
+active_background = [0.1372549, 0.15686275, 0.20392157, 0.55]
+inactive_background = [0.1372549, 0.15686275, 0.20392157, 0.55]
 
 [keys]
 leader = "Ctrl+Alt"
 
 [[bindings]]
+key = "Alt+Tab"
+action = "alt_tab"
+
+[[bindings]]
 key = "leader+Return"
 action = "spawn"
-command = ["foot", "-o", "colors-dark.alpha=0.55"]
+command = ["foot", "-o", "colors-dark.alpha=0.55", "-o", "colors-dark.background=232834"]
 
 [[bindings]]
 key = "leader+Shift+r"

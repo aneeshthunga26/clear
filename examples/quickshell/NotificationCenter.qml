@@ -6,6 +6,7 @@ import Quickshell.Wayland
 
 PanelWindow {
     id: center
+    property ShellStyle appearance: ShellStyle {}
     required property var store
     required property var targetScreen
     property bool opened: false
@@ -15,13 +16,13 @@ PanelWindow {
     // the Quickshell client on this nested backend.
     visible: targetScreen !== null
     anchors { top: true; right: true }
-    margins { top: 40; right: 8 }
+    margins { top: center.appearance.glass ? 62 : 40; right: center.appearance.glass ? 12 : 8 }
     implicitWidth: opened ? Math.min(390, targetScreen ? targetScreen.width - 16 : 390) : 1
     implicitHeight: opened ? Math.min(530, targetScreen ? targetScreen.height - 54 : 530) : 1
     exclusiveZone: 0
     color: "transparent"
-    mask: Region { width: center.opened ? center.width : 0; height: center.opened ? center.height : 0 }
-    WlrLayershell.namespace: "clear-notifications"
+    mask: Region { radius: center.appearance.overlayRadius; width: center.opened ? center.width : 0; height: center.opened ? center.height : 0 }
+    WlrLayershell.namespace: appearance.glass ? "clear-glass-rounded-notifications" : "clear-notifications"
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
 
@@ -32,7 +33,11 @@ PanelWindow {
     Rectangle {
         visible: center.opened
         anchors.fill: parent
-        color: "#e6111827"
+        color: center.appearance.surfaceColor
+        radius: center.appearance.overlayRadius
+        border.width: center.appearance.outlineWidth
+        border.color: center.appearance.outlineColor
+        antialiasing: true
     }
 
     ColumnLayout {
@@ -49,11 +54,12 @@ PanelWindow {
             }
             Item { Layout.fillWidth: true }
             PanelButton {
+                appearance: center.appearance
                 text: "Clear all"
                 enabled: center.store.count > 0
                 onClicked: center.store.clear()
             }
-            PanelButton { text: "×"; description: "Close notifications"; onClicked: center.opened = false }
+            PanelButton { appearance: center.appearance; text: "×"; description: "Close notifications"; onClicked: center.opened = false }
         }
         Text {
             visible: center.store.count === 0
@@ -73,8 +79,8 @@ PanelWindow {
                 required property var modelData
                 width: ListView.view.width
                 height: details.implicitHeight + 16
-                radius: 6
-                color: "#1e293b"
+                radius: center.appearance.glass ? 12 : 6
+                color: center.appearance.controlColor
                 Column {
                     id: details
                     anchors.left: parent.left
@@ -93,6 +99,7 @@ PanelWindow {
                             elide: Text.ElideRight
                         }
                         PanelButton {
+                            appearance: center.appearance
                             text: "×"
                             description: "Dismiss notification"
                             onClicked: card.modelData.dismiss()
@@ -120,6 +127,7 @@ PanelWindow {
                         Repeater {
                             model: card.modelData.actions
                             delegate: PanelButton {
+                                appearance: center.appearance
                                 required property var modelData
                                 text: modelData.text
                                 onClicked: modelData.invoke()
