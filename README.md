@@ -4,6 +4,8 @@ A modular, early-stage Wayland window manager built with Smithay and Rust 2024.
 Desktop policy operates on plain Rust IDs and logical rectangles; Rhai provides
 custom layouts and actions without exposing compositor objects.
 
+<img width="2558" height="1368" alt="image" src="https://github.com/user-attachments/assets/873f70a1-95fe-43a2-8ab6-5981de9cfeaf" />
+
 **Current backend:** nested winit inside an existing Wayland/X11 desktop. See the
 [platform specification](specs/platform.md) for supported behavior and current
 limitations.
