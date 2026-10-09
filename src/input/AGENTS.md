@@ -18,6 +18,8 @@ keyboard ownership, grabs, and pointer events belong in `platform/smithay/`.
 - Binding lookup expects normalized unshifted key names. Smithay must translate
   actual keysyms with `xkb::keysym_get_name`, not debug labels such as `XK_Return`.
 - Spawn actions carry executable/argument vectors, not shell command strings.
+- `toggle_overview` (leader+w) queues adapter-authorized overview entry/exit;
+  see [overview](../../specs/overview.md). Both bindings and Rhai can request it.
 - `alt_tab` is a declarative gesture advance. The Smithay adapter detects the
   physical Alt release and Escape cancellation; runtime retains pending selection.
 - `toggle_maximized` (leader+Up) and `minimize` (leader+Down) operate on the

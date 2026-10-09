@@ -17,6 +17,7 @@ permission to change behavior silently.
 | --- | --- |
 | [Desktop state](desktop.md) | Workspace ownership, output groups, focus, floating state, maximize/minimize |
 | [Layouts and resizing](layouts.md) | Built-in geometry, scrolling, persistent proportions, resize sessions |
+| [Desktop overview](overview.md) | Compositor-owned preview, navigation, input ownership and bounded live cards |
 | [Input and actions](input.md) | Shortcut parsing, action schema, default bindings, gestures, Alt-Tab |
 | [Configuration and runtime](configuration.md) | TOML schema, defaults, startup fallback, atomic reload, orchestration |
 | [Rhai extensions](scripting.md) | Layout/action interfaces, validation, execution limits, fallback |

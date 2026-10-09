@@ -2,6 +2,8 @@
 
 use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 
+pub mod overview;
+pub use overview::{OverviewNavigation, OverviewSession, OverviewTarget};
 pub mod titlebar;
 pub mod wallpaper;
 pub use titlebar::TitlebarAssets;
@@ -48,6 +50,10 @@ pub struct Runtime {
     pub bindings: Bindings,
     /// Pending Alt-Tab selection, committed by the physical modifier release.
     pub switcher: Option<Switcher>,
+    /// Current compositor-owned preview, independent of shell IPC.
+    pub overview: Option<OverviewSession>,
+    /// Toggle request awaiting adapter grab/held-input authorization.
+    pub overview_requested: bool,
     config_path: Option<PathBuf>,
     script: Option<ScriptHost>,
     failed_functions: BTreeSet<String>,
@@ -97,6 +103,8 @@ impl Runtime {
             config,
             bindings,
             switcher: None,
+            overview: None,
+            overview_requested: false,
             config_path,
             script,
             failed_functions: BTreeSet::new(),
@@ -203,6 +211,10 @@ impl Runtime {
             let command = match action {
                 // Only the physical-key adapter can start a modifier-held gesture.
                 Action::AltTab => continue,
+                Action::ToggleOverview => {
+                    self.overview_requested = !self.overview_requested;
+                    continue;
+                }
                 Action::FocusNext => Command::FocusNext,
                 Action::FocusPrevious => Command::FocusPrevious,
                 Action::CycleOutput => Command::CycleOutput,
@@ -262,6 +274,40 @@ impl Runtime {
             effects.extend(self.desktop.command(command));
         }
         effects
+    }
+
+    /// Start/close the overview after the adapter authorizes input ownership.
+    pub fn toggle_overview(&mut self) {
+        self.overview_requested = false;
+        self.cancel_switcher();
+        if self.overview.take().is_none() {
+            self.overview = OverviewSession::new(&self.desktop);
+        }
+    }
+
+    /// Cancel preview without changing desktop focus, geometry, or presentation.
+    pub fn cancel_overview(&mut self) {
+        self.overview = None;
+        self.overview_requested = false;
+    }
+
+    /// Commit a validated transient selection through core commands.
+    pub fn finish_overview(&mut self) {
+        if let Some(session) = self.overview.take() {
+            session.activate(&mut self.desktop);
+        }
+        self.overview_requested = false;
+    }
+
+    /// Remove stale candidates after desktop/client lifecycle changes.
+    pub fn refresh_overview(&mut self) {
+        if self
+            .overview
+            .as_mut()
+            .is_some_and(|s| !s.refresh(&self.desktop))
+        {
+            self.cancel_overview();
+        }
     }
 
     /// Advance a selection among normal windows on the focused workspace.

@@ -6,6 +6,8 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 
 - `mod.rs`: TOML deserialization, defaults, validation, configuration paths, and
   loading errors/fallback. Keep schema values backend-independent.
+  It owns strict/defaulted `[overview]` interaction preferences; see
+  [overview](../../specs/overview.md#layout-and-input) for behavior.
 - `wallpaper.rs`: optional global `[wallpaper]` path/mode and partial
   `[wallpaper.outputs."name"]` overrides; keep these separate from output topology.
   Paths resolve against the config directory, without tilde/environment expansion.

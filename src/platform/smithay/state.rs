@@ -86,6 +86,10 @@ pub(super) struct Compositor {
     pub children: Vec<Child>,
     pub suppressed_keys: BTreeSet<u32>,
     pub suppressed_buttons: BTreeSet<u32>,
+    pub forwarded_keys: BTreeMap<u32, bool>,
+    pub overview_press: Option<crate::runtime::OverviewTarget>,
+    pub overview_drag: Option<super::overview::OverviewDrag>,
+    pub overview_outputs: BTreeMap<WindowId, (Window, Output)>,
     pub drag: Option<Drag>,
     pub titlebar_press: Option<(WindowId, super::titlebar::TitlebarPart)>,
     pub titlebar_drag: Option<(WindowId, Point<f64, Logical>)>,
@@ -175,6 +179,10 @@ impl Compositor {
             children: Vec::new(),
             suppressed_keys: BTreeSet::new(),
             suppressed_buttons: BTreeSet::new(),
+            forwarded_keys: BTreeMap::new(),
+            overview_press: None,
+            overview_drag: None,
+            overview_outputs: BTreeMap::new(),
             drag: None,
             titlebar_press: None,
             titlebar_drag: None,
@@ -215,6 +223,7 @@ impl Compositor {
                 }
             }
         }
+        self.service_overview();
         self.dirty = true;
         self.reconcile();
         eprintln!(

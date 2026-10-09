@@ -5,6 +5,7 @@ mod blur;
 mod decorations;
 mod input;
 mod layers;
+mod overview;
 mod protocols;
 mod rounded;
 mod scene;
@@ -99,10 +100,12 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         state.outputs.len()
     );
     event_loop.run(Some(Duration::from_millis(16)), &mut state, |state| {
+        state.service_overview();
         state.reconcile();
         state.dispatch_shell();
         state.popups.cleanup();
         state.space.refresh();
+        state.refresh_overview_outputs();
         state
             .children
             .retain_mut(|child| child.try_wait().map_or(false, |status| status.is_none()));

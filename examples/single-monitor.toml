@@ -54,6 +54,10 @@ show_title = true # Default; false hides only text.
 [keys]
 leader = "Ctrl+Alt"
 
+[overview]
+# Default: hover keeps the current preview; click a desktop to switch and close.
+preview_workspace_on_hover = false
+
 # Placement rules, not autostart or launcher/panel toggle commands.
 # Arrays replace their defaults; [] disables a policy. IDs match exactly.
 [shell]
@@ -87,6 +91,10 @@ mode = "scrolling"
 key = "leader+Return"
 action = "spawn"
 command = ["foot"]
+
+[[bindings]]
+key = "leader+w"
+action = "toggle_overview"
 
 [[bindings]]
 key = "Alt+Tab"

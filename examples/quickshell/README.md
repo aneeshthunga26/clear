@@ -39,6 +39,9 @@ bus:
 dbus-run-session -- ./target/debug/clear --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
+The overview button requests Clear’s [compositor-owned overview](../../specs/overview.md);
+the shell does not render cards or capture windows.
+
 The Alt+Tab overlay displays each window's desktop-entry icon, app name, and
 title from Clear's [switcher state](../../specs/shell.md#snapshot-fields). It
 uses its bundled generic application icon when the app ID has no desktop-entry

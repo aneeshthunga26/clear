@@ -156,6 +156,19 @@ impl Compositor {
         }
     }
 
+    /// Exclusive top/overlay clients block overview entry; on-demand focus does not.
+    pub fn has_exclusive_layer(&self) -> bool {
+        self.outputs.iter().any(|region| {
+            let map = layer_map_for_output(&region.output);
+            [Layer::Overlay, Layer::Top].iter().any(|kind| {
+                map.layers_on(*kind).any(|surface| {
+                    surface.cached_state().keyboard_interactivity
+                        == KeyboardInteractivity::Exclusive
+                })
+            })
+        })
+    }
+
     /// Top/overlay exclusive surfaces preempt application focus until unmapped.
     pub fn layer_keyboard_focus(&self) -> Option<WlSurface> {
         for kind in [Layer::Overlay, Layer::Top] {

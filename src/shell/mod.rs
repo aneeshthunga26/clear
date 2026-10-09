@@ -34,6 +34,8 @@ pub enum RequestKind {
     Snapshot,
     #[serde(deserialize_with = "empty_request")]
     Subscribe,
+    #[serde(deserialize_with = "empty_request")]
+    ToggleOverview,
     FocusOutput {
         output: String,
     },
@@ -87,6 +89,8 @@ pub struct Snapshot {
     pub focused_output: Option<String>,
     pub focused_window: Option<String>,
     pub switcher: Option<SwitcherSnapshot>,
+    /// Whether compositor-owned overview input/UI is active.
+    pub overview_open: bool,
 }
 
 /// Pending Alt-Tab candidates and selected window, without changing focus yet.
@@ -221,6 +225,7 @@ pub fn snapshot(runtime: &Runtime) -> Snapshot {
             .collect(),
         focused_output: desktop.focused_output().map(|id| id.0.to_string()),
         focused_window: desktop.focused_window().map(|id| id.0.to_string()),
+        overview_open: runtime.overview.is_some(),
         switcher: runtime.switcher.as_ref().map(|switcher| SwitcherSnapshot {
             output: switcher.output.0.to_string(),
             windows: switcher.windows.iter().map(|id| id.0.to_string()).collect(),
@@ -273,6 +278,9 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
     validate_version(request.version)?;
     match &request.request {
         RequestKind::Snapshot | RequestKind::Subscribe => {}
+        RequestKind::ToggleOverview => {
+            runtime.overview_requested = !runtime.overview_requested;
+        }
         RequestKind::FocusOutput { output } => {
             let output = output_id(runtime, output)?;
             runtime.desktop.command(Command::FocusOutput(output));

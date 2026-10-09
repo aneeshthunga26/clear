@@ -21,6 +21,7 @@ default configuration rather than partly applying invalid declarations.
 | `theme`                  | [Rendering defaults](rendering.md#theme)        | Includes [titlebar](decorations.md#titlebar-configuration) settings |
 | `wallpaper`              | No image, `fill`                                | [Wallpaper selection](wallpaper.md#selection)                       |
 | `shell`                  | `wofi` launcher; `waybar` top-layer rule        | [Shell rules](#shell-rules)                                         |
+| `overview.preview_workspace_on_hover` | `false` | Strict boolean; [overview interaction](overview.md#layout-and-input) |
 
 Unknown fields and malformed typed values MUST be rejected. Supplied output,
 workspace, and binding arrays replace their default declarations. Empty bindings
@@ -108,6 +109,9 @@ actions. Layer-shell launchers remain protocol surfaces, distinct from classifie
 XDG windows.
 
 ## Runtime action routing
+
+The `toggle_overview` action queues a request for adapter input authorization;
+its session and lifecycle follow [overview](overview.md).
 
 Runtime translates validated typed actions into desktop commands or explicit
 platform effects. It owns reload and script calls, not Wayland objects. Script

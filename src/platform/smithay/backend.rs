@@ -1,6 +1,8 @@
 use super::{
     blur::BackdropBlur,
+    overview::OverviewCache,
     rounded::RoundedShaders,
+    scene::SceneElement,
     scene::premultiply,
     state::{Compositor, OutputRegion},
     titlebar::TitlebarCache,
@@ -64,6 +66,7 @@ pub(super) fn init(
     let mut damage = OutputDamageTracker::new(backend.window_size(), 1.0, Transform::Flipped180);
     let mut wallpapers = WallpaperCache::default();
     let mut titlebars = TitlebarCache::default();
+    let mut overview = OverviewCache::default();
     let mut rounded = None;
     let mut blur = None;
     event_loop
@@ -80,6 +83,10 @@ pub(super) fn init(
                     state.end_drag();
                     state.titlebar_press = None;
                     state.titlebar_drag = None;
+                    state.overview_press = None;
+                    state.overview_drag = None;
+                    state.runtime.cancel_overview();
+                    overview.clear();
                 }
                 state.dirty = true;
             }
@@ -97,7 +104,10 @@ pub(super) fn init(
                     if !radius.is_finite() || !(0.0..=32.0).contains(&radius) {
                         return Err("blur radius must be finite and in 0..=32".into());
                     }
-                    if state.runtime.config.theme.corner_radius.is_rounded() && rounded.is_none() {
+                    if (state.runtime.config.theme.corner_radius.is_rounded()
+                        || state.runtime.overview.is_some())
+                        && rounded.is_none()
+                    {
                         rounded = Some(
                             RoundedShaders::new(renderer)
                                 .map_err(|e| format!("compile rounded window shaders: {e}"))?,
@@ -113,6 +123,14 @@ pub(super) fn init(
                         )
                         .map_err(|e| format!("compose scene: {e}"))?;
                     let background = premultiply(state.runtime.config.theme.background);
+                    let mut final_elements = if let Some(shaders) = rounded.as_ref() {
+                        overview
+                            .elements(state, renderer, &mut titlebars, shaders, &mut wallpapers)
+                            .map_err(|e| format!("compose overview: {e}"))?
+                    } else {
+                        overview.clear();
+                        Vec::new()
+                    };
                     if radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled {
                         if blur.is_none() {
                             blur = Some(
@@ -134,22 +152,14 @@ pub(super) fn init(
                                 background,
                             )
                             .map_err(|e| format!("compose backdrop blur: {e}"))?;
-                        // render_output explicitly restores the window target after all
-                        // offscreen passes; never submit the last scratch framebuffer.
-                        damage
-                            .render_output(renderer, &mut framebuffer, 0, &[composed], [0.0; 4])
-                            .map_err(|e| format!("present blurred scene: {e}"))?;
+                        final_elements.push(SceneElement::Wallpaper(composed));
                     } else {
-                        damage
-                            .render_output(
-                                renderer,
-                                &mut framebuffer,
-                                0,
-                                &scene.elements,
-                                background,
-                            )
-                            .map_err(|e| format!("render frame: {e}"))?;
+                        final_elements.extend(scene.elements);
                     }
+                    // Restore the window target after all thumbnail/blur offscreen work.
+                    damage
+                        .render_output(renderer, &mut framebuffer, 0, &final_elements, background)
+                        .map_err(|e| format!("present scene: {e}"))?;
                     if state.start.elapsed() >= capture_after {
                         if let Some(path) = capture.take() {
                             use std::io::Write;

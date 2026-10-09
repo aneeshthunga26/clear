@@ -299,6 +299,12 @@ impl Desktop {
             Command::SwitchWorkspace(id) | Command::MoveToWorkspace(id) => {
                 self.workspaces.contains_key(id)
             }
+            Command::MoveWindowToWorkspace(window, workspace) => {
+                self.windows
+                    .get(window)
+                    .is_some_and(|w| w.workspace != *workspace)
+                    && self.workspaces.contains_key(workspace)
+            }
             _ => true,
         };
         if !valid {
@@ -307,6 +313,7 @@ impl Desktop {
         let mut reveal = !matches!(
             &command,
             Command::SwitchWorkspace(_)
+                | Command::MoveWindowToWorkspace(_, _)
                 | Command::SetWorkspaceMode(_)
                 | Command::SetOutputMode(_)
                 | Command::ClearOutputMode
@@ -342,6 +349,9 @@ impl Desktop {
                 {
                     self.transfer(window, id, None);
                 }
+            }
+            Command::MoveWindowToWorkspace(window, workspace) => {
+                self.transfer(window, workspace, None);
             }
             Command::MoveToOutput(output) => {
                 if let (Some(workspace), Some(window)) =
@@ -688,7 +698,9 @@ impl Desktop {
                 .windows
                 .push(id);
             self.windows.get_mut(&id).unwrap().workspace = workspace;
-            self.focused_window = None;
+            if self.focused_window == Some(id) {
+                self.focused_window = None;
+            }
         }
         if let Some(output) = output {
             self.windows.get_mut(&id).unwrap().output = Some(output);

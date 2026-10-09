@@ -129,6 +129,26 @@ fn reload_keeps_last_good_config_on_parse_script_or_topology_failure() {
 }
 
 #[test]
+fn overview_hover_reload_is_atomic_and_preserves_an_open_preview() {
+    let fixture = Fixture::new();
+    let mut runtime = Runtime::load(Some(
+        fixture.config("[overview]\npreview_workspace_on_hover=false"),
+    ))
+    .unwrap();
+    outputs(&mut runtime);
+    runtime.toggle_overview();
+    let session = runtime.overview.clone();
+    fixture.config("[overview]\npreview_workspace_on_hover=true");
+    runtime.reload().unwrap();
+    assert!(runtime.config.overview.preview_workspace_on_hover);
+    assert_eq!(runtime.overview, session);
+    fixture.config("[overview]\npreview_workspace_on_hover='yes'");
+    assert!(runtime.reload().is_err());
+    assert!(runtime.config.overview.preview_workspace_on_hover);
+    assert_eq!(runtime.overview, session);
+}
+
+#[test]
 fn rhai_layout_and_actions_integrate_with_core_and_fail_closed() {
     let fixture = Fixture::new();
     fs::write(fixture.0.join("test.rhai"), r#"

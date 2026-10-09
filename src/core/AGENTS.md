@@ -36,6 +36,9 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   launchers cannot be resized; normal floating exceptions remain resizable.
 - Commands mutate policy and return explicit effects; never spawn processes,
   access protocol objects, or perform rendering here. Invalid IDs are safe no-ops.
+  Explicit window-to-workspace transfers must not focus/restore the source first
+  or follow its destination; preserve unrelated focus and use ordinary repair
+  when the moved window was focused. See [desktop](../../specs/desktop.md#focus-and-commands).
 - Saved floating rectangles are independent of tiles and committed client sizes.
   Allow offscreen positions and oversized floats; panel reservations and output
   shrinkage must not clamp or overwrite saved geometry.

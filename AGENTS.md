@@ -93,6 +93,8 @@ Key cross-component contracts:
 - [Decorations](specs/decorations.md), [rendering](specs/rendering.md), and
   [wallpapers](specs/wallpaper.md): negotiated insets, prepared resources, alpha,
   outlines, output-local filtering, and cache bounds.
+- [Overview](specs/overview.md): transient preview, input ownership, committed GPU
+  cards, output-local hits, and bounded resources.
 - [Shell IPC](specs/shell.md): optional toolkit-independent model, strict allowlist,
   private endpoints, and bounded transport.
 
@@ -123,6 +125,10 @@ Prefer an isolated VM for compositor integration tests:
 - `python3 -B scripts/vm-wallpaper-smoke.py --binary target/debug/clear`: generated
   PNGs and GPU captures checking per-output selection, all four scaling modes,
   full-output placement despite panel reservations, and layer priority.
+- `python3 -B scripts/vm-overview-smoke.py --binary target/debug/clear`: bounded
+  protocol/GPU checks for cards, cancellation, deferral, hidden/minimized buffers,
+  alpha/subsurfaces, SSD, odd outputs and multiple-client pagination. No physical
+  clicks/keys are injected; use the runtime/adapter tests for synthetic input paths.
 - `python3 -B scripts/vm-window-state-smoke.py --binary target/debug/clear`: real
   XDG maximize/minimize/restore, pre-map maximize, reservations, focus, IPC state,
   and GPU visibility checks.

@@ -35,7 +35,7 @@ asynchronous configure contract at that boundary.
 | `src/management/` | Pure built-in geometry policies | [Layouts](../specs/layouts.md) |
 | `src/input/` | Shortcut parsing and typed actions | [Input](../specs/input.md) |
 | `src/config/` | TOML schema and defaults | [Configuration](../specs/configuration.md) |
-| `src/runtime/` | Config/reload, script routing, prepared CPU resources | [Configuration](../specs/configuration.md), [wallpaper](../specs/wallpaper.md), [decorations](../specs/decorations.md) |
+| `src/runtime/` | Config/reload, script routing, transient overview selection, prepared CPU resources | [Configuration](../specs/configuration.md), [wallpaper](../specs/wallpaper.md), [decorations](../specs/decorations.md) |
 | `src/scripting/` | Bounded Rhai host and validation | [Rhai](../specs/scripting.md) |
 | `src/decoration/` | Backend-independent theme descriptions | [Rendering](../specs/rendering.md), [decorations](../specs/decorations.md) |
 | `src/shell/` | Toolkit-independent snapshots, commands, Unix transport | [Shell IPC](../specs/shell.md) |
@@ -48,6 +48,13 @@ See [desktop ownership and presentation](../specs/desktop.md) for workspace/outp
 invariants, focus, topology changes, saved geometry, and commands. The
 [virtual-output contract](../specs/platform.md#virtual-outputs) describes how the
 current backend maps those concepts into a host window.
+
+## Overview
+
+The ID-only runtime session supplies preview selection. The adapter shares one
+deterministic layout between hits and rendering, composites small GPU thumbnails
+from committed buffers, and owns seat focus while open. It never reconciles
+hidden workspaces into the normal scene. See [overview](../specs/overview.md).
 
 ## Window state
 

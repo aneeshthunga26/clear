@@ -41,6 +41,7 @@ impl Compositor {
                 server.reply(client, shell::encode_error(Some(request.id), &error));
                 continue;
             }
+            self.service_overview();
             match request.request {
                 RequestKind::Snapshot | RequestKind::Subscribe => {
                     if matches!(request.request, RequestKind::Subscribe) {

@@ -139,6 +139,14 @@ Scope {
                     }
                 }
 
+                PanelButton {
+                    appearance: root.appearance
+                    text: "▦"
+                    description: "Desktop overview"
+                    enabled: bridge.online
+                    selected: bridge.state !== null && bridge.state.overview_open === true
+                    onClicked: bridge.command({type: "toggle_overview"})
+                }
                 Tray { id: tray }
                 PanelButton {
                     appearance: root.appearance

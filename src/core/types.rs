@@ -158,6 +158,8 @@ pub enum Command {
     SwitchWorkspace(WorkspaceId),
     /// Move the focused window without following it to the destination workspace.
     MoveToWorkspace(WorkspaceId),
+    /// Move a specific window without revealing it or following its workspace.
+    MoveWindowToWorkspace(WindowId, WorkspaceId),
     /// Move the focused window to an output's visible workspace and follow it.
     MoveToOutput(OutputId),
     /// Set the active workspace's default, retaining all region overrides.

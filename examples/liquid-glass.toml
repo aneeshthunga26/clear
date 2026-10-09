@@ -45,6 +45,10 @@ inactive_background = [0.1372549, 0.15686275, 0.20392157, 0.55]
 leader = "Ctrl+Alt"
 
 [[bindings]]
+key = "leader+w"
+action = "toggle_overview"
+
+[[bindings]]
 key = "Alt+Tab"
 action = "alt_tab"
 

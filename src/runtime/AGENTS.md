@@ -8,6 +8,10 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 It also defines backend-neutral launch `Options`. Keep Smithay and protocol
 objects out of this module; return effects for the platform to execute.
 
+- `overview.rs` owns ID-only preview selection, navigation and validated drops;
+  move explicit window IDs without incidental focus/reveal. Commit through core
+  commands, never compute hidden placements. The adapter authorizes queued toggles.
+  See [overview](../../specs/overview.md) for lifecycle and input requirements.
 - Startup may fall back to safe defaults. Reload must prepare and validate the
   candidate config, bindings, and script host before replacing live state.
   Rejected reloads retain the last good configuration and behavior.

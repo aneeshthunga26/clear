@@ -660,3 +660,209 @@ Use a disposable or backed-up test environment and record its recovery procedure
 privately under `.agents/`. Do not change host desktop settings or grant extra VM
 privileges just to run these nested tests. Never replace a VM disk image or UEFI
 store while that VM is running.
+
+
+## Desktop overview
+
+Build the Rust binary separately, then run in the isolated test environment:
+
+```sh
+python3 -B scripts/vm-overview-smoke.py --binary target/debug/clear --artifacts target/vm-overview --seconds 18
+cargo test --locked --test overview
+cargo test --locked --lib platform::smithay::input::tests::overview
+```
+
+The [overview contract](../specs/overview.md) owns behavior. The fixture reuses
+real SHM XDG/layer clients under a private virtual KWin host. It has twenty cases:
+`cards`, `minimized`, `cancelled`, `exclusive-deferred`, `alpha-subsurface`, `ssd`,
+`odd-outputs`, `many-windows`, `hidden-live`, `rounded-blur`, `wallpaper`,
+`scaled-content`, `live-cards`, `live-minimized`, `live-miniatures`, `live-offscreen`,
+`live-subsurface`, `sharp-preview`, `rounded-previews` and `rounded-asymmetric`. Repeat `--case` to select cases.
+Each Clear instance is bounded by `--exit-after` (10–30 seconds). It checks
+unchanged client configure dimensions, actual keyboard enter/leave ownership,
+card content, popup exclusion, final-pass stacking, alpha and subsurfaces, SSD,
+odd output clipping, rounded cards above a Kawase-filtered desktop, and 46-window pagination across three fixture connections.
+`alpha-subsurface` commits new content after entry; `hidden-live` independently
+switches desktop presentation while preserving the preview identity, then damages
+the now-thumbnail-only client. The `live-*` cases animate from real frame
+callbacks, honor suspended state/output membership, compare advancing frame
+counts and current encoded colors with GPU pixels, and check that preview-only
+clients pause on exit and resume on reentry. `sharp-preview` uses a larger output,
+a fixed-size real SSD client, one-pixel content stripes and prepared one-pixel
+control SVGs to detect intermediate capture blur at native preview size.
+`rounded-previews` checks that native corner masks scale proportionally into the
+small desktop-strip preview. `rounded-asymmetric` checks rounded/square corner
+order in both sizes, including the offscreen composition orientation. No raw
+compositor test hooks are added.
+
+The many-window result records entry latency, a one-second process CPU sample,
+and baseline/overview RSS/high-water memory. Those process totals include the
+normal underlying scene, committed client buffers, fonts and graphics driver;
+they are not thumbnail cache allocation totals or GPU timer measurements.
+The backend still continuously repaints the underlying scene. Captures and logs
+remain in the chosen `target/` directory. The fixture does not inject physical
+keyboard/mouse events. The Rust seat-path test feeds synthetic keys/buttons,
+including release suppression and implicit pointer grabs, with no shell server;
+it does not establish physical-device delivery or host shortcut precedence.
+
+
+### Overview validation record (2026-10-09)
+
+All ten overview cases passed in the isolated VM across targeted runs. Local
+copies are under `target/overview-review/`: `vm-reviewed/` contains `cards`,
+`cancelled`, post-entry `alpha-subsurface`, and `many-windows`; `vm-final/` supplies
+`minimized`, `exclusive-deferred` and `ssd`; `vm-hidden/` contains `hidden-live`
+and `odd-outputs`; `vm-profile/` contains `rounded-blur` and the final 46-window
+profile. The failed earlier many-window oracle in `vm-final/` used an off-center
+sample that missed an aspect-preserved narrow card; only `vm-profile/` and
+`vm-reviewed/` establish the corrected many-window result.
+
+The final profile accepted entry in about 78 ms and used about 0.38 CPU seconds
+per wall second over the one-second sample. Compositor RSS rose from 810344 to
+815408 KiB (about 5 MiB); its 829708 KiB high-water mark did not rise. These are
+observations on the VM's continuous-rendering workload, not
+portable performance guarantees or GPU timings. Live post-entry damage was
+checked separately, not used as a sustained 46-window animation benchmark.
+
+The built-in and Rhai foot smokes, `layer-popup`/`priority-restored` layer cases,
+and real Quickshell smoke also passed. Cargo fmt/check/test, Rust Analyzer
+warning diagnostics, QML lint and all twelve Node model tests passed. No physical
+keyboard, mouse, touchpad or GPU timer query was tested.
+
+### Overview presentation revision (2026-10-09)
+
+The wallpaper canvas, compact desktop strip, relative-size frames and caption
+presentation were verified on a private local virtual KWin host, not in the VM.
+All twelve cases passed with the final binary in
+`target/overview-plasma-scaled-final/`. The new `wallpaper` case checks wallpaper
+in the window gutter and empty desktop miniature, transparent client composition
+and coverage of the ordinary panel. `scaled-content` places a subsurface near the
+client's bottom-right corner to distinguish full-texture scaling from an
+accidental destination-sized source crop. Earlier presentation captures under
+`target/overview-plasma-final/` preceded the source-rectangle correction and do
+not establish that final scaling behavior.
+
+The real single-monitor example, with Quickshell and three foot clients, was
+also captured during a bounded local virtual-host run in `target/overview-demo/`.
+That capture was visually reviewed after the scaling correction. Cargo
+fmt/check/test/build and Rust Analyzer warning diagnostics passed; the library
+suite now has 87 tests. No physical keyboard/mouse input, animations or GPU timer
+queries were tested in this revision.
+
+### Overview hover and workspace drops (2026-10-09)
+
+Cargo fmt/check/test/build and Rust Analyzer warning diagnostics passed after
+adding the strict hover preference and ID-targeted workspace transfers. The
+library suite has 89 tests, with 13 overview policy/schema tests and 9 runtime
+tests in their integration suites. The compositor seat test
+`overview_hover_click_and_drag_without_shell_ipc` supplies synthetic motion,
+button and keyboard events without shell IPC: default/opt-in workspace hover,
+click activation, below-threshold clicks, valid/same-workspace/outside drops,
+frozen preview, Escape/release suppression, and invalidation by source transfer,
+removal, launcher reclassification and output geometry changes. Policy tests
+cover minimized/maximized flags, saved floating geometry, unrelated focus and
+visible destination outputs; runtime tests cover atomic preference reload.
+
+Ordinary GPU overview regressions passed on the private local virtual KWin host:
+`cards`, `many-windows`, `rounded-blur` and `scaled-content` in
+`target/overview-drag-gpu/`; final `cards` and `rounded-blur` captures are in
+`target/overview-drag-final-gpu/`. These captures do not exercise dragging or
+establish physical pointer delivery. Ghost geometry has a bounded/aspect-ratio
+unit test; its moving GPU appearance and physical drag delivery were not
+automated in this round.
+
+### Live overview validation (2026-10-09)
+
+All seventeen overview GPU/protocol cases passed on a private local virtual
+KWin host, without a VM. The five callback-driven animation cases are in
+`target/overview-live-gpu/`; all twelve existing cases and the final five-window
+miniature-bound regression are in `target/overview-live-regressions/`. Main-card
+and subsurface captures were rechecked with an oracle restricted to the canvas,
+so animated strip tiles cannot hide a stale main preview. The miniature case
+checks that the fifth hidden client receives neither preview output membership
+nor animation callbacks. Minimized, offscreen and miniature-only clients also
+pause on exit and resume on reentry; core flags and client size hints stay intact.
+
+Cargo fmt/check/test/build and editor diagnostics passed. Both layer and
+decoration harness self-test suites passed (14 tests each). A bounded local
+Quickshell/foot example with three animated terminals was captured in
+`target/overview-demo/`. These runs verify committed content, frame callbacks,
+protocol visibility and GPU pixels; physical input and video playback were not
+automated.
+
+### Overview preview sharpness validation (2026-10-09)
+
+The previous binary failed `sharp-preview`: the fixed 512×320 intermediate
+texture softened one-pixel client stripes in a native-size 640×512 SSD frame.
+The destination-sized implementation passes both the client stripe and prepared
+SSD-control stripe assertions. Before/after GPU captures are in
+`target/overview-sharp-before/sharp-preview/` and
+`target/overview-sharp-gpu/sharp-preview/`. The sampled content row has only
+black/white (0/255) after the fix, versus intermediate intensities before it.
+
+All eighteen sharpness/GPU/protocol cases passed on the private local virtual
+KWin host in `target/overview-sharp-gpu/`, without a VM. Both compositor-free
+harness suites also passed (14 tests each).
+
+Cargo fmt/check/test/build and editor diagnostics passed, including the new
+resolution-planning regression in the 90-test library suite. The test covers
+miniature-first ordering, a larger main card, smaller ghost reuse, native source
+resolution and oversized-target bounds. The local nested animated example was
+launched with the updated binary. These checks do not automate physical input.
+
+### Fixed-pixel preview corner trial (2026-10-09; superseded)
+
+This trial was superseded by the source-composition approach below after the
+requested corner behavior was clarified to scale with the window.
+
+The initial `rounded-previews` regression failed on the desktop-strip window:
+its corners used source-scaled radii and looked square. The corrected preview
+mask keeps configured logical-pixel corner radii, fitting small/asymmetric arcs
+with the same geometry rules as ordinary windows. One shader mask covers SSD
+and client content; selection and drag accents use a rounded inset ring.
+The unit regression covers asymmetric/zero corners, tiny fitting, scaled border
+insets and the selection ring, including a one-pixel destination.
+
+Cargo fmt/check/test/build passed with 91 library tests. Initial GPU checks
+passed for `rounded-previews`, `rounded-blur`, `sharp-preview`, `alpha-subsurface`,
+`scaled-content`, `live-miniatures`, `cards` and `ssd` in
+`target/overview-radius-gpu/`, on a private local virtual KWin host, without a VM.
+The corner oracle locates uniformly colored real SSD frames and checks all four
+corners of both the main and strip previews. These captures and CPU tests do
+not automate physical input.
+
+After the selection-ring correction, `rounded-previews`, `rounded-blur`,
+`sharp-preview`, `cards`, `ssd` and `live-miniatures` passed again in
+`target/overview-radius-final-gpu/`. Editor diagnostics were clean. The bounded
+Quickshell/foot capture in `target/overview-demo/` shows three live decorated
+clients with the final preview resolution and rounded selection treatment.
+
+### Scaled desktop appearance validation (2026-10-09)
+
+The final implementation supersedes the fixed-pixel trial: it combines the
+committed client tree and SSD at source resolution, bakes the ordinary desktop
+outline/border mask, then resizes the complete image into the largest preview.
+Miniatures/ghosts reuse that completed image; the selection accent is a separate
+ring following the scaled silhouette. Two reusable bounded source buffers avoid
+reallocating the original-size composition targets for each client update.
+
+`rounded-previews`, `rounded-asymmetric`, `sharp-preview`, `alpha-subsurface`,
+`rounded-blur`, `scaled-content`, `live-cards`, `live-miniatures` and `many-windows`
+passed on the private local virtual KWin host in
+`target/overview-source-radius-gpu/`, without a VM. The asymmetric case verifies
+rounded/square corner order at native and miniature sizes, catching offscreen
+vertical inversions. The native one-pixel content/SSD-control sharpness oracle
+still passes. The many-window case also exercises reuse of larger source buffers
+for smaller sources without sampling stale pixels.
+
+Cargo fmt/check/test/build and editor diagnostics passed. Both harness self-test
+suites passed (14 tests each). The source-outline unit regression verifies
+proportional arcs/insets, offscreen corner order and the separate selection ring.
+These checks do not automate physical input.
+
+Six additional cases passed with the same binary: `cancelled`, `odd-outputs`,
+`wallpaper`, `hidden-live`, `ssd` and `minimized`, in
+`target/overview-source-radius-regressions/`. Together these runs cover fifteen
+GPU/protocol cases. A bounded Quickshell session with three animated foot clients
+also passed on the private local virtual KWin host; its capture is
+`target/overview-demo/frame.png`.

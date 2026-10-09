@@ -133,6 +133,65 @@ impl WindowOutline {
         let inner = RoundedShape::new(rect, outer.radii.map(|r| (r - b as f32).max(0.0)));
         Self { outer, inner }
     }
+
+    /// Map an already fitted desktop outline into a scaled destination.
+    pub fn scaled(self, dest: Rect) -> Self {
+        let source = self.outer.rect;
+        let sx = dest.width as f32 / source.width.max(1) as f32;
+        let sy = dest.height as f32 / source.height.max(1) as f32;
+        let map = |shape: RoundedShape| RoundedShape {
+            rect: Rect::new(
+                dest.x + ((shape.rect.x - source.x) as f32 * sx).round() as i32,
+                dest.y + ((shape.rect.y - source.y) as f32 * sy).round() as i32,
+                (shape.rect.width as f32 * sx).round().max(1.0) as i32,
+                (shape.rect.height as f32 * sy).round().max(1.0) as i32,
+            ),
+            radii: shape.radii.map(|r| r * sx.min(sy)),
+        };
+        Self {
+            outer: map(self.outer),
+            inner: map(self.inner),
+        }
+    }
+
+    /// Normal offscreen targets store logical row zero at GL row zero. Reflect
+    /// geometry for the desktop shader's opposite, top-left coordinate system.
+    pub fn offscreen(self, height: i32) -> Self {
+        let map = |shape: RoundedShape| RoundedShape {
+            rect: Rect::new(
+                shape.rect.x,
+                height - shape.rect.bottom(),
+                shape.rect.width,
+                shape.rect.height,
+            ),
+            radii: [
+                shape.radii[3],
+                shape.radii[2],
+                shape.radii[1],
+                shape.radii[0],
+            ],
+        };
+        Self {
+            outer: map(self.outer),
+            inner: map(self.inner),
+        }
+    }
+
+    /// A separate preview selection ring follows the scaled source silhouette.
+    pub fn selection(self, thickness: i32) -> Self {
+        let outer = self.outer;
+        let b = thickness.clamp(0, (outer.rect.width.min(outer.rect.height) - 1).max(0) / 2);
+        let inner = RoundedShape::new(
+            Rect::new(
+                outer.rect.x + b,
+                outer.rect.y + b,
+                outer.rect.width - 2 * b,
+                outer.rect.height - 2 * b,
+            ),
+            outer.radii.map(|r| (r - b as f32).max(0.0)),
+        );
+        Self { outer, inner }
+    }
 }
 
 /// Compiled once per renderer, on first use; reload only changes uniforms.
@@ -153,6 +212,7 @@ impl RoundedShaders {
                 UniformName::new("inner_outline", UniformType::_4f),
                 UniformName::new("inner_radii", UniformType::_4f),
                 UniformName::new("border_color", UniformType::_4f),
+                UniformName::new("body_alpha", UniformType::_1f),
             ],
         )?;
         Ok(Self { window })
@@ -239,6 +299,39 @@ impl RoundedShaders {
             None,
             Kind::Unspecified,
         );
+        Ok(Some(self.mask_texture(body, outline, color, height)))
+    }
+
+    /// Apply the ordinary outline to an already composited bounded thumbnail.
+    pub(super) fn mask_texture(
+        &self,
+        body: TextureRenderElement<GlesTexture>,
+        outline: WindowOutline,
+        color: [f32; 4],
+        height: i32,
+    ) -> RoundedSurface {
+        self.texture_element(body, outline, color, height, 1.0)
+    }
+
+    /// Draw only an accent ring; do not remask the already rounded client image.
+    pub(super) fn outline_texture(
+        &self,
+        body: TextureRenderElement<GlesTexture>,
+        outline: WindowOutline,
+        color: [f32; 4],
+        height: i32,
+    ) -> RoundedSurface {
+        self.texture_element(body, outline, color, height, 0.0)
+    }
+
+    fn texture_element(
+        &self,
+        body: TextureRenderElement<GlesTexture>,
+        outline: WindowOutline,
+        color: [f32; 4],
+        height: i32,
+        body_alpha: f32,
+    ) -> RoundedSurface {
         let mut uniforms = outline.outer.uniforms(height);
         let rect = outline.inner.rect;
         uniforms.extend([
@@ -252,15 +345,12 @@ impl RoundedShaders {
                 ],
             ),
             Uniform::new("inner_radii", outline.inner.radii),
+            Uniform::new("body_alpha", body_alpha),
             Uniform::new("border_color", super::scene::premultiply(color)),
         ]);
         // Fresh element IDs damage the entire composited clip, including uniform-only
         // changes on reload. No opaque region may include the transparent cut-outs.
-        Ok(Some(TextureShaderElement::new(
-            body,
-            self.window.clone(),
-            uniforms,
-        )))
+        TextureShaderElement::new(body, self.window.clone(), uniforms)
     }
 }
 
@@ -313,13 +403,14 @@ const TEXTURE_MAIN: &str = r#"
 uniform vec4 inner_outline;
 uniform vec4 inner_radii;
 uniform vec4 border_color;
+uniform float body_alpha;
 void main() {
     vec2 p = desktop_point();
     float inside = coverage(p, inner_outline, inner_radii);
     float ring = max(0.0, coverage(p, outline, radii) - inside);
     // Body and ring occupy disjoint coverage, not source-over layers. Add their
     // premultiplied contributions before blending over the rest of the scene.
-    vec4 color = (texture2D(tex, v_coords) * inside + border_color * ring) * alpha;
+    vec4 color = (texture2D(tex, v_coords) * inside * body_alpha + border_color * ring) * alpha;
 #ifdef DEBUG_FLAGS
     if (tint == 1.0) color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
 #endif
@@ -389,6 +480,31 @@ mod tests {
         assert_eq!(shape.radii, [40.0, 20.0, 10.0, 20.0]);
         assert!(!shape.contains((-99.0, -199.0).into()));
         assert!(shape.contains((-50.0, -170.0).into()));
+    }
+
+    #[test]
+    fn scaled_outlines_preserve_source_arcs_insets_and_offscreen_corner_order() {
+        let config = crate::config::Config::from_source(
+            "[theme]\nborder_width=4\ncorner_radius=[28,0,14,20]",
+        )
+        .unwrap();
+        let source = WindowOutline::new(Rect::new(0, 0, 392, 292), &config.theme);
+        let preview = source.scaled(Rect::new(100, 200, 200, 150));
+        assert_eq!(preview.outer.radii, [14.0, 0.0, 7.0, 10.0]);
+        assert_eq!(preview.inner.rect, Rect::new(102, 202, 196, 146));
+        assert_eq!(preview.inner.radii, [12.0, 0.0, 5.0, 8.0]);
+        let mini = source.scaled(Rect::new(0, 0, 20, 15));
+        assert_eq!(mini.outer.radii, [1.4, 0.0, 0.7, 1.0]);
+        let offscreen = source.scaled(Rect::new(0, 0, 400, 300)).offscreen(300);
+        assert_eq!(offscreen.outer.radii, [20.0, 14.0, 0.0, 28.0]);
+        assert_eq!(offscreen.inner.radii, [16.0, 10.0, 0.0, 24.0]);
+        assert_eq!(offscreen.inner.rect, Rect::new(4, 4, 392, 292));
+        let selection = preview.selection(2);
+        assert_eq!(selection.outer.radii, preview.outer.radii);
+        assert_eq!(selection.inner.radii, [12.0, 0.0, 5.0, 8.0]);
+        assert_eq!(selection.inner.rect, Rect::new(102, 202, 196, 146));
+        let tiny = source.scaled(Rect::new(0, 0, 1, 1)).selection(2);
+        assert_eq!(tiny.inner.rect, tiny.outer.rect);
     }
 
     #[test]

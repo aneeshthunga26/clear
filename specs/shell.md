@@ -46,6 +46,7 @@ Each line is a separate request. The complete allowlist is:
 | --- | --- | --- |
 | `snapshot` | None | Complete current state without subscription |
 | `subscribe` | None | Complete state and subsequent changes; idempotent |
+| `toggle_overview` | None | Request compositor-owned [overview](overview.md) entry/exit, deferred while input is busy |
 | `focus_output` | `output` | Focus a connected output |
 | `switch_workspace` | `output`, `workspace` | Focus output, then switch its group |
 | `focus_window` | `window` | Explicit core focus, including restore/reveal |
@@ -99,6 +100,7 @@ All identity fields below are decimal strings, including identities inside array
 | `groups` | `{outputs,workspace}`; outputs jointly presenting a workspace |
 | `windows` | `{id,title,app_id,workspace,output,role,floating,maximized,minimized,focused}` |
 | `focused_output`, `focused_window` | ID or null |
+| `overview_open` | Boolean; active compositor-owned overview, excluding a deferred request |
 | `switcher` | null or `{output,windows,selected}` during the compositor's Alt-held gesture |
 
 Window `output` is its saved home or null, not a visibility test. `role` is

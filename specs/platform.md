@@ -51,8 +51,9 @@ remains clipped while waiting for new content.
 
 XDG maximize/unmaximize/minimize requests target core window state. Pre-map
 maximize is retained for the first map and reflected in initial size/state.
-Reconciliation owns Maximized and Suspended state; minimizing removes rendering
-without marking the client unmapped. State changes cancel incompatible drags.
+Reconciliation owns Maximized and Suspended state; the [overview contract](overview.md)
+provides temporary protocol visibility for live previews without restoring core
+minimized state. Minimizing removes ordinary rendering without marking the client unmapped. State changes cancel incompatible drags.
 Launchers reject those operations. Capabilities advertise maximize/minimize,
 not unimplemented fullscreen or window-menu policy. See
 [desktop state](desktop.md#maximize-and-minimize) for restore/focus semantics.
@@ -101,6 +102,11 @@ after unmap/remap. Background/bottom exclusive layers do not automatically preem
 application focus. On-demand keyboard ownership follows clicks on eligible layers.
 Unmapping the owner restores the next eligible layer or application. Desktop
 policy focus remains distinct from protocol keyboard ownership.
+
+## Overview
+
+[Desktop overview](overview.md) defines compositor input ownership, layer/grab
+precedence, focus reconciliation and committed-buffer previews.
 
 ## Scene and hit-testing
 

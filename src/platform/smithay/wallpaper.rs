@@ -9,9 +9,9 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            ImportMem,
+            ImportMem, Renderer,
             element::{
-                Kind,
+                Id, Kind,
                 texture::{TextureBuffer, TextureRenderElement},
             },
             gles::{GlesRenderer, GlesTexture},
@@ -80,6 +80,69 @@ impl WallpaperCache {
             Kind::Unspecified,
         ))
     }
+
+    /// Reuse the output's texture and full-output crop in an overview preview.
+    /// In particular, center/fit placement scales down rather than recropping.
+    pub fn preview_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        wallpapers: &Wallpapers,
+        output: &str,
+        source_output: Rect,
+        preview: Rect,
+    ) -> Option<TextureRenderElement<GlesTexture>> {
+        if preview.is_empty() || source_output.is_empty() {
+            return None;
+        }
+        self.element(renderer, wallpapers, output, source_output)?;
+        let prepared = wallpapers.for_output(output)?;
+        let cached = self
+            .images
+            .iter()
+            .find(|i| Arc::ptr_eq(&i.image, &prepared.image))?;
+        let texture = cached.texture.as_ref()?;
+        let (source, destination) =
+            preview_placement(prepared.image.size(), source_output, prepared.mode, preview);
+        Some(TextureRenderElement::from_static_texture(
+            Id::new(),
+            renderer.context_id(),
+            (destination.x as f64, destination.y as f64),
+            texture.clone(),
+            1,
+            Transform::Normal,
+            None,
+            Some(source),
+            Some((destination.width, destination.height).into()),
+            None,
+            Kind::Unspecified,
+        ))
+    }
+}
+
+fn preview_placement(
+    image: (u32, u32),
+    output: Rect,
+    mode: WallpaperMode,
+    preview: Rect,
+) -> (Rectangle<f64, Logical>, Rect) {
+    let (source, dest) = placement(image, output, mode);
+    let sx = preview.width as f64 / output.width.max(1) as f64;
+    let sy = preview.height as f64 / output.height.max(1) as f64;
+    let left = (((dest.x - output.x) as f64 * sx).round() as i32).clamp(0, preview.width - 1);
+    let top = (((dest.y - output.y) as f64 * sy).round() as i32).clamp(0, preview.height - 1);
+    let right =
+        (((dest.right() - output.x) as f64 * sx).round() as i32).clamp(left + 1, preview.width);
+    let bottom =
+        (((dest.bottom() - output.y) as f64 * sy).round() as i32).clamp(top + 1, preview.height);
+    (
+        source,
+        Rect::new(
+            preview.x + left,
+            preview.y + top,
+            right - left,
+            bottom - top,
+        ),
+    )
 }
 
 // Compute a source crop rather than an oversized destination: all four modes
@@ -130,6 +193,48 @@ fn placement(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_scales_full_output_placement_without_recropping_center_or_fit() {
+        let output = Rect::new(319, 11, 800, 600);
+        let preview = Rect::new(20, 30, 80, 60);
+        for mode in [
+            WallpaperMode::Fill,
+            WallpaperMode::Fit,
+            WallpaperMode::Stretch,
+            WallpaperMode::Center,
+        ] {
+            for image in [(400, 200), (1600, 1200)] {
+                let (source, _) = placement(image, output, mode);
+                let (preview_source, dest) = preview_placement(image, output, mode, preview);
+                assert_eq!(source, preview_source);
+                assert_eq!(dest.intersection(preview), Some(dest));
+            }
+        }
+        let (_, dest) = preview_placement((400, 200), output, WallpaperMode::Center, preview);
+        assert_eq!(dest, Rect::new(40, 50, 40, 20));
+    }
+
+    #[test]
+    fn tiny_preview_rounding_never_spills_into_another_output() {
+        for mode in [
+            WallpaperMode::Fill,
+            WallpaperMode::Fit,
+            WallpaperMode::Stretch,
+            WallpaperMode::Center,
+        ] {
+            for width in [1, 2, 8] {
+                for height in [1, 2, 8] {
+                    for image in [(8192, 1), (1, 8192), (1, 1)] {
+                        let preview = Rect::new(319, 11, width, height);
+                        let (_, dest) =
+                            preview_placement(image, Rect::new(0, 0, 800, 600), mode, preview);
+                        assert_eq!(dest.intersection(preview), Some(dest));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn fill_crops_symmetrically_and_uses_full_offset_output() {

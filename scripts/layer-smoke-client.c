@@ -1,5 +1,8 @@
 // Real SHM-backed Wayland clients for vm-layer-smoke.py; no compositor test
 // hooks.
+// animate NAME drives changing pixels from frame callbacks, respecting
+// suspension and output visibility.
+// pattern NAME redraws a high-frequency patch for preview resolution checks.
 // alpha NAME N redraws a mapped, configured view with alpha 0..255 (default 255).
 // subsurface NAME PARENT W H X Y COLOR creates a desynchronized child above its
 // parent, at parent buffer coordinates (not XDG geometry coordinates). Creation
@@ -47,6 +50,10 @@ struct view {
     int committed_w, committed_h, configure_w, configure_h, popup_x, popup_y;
     unsigned configure_count, commit_count;
     bool hold_commit;
+    bool animated, suspended, sharp_pattern;
+    unsigned frame_count;
+    int outputs;
+    struct wl_callback *frame;
     uint32_t color, alpha;
     bool mapped, configured, fixed, maximized;
 };
@@ -99,6 +106,20 @@ static uint32_t premultiply(uint32_t color, uint32_t alpha) {
            ((((color >> 8) & 255) * alpha / 255) << 8) |
            ((color & 255) * alpha / 255);
 }
+static void draw(struct view *v);
+static void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
+    (void)time;
+    struct view *v = data;
+    wl_callback_destroy(callback);
+    v->frame = NULL;
+    if (v->animated && v->mapped && !v->suspended && v->outputs > 0) {
+        v->frame_count++;
+        // Encode progress in the red channel for the GPU capture oracle.
+        v->color = 0xff000000 | ((16 + (v->frame_count / 4 % 96) * 2) << 16) | 0xb060;
+        draw(v);
+    }
+}
+static const struct wl_callback_listener frame_listener = {.done = frame_done};
 static void draw(struct view *v) {
     int w = v->fixed ? v->requested_w : v->width;
     int h = v->fixed ? v->requested_h : v->height;
@@ -127,6 +148,11 @@ static void draw(struct view *v) {
                                     y >= v->offset && y < h + v->offset
                                 ? color
                                 : margin;
+    if (v->sharp_pattern) {
+        for (int y = v->offset + 100; y < v->offset + 180 && y < bh; y++)
+            for (int x = v->offset + 100; x < v->offset + 220 && x < bw; x++)
+                p[y * bw + x] = premultiply(x % 2 ? 0xffffff : 0, v->alpha);
+    }
     struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, (int)size);
     struct wl_buffer *buffer = wl_shm_pool_create_buffer(
         pool, 0, bw, bh, bw * 4, WL_SHM_FORMAT_ARGB8888);
@@ -137,6 +163,10 @@ static void draw(struct view *v) {
         xdg_surface_set_window_geometry(v->xdg, v->offset, v->offset, w, h);
     wl_surface_attach(v->surface, buffer, 0, 0);
     wl_surface_damage(v->surface, 0, 0, bw, bh);
+    if (v->animated && !v->suspended && v->outputs > 0 && !v->frame) {
+        v->frame = wl_surface_frame(v->surface);
+        wl_callback_add_listener(v->frame, &frame_listener, v);
+    }
     wl_surface_commit(v->surface);
     v->committed_w = w;
     v->committed_h = h;
@@ -166,10 +196,13 @@ static void top_configure(void *data, struct xdg_toplevel *top, int32_t w,
     (void)top;
     struct view *v = data;
     v->maximized = false;
+    v->suspended = false;
     uint32_t *state;
     wl_array_for_each(state, states) {
         if (*state == XDG_TOPLEVEL_STATE_MAXIMIZED)
             v->maximized = true;
+        if (*state == XDG_TOPLEVEL_STATE_SUSPENDED)
+            v->suspended = true;
     }
     v->configure_w = w;
     v->configure_h = h;
@@ -184,9 +217,22 @@ static void top_close(void *data, struct xdg_toplevel *top) {
     (void)top;
     fail("unexpected XDG close");
 }
+static void top_bounds(void *data, struct xdg_toplevel *top, int32_t w, int32_t h) {
+    (void)data;
+    (void)top;
+    (void)w;
+    (void)h;
+}
+static void top_capabilities(void *data, struct xdg_toplevel *top, struct wl_array *caps) {
+    (void)data;
+    (void)top;
+    (void)caps;
+}
 static const struct xdg_toplevel_listener top_listener = {
     .configure = top_configure,
     .close = top_close,
+    .configure_bounds = top_bounds,
+    .wm_capabilities = top_capabilities,
 };
 static void popup_configure(void *data, struct xdg_popup *popup, int32_t x,
                             int32_t y, int32_t w, int32_t h) {
@@ -411,6 +457,51 @@ static void decorate(struct view *v, const char *protocol, const char *mode) {
     } else
         fail("unknown decoration protocol");
 }
+static void output_geometry(void *data, struct wl_output *output, int32_t x, int32_t y,
+                            int32_t w, int32_t h, int32_t subpixel, const char *make,
+                            const char *model, int32_t transform) {
+    (void)data;
+    (void)output;
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    (void)subpixel;
+    (void)make;
+    (void)model;
+    (void)transform;
+}
+static void output_mode(void *data, struct wl_output *output, uint32_t flags,
+                        int32_t w, int32_t h, int32_t refresh) {
+    (void)data;
+    (void)output;
+    (void)flags;
+    (void)w;
+    (void)h;
+    (void)refresh;
+}
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry, .mode = output_mode,
+};
+static void surface_enter(void *data, struct wl_surface *surface, struct wl_output *output) {
+    (void)surface;
+    (void)output;
+    struct view *v = data;
+    v->outputs++;
+    if (v->animated && v->mapped && v->configured && !v->suspended)
+        draw(v);
+}
+static void surface_leave(void *data, struct wl_surface *surface, struct wl_output *output) {
+    (void)surface;
+    (void)output;
+    struct view *v = data;
+    v->outputs--;
+    if (v->outputs < 0)
+        fail("unpaired output leave");
+}
+static const struct wl_surface_listener surface_listener = {
+    .enter = surface_enter, .leave = surface_leave,
+};
 static void global(void *data, struct wl_registry *registry, uint32_t id,
                    const char *interface, uint32_t version) {
     (void)data;
@@ -420,10 +511,13 @@ static void global(void *data, struct wl_registry *registry, uint32_t id,
     else if (!strcmp(interface, "wl_subcompositor"))
         subcompositor = wl_registry_bind(registry, id,
                                          &wl_subcompositor_interface, 1);
-    else if (!strcmp(interface, "wl_shm"))
+    else if (!strcmp(interface, "wl_output")) {
+        struct wl_output *output = wl_registry_bind(registry, id, &wl_output_interface, 1);
+        wl_output_add_listener(output, &output_listener, NULL);
+    } else if (!strcmp(interface, "wl_shm"))
         shm = wl_registry_bind(registry, id, &wl_shm_interface, 1);
     else if (!strcmp(interface, "xdg_wm_base")) {
-        wm = wl_registry_bind(registry, id, &xdg_wm_base_interface, 1);
+        wm = wl_registry_bind(registry, id, &xdg_wm_base_interface, version < 6 ? version : 6);
         xdg_wm_base_add_listener(wm, &wm_listener, NULL);
     } else if (!strcmp(interface, "zwlr_layer_shell_v1"))
         shell = wl_registry_bind(registry, id, &zwlr_layer_shell_v1_interface,
@@ -457,6 +551,7 @@ static struct view *create(const char *name, uint32_t color) {
     v->color = color | 0xff000000;
     v->alpha = 255;
     v->surface = wl_compositor_create_surface(compositor);
+    wl_surface_add_listener(v->surface, &surface_listener, v);
     return v;
 }
 static void destroy(struct view *v) {
@@ -467,6 +562,11 @@ static void destroy(struct view *v) {
     for (int i = 0; i < count; i++)
         if (views[i].parent == v)
             destroy(&views[i]);
+    if (v->frame) {
+        wl_callback_destroy(v->frame);
+        v->frame = NULL;
+    }
+    v->animated = false;
     if (v->subsurface)
         wl_subsurface_destroy(v->subsurface);
     if (v->layer)
@@ -554,6 +654,18 @@ static void command(char *line) {
         if (!v->top)
             fail("title requires XDG toplevel");
         xdg_toplevel_set_title(v->top, title);
+    } else if (!strcmp(op, "pattern") && sscanf(line, "%*s %31s", name) == 1) {
+        struct view *v = find(name);
+        if (!v->mapped || !v->configured)
+            fail("pattern requires mapped view");
+        v->sharp_pattern = true;
+        draw(v);
+    } else if (!strcmp(op, "animate") && sscanf(line, "%*s %31s", name) == 1) {
+        struct view *v = find(name);
+        if (!v->mapped || !v->configured)
+            fail("animate requires mapped view");
+        v->animated = true;
+        draw(v);
     } else if (!strcmp(op, "alpha") &&
                sscanf(line, "%*s %31s %255s", name, alpha_text) == 2) {
         struct view *v = find(name);
@@ -715,6 +827,7 @@ static void command(char *line) {
                 "%s\"%s\":{\"width\":%d,\"height\":%d,"
                 "\"configure_width\":%d,\"configure_height\":%d,"
                 "\"configure_count\":%u,\"commit_count\":%u,"
+                "\"frame_count\":%u,\"color\":%u,\"outputs\":%d,\"suspended\":%s,"
                 "\"popup_x\":%d,\"popup_y\":%d,\"configured\":%s,\"mapped\":"
                 "%s,\"maximized\":%s,\"hold_commit\":%s,\"ack_serial\":%u,"
                 "\"xdg_decoration\":%s,\"kde_decoration\":%s,"
@@ -722,7 +835,8 @@ static void command(char *line) {
                 "\"xdg_decoration_count\":%u,\"kde_decoration_count\":%u}",
                 i ? "," : "", v->name, v->committed_w, v->committed_h,
                 v->configure_w, v->configure_h, v->configure_count,
-                v->commit_count, v->popup_x, v->popup_y,
+                v->commit_count, v->frame_count, v->color, v->outputs,
+                v->suspended ? "true" : "false", v->popup_x, v->popup_y,
                 v->configured ? "true" : "false", v->mapped ? "true" : "false",
                 v->maximized ? "true" : "false",
                 v->hold_commit ? "true" : "false", v->ack_serial,

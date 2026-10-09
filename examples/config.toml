@@ -1,7 +1,8 @@
 # Clear uses $XDG_CONFIG_HOME/clear/config.toml, or ~/.config/clear/config.toml.
 # Missing fields use defaults. Invalid config falls back to all defaults at startup.
 # A supplied outputs/workspaces/bindings array REPLACES that whole default array.
-# Omit bindings to retain all 32 default shortcuts (including workspaces 1..9).
+# Omit bindings to retain all 33 default shortcuts (including workspaces 1..9).
+# leader+w toggles the compositor overview.
 # leader+Up toggles maximize; leader+Down minimizes. Alt+Tab/dock focus restores.
 # Relative script paths resolve against the directory containing config.toml.
 gaps = 8
@@ -9,6 +10,10 @@ script = "columns.rhai"
 
 [keys]
 leader = "Super" # Also accepts modifier combinations, e.g. "Ctrl+Alt".
+
+[overview]
+# Clicking a desktop activates it; enable this only for hover-driven previews.
+preview_workspace_on_hover = false
 
 # Shell rules only classify clients; no autostart or launcher/panel toggles.
 # Each array replaces its default; [] disables that policy. Matching is exact.

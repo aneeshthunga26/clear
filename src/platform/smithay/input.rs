@@ -1,4 +1,5 @@
 use super::{
+    overview::OverviewDrag,
     scene::{HitOwner, logical},
     state::{Compositor, Drag},
     titlebar::TitlebarPart,
@@ -6,6 +7,7 @@ use super::{
 use crate::{
     core::{Command, Rect, ResizeEdges, WindowId, WindowRole},
     input::{Action, Bindings, Modifiers},
+    runtime::{OverviewNavigation, OverviewTarget},
 };
 use smithay::{
     backend::input::{
@@ -13,7 +15,7 @@ use smithay::{
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
-        keyboard::{FilterResult, Keysym, xkb},
+        keyboard::{FilterResult, Keycode, Keysym, xkb},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
     },
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -67,6 +69,45 @@ fn resize_edges(edges: u32) -> ResizeEdges {
         left: edges & 4 != 0,
         right: edges & 8 != 0,
     }
+}
+
+fn is_modifier(symbol: Keysym) -> bool {
+    matches!(
+        symbol,
+        Keysym::Shift_L
+            | Keysym::Shift_R
+            | Keysym::Control_L
+            | Keysym::Control_R
+            | Keysym::Alt_L
+            | Keysym::Alt_R
+            | Keysym::Super_L
+            | Keysym::Super_R
+            | Keysym::Meta_L
+            | Keysym::Meta_R
+            | Keysym::ISO_Level3_Shift
+            | Keysym::ISO_Level5_Shift
+    )
+}
+
+fn overview_navigation(symbols: &[Keysym], shift: bool, ctrl: bool) -> Option<OverviewNavigation> {
+    symbols.iter().find_map(|symbol| {
+        Some(match *symbol {
+            Keysym::Tab | Keysym::ISO_Left_Tab => {
+                if shift {
+                    OverviewNavigation::Previous
+                } else {
+                    OverviewNavigation::Next
+                }
+            }
+            Keysym::Left if ctrl => OverviewNavigation::WorkspacePrevious,
+            Keysym::Right if ctrl => OverviewNavigation::WorkspaceNext,
+            Keysym::Left => OverviewNavigation::Left,
+            Keysym::Right => OverviewNavigation::Right,
+            Keysym::Up => OverviewNavigation::Up,
+            Keysym::Down => OverviewNavigation::Down,
+            _ => return None,
+        })
+    })
 }
 
 #[cfg(test)]
@@ -208,72 +249,732 @@ mod tests {
             Some(Action::AltTab)
         );
     }
+
+    fn overview_input_fixture(
+        event_loop: &smithay::reexports::calloop::EventLoop<Compositor>,
+    ) -> Compositor {
+        use crate::{core::OutputId, runtime::Runtime};
+        use smithay::{
+            output::{Output, PhysicalProperties, Subpixel},
+            reexports::wayland_server::Display,
+        };
+        let runtime = Runtime::new(Config::default(), None).unwrap();
+        let mut state = Compositor::new(
+            event_loop,
+            Display::new().unwrap(),
+            runtime,
+            Some("overview-input"),
+        )
+        .unwrap();
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+                serial_number: "test".into(),
+            },
+        );
+        state.outputs.push(super::super::state::OutputRegion {
+            id: OutputId(1),
+            output,
+            rect: Rect::new(0, 0, 800, 600),
+        });
+        state
+            .runtime
+            .desktop
+            .add_output(OutputId(1), "test".into(), Rect::new(0, 0, 800, 600));
+        state
+            .runtime
+            .desktop
+            .add_window(WindowId(1), "one".into(), "test".into());
+        state
+            .runtime
+            .desktop
+            .add_window(WindowId(2), "two".into(), "test".into());
+        state.host_size = (800, 600).into();
+        assert!(state.shell_server.is_none());
+        state
+    }
+
+    #[test]
+    fn overview_hover_click_and_drag_without_shell_ipc() {
+        const CHILD: &str = "CLEAR_OVERVIEW_DRAG_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("clear-overview-drag-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "platform::smithay::input::tests::overview_hover_click_and_drag_without_shell_ipc", "--nocapture"])
+                .env(CHILD, "1").env("XDG_RUNTIME_DIR", &directory).status().unwrap();
+            std::fs::remove_dir_all(directory).unwrap();
+            assert!(status.success());
+            return;
+        }
+        use crate::core::WorkspaceId;
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut state = overview_input_fixture(&event_loop);
+        let location = |state: &Compositor, target| {
+            let layout = state.overview_layout().unwrap();
+            let item = layout.items.iter().find(|i| i.target == target).unwrap();
+            let rect = item.preview.unwrap_or(item.rect);
+            Point::from((
+                (rect.x + rect.width / 2) as f64,
+                (rect.y + rect.height / 2) as f64,
+            ))
+        };
+        let ws1 = OverviewTarget::Workspace(WorkspaceId(1));
+        let ws3 = OverviewTarget::Workspace(WorkspaceId(3));
+        state.runtime.toggle_overview();
+        let desktop3 = location(&state, ws3);
+        let selected = state.runtime.overview.as_ref().unwrap().selected;
+        state.motion(desktop3, 0);
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().workspace,
+            WorkspaceId(1)
+        );
+        assert_eq!(state.runtime.overview.as_ref().unwrap().selected, selected);
+        state.runtime.config.overview.preview_workspace_on_hover = true;
+        state.motion(desktop3, 1);
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().workspace,
+            WorkspaceId(3)
+        );
+        state.runtime.config.overview.preview_workspace_on_hover = false;
+        state
+            .runtime
+            .overview
+            .as_mut()
+            .unwrap()
+            .select(&state.runtime.desktop, ws1);
+        state.pointer_button(0x110, ButtonState::Pressed, 2);
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().workspace,
+            WorkspaceId(1)
+        );
+        state.pointer_button(0x110, ButtonState::Released, 3);
+        assert!(state.runtime.overview.is_none());
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .workspace_for_output(crate::core::OutputId(1)),
+            Some(WorkspaceId(3))
+        );
+        // Click back without relying on hover changing the selection.
+        state.runtime.toggle_overview();
+        state.motion(location(&state, ws1), 4);
+        state.pointer_button(0x110, ButtonState::Pressed, 5);
+        state.pointer_button(0x110, ButtonState::Released, 6);
+        assert!(state.runtime.overview.is_none());
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .workspace_for_output(crate::core::OutputId(1)),
+            Some(WorkspaceId(1))
+        );
+        state.runtime.toggle_overview();
+        let clicked = location(&state, OverviewTarget::Window(WindowId(2)));
+        state.motion(clicked, 6);
+        state.pointer_button(0x110, ButtonState::Pressed, 6);
+        state.motion(clicked + Point::from((2.0, 2.0)), 6);
+        state.pointer_button(0x110, ButtonState::Released, 6);
+        assert!(state.runtime.overview.is_none());
+        assert!(state.suppressed_buttons.is_empty());
+        state.runtime.toggle_overview();
+        let origin = location(&state, OverviewTarget::Window(WindowId(1)));
+        let saved = state
+            .runtime
+            .desktop
+            .window(WindowId(1))
+            .unwrap()
+            .floating_rect;
+        let focused = state.runtime.desktop.focused_window();
+        state.motion(origin, 7);
+        state.pointer_button(0x110, ButtonState::Pressed, 8);
+        state.motion(origin + Point::from((2.0, 2.0)), 9);
+        assert!(!state.overview_drag.as_ref().unwrap().active);
+        state.runtime.config.overview.preview_workspace_on_hover = true;
+        state.motion(location(&state, ws3), 10);
+        let drag = state.overview_drag.as_ref().unwrap();
+        assert!(drag.active);
+        assert_eq!(drag.destination, Some(WorkspaceId(3)));
+        assert!(
+            drag.ghost(state.overview_layout().unwrap().output)
+                .is_some()
+        );
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().workspace,
+            WorkspaceId(1)
+        );
+        assert_eq!(
+            state.runtime.desktop.window(WindowId(1)).unwrap().workspace,
+            WorkspaceId(1)
+        );
+        state.keyboard_key(Keycode::new(106 + 8), KeyState::Pressed, 11);
+        state.keyboard_key(Keycode::new(106 + 8), KeyState::Released, 12);
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().selected,
+            OverviewTarget::Window(WindowId(1))
+        );
+        state.pointer_button(0x110, ButtonState::Released, 13);
+        assert!(state.overview_drag.is_none());
+        assert!(state.suppressed_buttons.is_empty());
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().workspace,
+            WorkspaceId(1)
+        );
+        assert_eq!(
+            state.runtime.desktop.window(WindowId(1)).unwrap().workspace,
+            WorkspaceId(3)
+        );
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .window(WindowId(1))
+                .unwrap()
+                .floating_rect,
+            saved
+        );
+        assert_eq!(state.runtime.desktop.focused_window(), focused);
+        let origin = location(&state, OverviewTarget::Window(WindowId(2)));
+        // Same-desktop and outside-target drops stay open and change nothing.
+        for destination in [location(&state, ws1), Point::from((0.0, 599.0))] {
+            state.motion(origin, 14);
+            state.pointer_button(0x110, ButtonState::Pressed, 15);
+            state.motion(destination, 16);
+            assert!(state.overview_drag.as_ref().unwrap().active);
+            assert!(state.overview_drag.as_ref().unwrap().destination.is_none());
+            state.pointer_button(0x110, ButtonState::Released, 17);
+            assert_eq!(
+                state.runtime.desktop.window(WindowId(2)).unwrap().workspace,
+                WorkspaceId(1)
+            );
+            assert!(state.runtime.overview.is_some());
+        }
+        // Escape clears the ghost and suppresses the later physical release.
+        state.motion(origin, 18);
+        state.pointer_button(0x110, ButtonState::Pressed, 19);
+        state.motion(desktop3, 20);
+        state.keyboard_key(Keycode::new(1 + 8), KeyState::Pressed, 21);
+        assert!(state.runtime.overview.is_none());
+        assert!(state.overview_drag.is_none());
+        state.pointer_button(0x110, ButtonState::Released, 22);
+        state.keyboard_key(Keycode::new(1 + 8), KeyState::Released, 23);
+        assert!(state.suppressed_buttons.is_empty());
+        assert!(state.suppressed_keys.is_empty());
+        assert!(!state.seat.get_pointer().unwrap().is_grabbed());
+        // Independent transfers invalidate an armed source; release cannot activate.
+        state.runtime.toggle_overview();
+        state.motion(location(&state, OverviewTarget::Window(WindowId(2))), 24);
+        state.pointer_button(0x110, ButtonState::Pressed, 25);
+        state.motion(desktop3, 26);
+        state
+            .runtime
+            .desktop
+            .command(Command::MoveWindowToWorkspace(WindowId(2), WorkspaceId(3)));
+        state.dirty = true;
+        state.reconcile();
+        assert!(state.overview_drag.is_none());
+        assert!(state.overview_press.is_none());
+        state.pointer_button(0x110, ButtonState::Released, 27);
+        assert!(state.runtime.overview.is_some());
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .workspace_for_output(crate::core::OutputId(1)),
+            Some(WorkspaceId(1))
+        );
+        for invalidation in 0..3 {
+            state
+                .runtime
+                .desktop
+                .add_window(WindowId(3), "three".into(), "test".into());
+            state.dirty = true;
+            state.reconcile();
+            state.motion(location(&state, OverviewTarget::Window(WindowId(3))), 28);
+            state.pointer_button(0x110, ButtonState::Pressed, 29);
+            state.motion(desktop3, 30);
+            match invalidation {
+                0 => state.runtime.desktop.remove_window(WindowId(3)),
+                1 => state
+                    .runtime
+                    .desktop
+                    .set_window_role(WindowId(3), WindowRole::Launcher),
+                _ => state.outputs[0].rect.width = 799,
+            }
+            state.dirty = true;
+            state.reconcile();
+            assert!(state.overview_drag.is_none());
+            assert!(state.overview_press.is_none());
+            state.pointer_button(0x110, ButtonState::Released, 31);
+            assert!(state.runtime.overview.is_some());
+            assert!(state.suppressed_buttons.is_empty());
+            state.runtime.desktop.remove_window(WindowId(3));
+            state.outputs[0].rect.width = 800;
+            state.dirty = true;
+            state.reconcile();
+        }
+    }
+
+    #[test]
+    fn overview_keyboard_pairs_and_deferred_entry_without_shell_ipc() {
+        // A subprocess supplies a private runtime directory without mutating
+        // global environment shared by parallel unit tests.
+        const CHILD: &str = "CLEAR_OVERVIEW_INPUT_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("clear-overview-input-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "platform::smithay::input::tests::overview_keyboard_pairs_and_deferred_entry_without_shell_ipc", "--nocapture"])
+                .env(CHILD, "1").env("XDG_RUNTIME_DIR", &directory).status().unwrap();
+            std::fs::remove_dir_all(directory).unwrap();
+            assert!(status.success());
+            return;
+        }
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut state = overview_input_fixture(&event_loop);
+        let press = KeyState::Pressed;
+        let release = KeyState::Released;
+        // evdev codes plus XKB's offset of 8: Super, W, Tab, Escape, Enter, A.
+        let key = |code: u32| Keycode::new(code + 8);
+        state.keyboard_key(key(125), press, 0);
+        state.keyboard_key(key(17), press, 1);
+        assert!(state.runtime.overview.is_some());
+        assert_eq!(state.runtime.desktop.focused_window(), Some(WindowId(2)));
+        state.keyboard_key(key(125), release, 2);
+        state.keyboard_key(key(17), release, 3);
+        assert!(!state.suppressed_keys.contains(&key(17).raw()));
+        assert!(state.forwarded_keys.is_empty());
+        state.keyboard_key(key(15), press, 4);
+        assert_eq!(
+            state.runtime.overview.as_ref().unwrap().selected,
+            crate::runtime::OverviewTarget::Workspace(crate::core::WorkspaceId(1))
+        );
+        state.keyboard_key(key(1), press, 5);
+        assert!(state.runtime.overview.is_none());
+        assert_eq!(state.runtime.desktop.focused_window(), Some(WindowId(2)));
+        // Both releases remain intercepted after closing; neither becomes a
+        // forwarded press/release or a desktop shortcut on the restored scene.
+        state.keyboard_key(key(15), release, 6);
+        state.keyboard_key(key(1), release, 7);
+        assert!(state.suppressed_keys.is_empty());
+        assert!(state.forwarded_keys.is_empty());
+        state.keyboard_key(key(30), press, 8);
+        state.keyboard_key(key(125), press, 9);
+        state.keyboard_key(key(17), press, 10);
+        assert!(state.runtime.overview_requested);
+        assert!(state.runtime.overview.is_none());
+        state.keyboard_key(key(30), release, 11);
+        assert!(state.runtime.overview.is_some());
+        state.keyboard_key(key(17), release, 12);
+        state.keyboard_key(key(125), release, 13);
+        state.keyboard_key(key(103), press, 14); // Up selects workspace strip.
+        state.keyboard_key(key(103), release, 15);
+        state.keyboard_key(key(108), press, 16); // Down enters first card.
+        state.keyboard_key(key(108), release, 17);
+        state.keyboard_key(key(28), press, 18);
+        assert!(state.runtime.overview.is_none());
+        assert_eq!(state.runtime.desktop.focused_window(), Some(WindowId(1)));
+        state.keyboard_key(key(28), release, 19);
+        assert!(state.suppressed_keys.is_empty());
+        assert!(state.forwarded_keys.is_empty());
+        // A modifier first pressed in overview may remain held across activation;
+        // its release is suppressed as a key but clears the restored modifier state.
+        state.runtime.toggle_overview();
+        state.keyboard_key(key(42), press, 20);
+        let keyboard = state.seat.get_keyboard().unwrap();
+        assert!(keyboard.modifier_state().shift);
+        state.keyboard_key(key(28), press, 21);
+        assert!(state.runtime.overview.is_none());
+        state.keyboard_key(key(28), release, 22);
+        state.keyboard_key(key(42), release, 23);
+        assert!(!keyboard.modifier_state().shift);
+        assert!(state.suppressed_keys.is_empty());
+        // Suppressed compositor-button pairs and host loss defer a queued entry.
+        state.runtime.overview_requested = true;
+        state.suppressed_buttons.insert(0x110);
+        state.service_overview();
+        assert!(state.runtime.overview.is_none());
+        state.suppressed_buttons.clear();
+        state.host_focused = false;
+        state.service_overview();
+        assert!(state.runtime.overview.is_none());
+        state.host_focused = true;
+        state.service_overview();
+        assert!(state.runtime.overview.is_some());
+        state.host_size = (800, 600).into();
+        // A left click activates only on matching release. A press cancelled by
+        // Escape still suppresses its release after keyboard focus is restored.
+        let layout = state.overview_layout().unwrap();
+        let card = layout
+            .items
+            .iter()
+            .find(|i| i.target == crate::runtime::OverviewTarget::Window(WindowId(2)))
+            .unwrap();
+        let position = ((card.rect.x + 10) as f64, (card.rect.y + 10) as f64).into();
+        state.motion(position, 20);
+        state.pointer_button(0x110, ButtonState::Pressed, 21);
+        assert!(state.runtime.overview.is_some());
+        state.pointer_button(0x110, ButtonState::Released, 22);
+        assert!(state.runtime.overview.is_none());
+        assert_eq!(state.runtime.desktop.focused_window(), Some(WindowId(2)));
+        assert!(state.suppressed_buttons.is_empty());
+        let pointer = state.seat.get_pointer().unwrap();
+        assert!(!pointer.is_grabbed());
+        state.runtime.overview_requested = true;
+        state.service_overview();
+        state.pointer_button(0x110, ButtonState::Pressed, 23);
+        state.runtime.cancel_overview();
+        state.pointer_button(0x110, ButtonState::Released, 24);
+        assert!(state.suppressed_buttons.is_empty());
+        assert!(!pointer.is_grabbed());
+        // Real seat implicit pointer grabs defer entry until the held button ends.
+        state.pointer_button(0x111, ButtonState::Pressed, 25);
+        assert!(pointer.is_grabbed());
+        state.runtime.overview_requested = true;
+        state.service_overview();
+        assert!(state.runtime.overview.is_none());
+        state.pointer_button(0x111, ButtonState::Released, 26);
+        assert!(state.runtime.overview.is_some());
+    }
 }
 
 impl Compositor {
+    fn keyboard_key(&mut self, code: Keycode, key_state: KeyState, time: u32) {
+        let pressed = key_state == KeyState::Pressed;
+        let keyboard = self.seat.get_keyboard().expect("keyboard initialized");
+        let modifiers_before = keyboard.modifier_state();
+        let mut cancelled_switcher = false;
+        let mut overview_changed = false;
+        let action = keyboard.input::<Option<Action>, _>(
+            self,
+            code,
+            key_state,
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |state, mods, key| {
+                if !pressed && state.suppressed_keys.remove(&code.raw()) {
+                    return FilterResult::Intercept(None);
+                }
+                if pressed && state.suppressed_keys.contains(&code.raw()) {
+                    return FilterResult::Intercept(None);
+                }
+                if state.runtime.overview.is_some() {
+                    if pressed {
+                        state.suppressed_keys.insert(code.raw());
+                        let symbols = key.raw_syms();
+                        let modifiers = Modifiers {
+                            ctrl: mods.ctrl,
+                            alt: mods.alt,
+                            shift: mods.shift,
+                            logo: mods.logo,
+                        };
+                        let toggle = matches!(
+                            binding_action(&state.runtime.bindings, modifiers, symbols.clone()),
+                            Some(Action::ToggleOverview)
+                        );
+                        if toggle || symbols.contains(&Keysym::Escape) {
+                            state.runtime.cancel_overview();
+                        } else if state.overview_drag.as_ref().is_some_and(|d| d.active) {
+                            return FilterResult::Intercept(None);
+                        } else if symbols.contains(&Keysym::Return)
+                            || symbols.contains(&Keysym::KP_Enter)
+                        {
+                            state.runtime.finish_overview();
+                        } else if let Some(direction) =
+                            overview_navigation(&symbols, mods.shift, mods.ctrl)
+                        {
+                            let columns = state.overview_layout().map_or(1, |l| l.columns);
+                            if let Some(session) = &mut state.runtime.overview {
+                                session.navigate(&state.runtime.desktop, direction, columns);
+                            }
+                        }
+                        overview_changed = true;
+                        state.overview_press = None;
+                        state.overview_drag = None;
+                        return FilterResult::Intercept(None);
+                    }
+                    // Keys pressed before entry (leader modifiers) still update
+                    // Smithay's forwarded-key bookkeeping while focus is absent.
+                    state.forwarded_keys.remove(&code.raw());
+                    return FilterResult::Forward;
+                }
+                if pressed
+                    && state.runtime.overview_requested
+                    && key.raw_syms().contains(&Keysym::Escape)
+                {
+                    state.runtime.cancel_overview();
+                    state.suppressed_keys.insert(code.raw());
+                    overview_changed = true;
+                    return FilterResult::Intercept(None);
+                }
+                if pressed
+                    && state.runtime.switcher.is_some()
+                    && key.raw_syms().contains(&Keysym::Escape)
+                {
+                    state.runtime.cancel_switcher();
+                    state.suppressed_keys.insert(code.raw());
+                    cancelled_switcher = true;
+                    return FilterResult::Intercept(None);
+                }
+                if pressed {
+                    let modifiers = Modifiers {
+                        ctrl: mods.ctrl,
+                        alt: mods.alt,
+                        shift: mods.shift,
+                        logo: mods.logo,
+                    };
+                    let action = binding_action(&state.runtime.bindings, modifiers, key.raw_syms());
+                    if let Some(action) = action {
+                        state.suppressed_keys.insert(code.raw());
+                        return FilterResult::Intercept(Some(action));
+                    }
+                }
+                if pressed {
+                    state.forwarded_keys.insert(
+                        code.raw(),
+                        key.raw_syms().iter().all(|sym| is_modifier(*sym)),
+                    );
+                } else {
+                    state.forwarded_keys.remove(&code.raw());
+                }
+                FilterResult::Forward
+            },
+        );
+        let intercepted = action.is_some();
+        if let Some(Some(action)) = action {
+            if matches!(action, Action::AltTab) {
+                self.runtime.advance_switcher();
+                self.dirty = true;
+                self.reconcile();
+            } else {
+                self.action(action);
+            }
+        }
+        self.service_overview();
+        if overview_changed {
+            self.dirty = true;
+            self.reconcile();
+        }
+        if self.runtime.switcher.is_some() && !keyboard.modifier_state().alt {
+            self.runtime.finish_switcher();
+            self.dirty = true;
+            self.reconcile();
+        } else if cancelled_switcher {
+            self.dirty = true;
+            self.reconcile();
+        }
+        self.reconcile();
+        if intercepted && keyboard.modifier_state() != modifiers_before {
+            // Interception suppresses raw key delivery, including input_forward's
+            // modifier notification. A modifier held across overview exit must
+            // still update the restored client when its suppressed release arrives.
+            keyboard.advertise_modifier_state(self);
+        }
+    }
+
+    fn pointer_button(&mut self, button: u32, button_state: ButtonState, time: u32) {
+        let pressed = button_state == ButtonState::Pressed;
+        let pointer = self.seat.get_pointer().expect("pointer initialized");
+        let position = pointer.current_location();
+        if self.runtime.overview.is_some() {
+            if pressed {
+                self.suppressed_buttons.insert(button);
+                if button == 0x110 {
+                    let target = self
+                        .overview_layout()
+                        .and_then(|l| l.hit(position.x, position.y));
+                    self.overview_press = target;
+                    self.overview_drag = None;
+                    if let Some(OverviewTarget::Window(window)) = target
+                        && let Some(session) = &self.runtime.overview
+                        && let Some(preview) = self.overview_layout().and_then(|l| {
+                            l.items
+                                .iter()
+                                .find(|i| i.target == OverviewTarget::Window(window))
+                                .and_then(|i| i.preview)
+                        })
+                    {
+                        self.overview_drag = Some(OverviewDrag {
+                            window,
+                            workspace: session.workspace,
+                            output: session.output,
+                            output_rect: self.overview_layout().expect("overview output").output,
+                            origin: position,
+                            position,
+                            preview,
+                            active: false,
+                            destination: None,
+                        });
+                    }
+                    if let Some(session) = &mut self.runtime.overview {
+                        if let Some(target @ OverviewTarget::Window(_)) = target {
+                            session.select(&self.runtime.desktop, target);
+                        } else if target.is_none()
+                            && let Some(region) = self
+                                .outputs
+                                .iter()
+                                .find(|o| logical(o.rect).contains(position.to_i32_floor()))
+                        {
+                            if region.id != session.output {
+                                session.select_output(&self.runtime.desktop, region.id);
+                            }
+                        }
+                    }
+                }
+            } else {
+                self.suppressed_buttons.remove(&button);
+                if button == 0x110 {
+                    let target = self
+                        .overview_layout()
+                        .and_then(|l| l.hit(position.x, position.y));
+                    if let Some(drag) = self.overview_drag.take().filter(|d| d.active) {
+                        self.overview_press = None;
+                        if let Some(OverviewTarget::Workspace(destination)) = target
+                            && let Some(session) = &mut self.runtime.overview
+                        {
+                            session.move_window(
+                                &mut self.runtime.desktop,
+                                drag.window,
+                                destination,
+                            );
+                        }
+                    } else if self
+                        .overview_press
+                        .take()
+                        .is_some_and(|armed| Some(armed) == target)
+                    {
+                        if let Some(target) = target
+                            && let Some(session) = &mut self.runtime.overview
+                        {
+                            session.select(&self.runtime.desktop, target);
+                        }
+                        self.runtime.finish_overview();
+                    }
+                }
+            }
+            self.dirty = true;
+            self.reconcile();
+            return;
+        }
+        if !pressed && self.suppressed_buttons.remove(&button) {
+            if self.drag.as_ref().is_some_and(|drag| drag.button == button) {
+                self.end_drag();
+            }
+            if button == 0x110 {
+                self.titlebar_drag = None;
+                if let Some((id, part)) = self.titlebar_press.take()
+                    && matches!(self.hit_test(position).map(|hit| hit.owner),
+                        Some(HitOwner::Decoration(target, hit)) if target == id && hit == part)
+                {
+                    self.activate_titlebar(id, part);
+                }
+            }
+            self.dirty = true;
+            self.reconcile();
+            return;
+        }
+        if pressed && self.drag.is_none() && !pointer.is_grabbed() {
+            let logo = self
+                .seat
+                .get_keyboard()
+                .expect("keyboard initialized")
+                .modifier_state()
+                .logo;
+            let owner = self.hit_test(position).map(|hit| hit.owner);
+            // Compositor gestures take precedence over SSD controls as well as clients.
+            if let Some(id) = modifier_drag_target(&owner, logo, button)
+                && self
+                    .runtime
+                    .desktop
+                    .window(id)
+                    .is_some_and(|w| w.role != WindowRole::Launcher)
+            {
+                self.layer_focus = None;
+                self.runtime.desktop.command(Command::Focus(id));
+                self.suppressed_buttons.insert(button);
+                self.titlebar_press = None;
+                self.titlebar_drag = None;
+                let edges = if button == 0x111 {
+                    self.placements
+                        .iter()
+                        .find(|p| p.window == id)
+                        .map(|p| resize_corner(p.rect, position))
+                        .unwrap_or(10)
+                } else {
+                    0
+                };
+                self.begin_drag(id, position, edges, button);
+                self.dirty = true;
+                self.reconcile();
+                return;
+            }
+            match owner {
+                Some(HitOwner::Layer(surface)) => self.focus_layer(&surface),
+                Some(HitOwner::Decoration(id, part)) => {
+                    self.layer_focus = None;
+                    self.runtime.desktop.command(Command::Focus(id));
+                    self.suppressed_buttons.insert(button);
+                    if button == 0x110 {
+                        if part == TitlebarPart::Drag {
+                            self.titlebar_drag = Some((id, position));
+                        } else {
+                            self.titlebar_press = Some((id, part));
+                        }
+                    }
+                    self.dirty = true;
+                    self.reconcile();
+                    return;
+                }
+                Some(HitOwner::Window(id)) => {
+                    self.layer_focus = None;
+                    self.runtime.desktop.command(Command::Focus(id));
+                    self.dirty = true;
+                }
+                None => {
+                    self.layer_focus = None;
+                    self.dirty = true;
+                    if let Some(region) = self
+                        .outputs
+                        .iter()
+                        .find(|o| logical(o.rect).contains(position.to_i32_floor()))
+                    {
+                        self.runtime
+                            .desktop
+                            .command(Command::FocusOutput(region.id));
+                        self.dirty = true;
+                    }
+                }
+            }
+            self.reconcile();
+        }
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button,
+                state: button_state,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: time,
+            },
+        );
+        pointer.frame(self);
+        if !pressed && self.drag.as_ref().is_some_and(|drag| drag.button == button) {
+            self.end_drag();
+        }
+        self.service_overview();
+        self.reconcile();
+    }
+
     pub fn process_input<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event, .. } => {
-                let code = event.key_code();
-                let pressed = event.state() == KeyState::Pressed;
-                let keyboard = self.seat.get_keyboard().expect("keyboard initialized");
-                let mut cancelled_switcher = false;
-                let action = keyboard.input::<Option<Action>, _>(
-                    self,
-                    code,
-                    event.state(),
-                    SERIAL_COUNTER.next_serial(),
-                    event.time_msec(),
-                    |state, mods, key| {
-                        if !pressed && state.suppressed_keys.remove(&code.raw()) {
-                            return FilterResult::Intercept(None);
-                        }
-                        if pressed && state.suppressed_keys.contains(&code.raw()) {
-                            return FilterResult::Intercept(None);
-                        }
-                        if pressed
-                            && state.runtime.switcher.is_some()
-                            && key.raw_syms().contains(&Keysym::Escape)
-                        {
-                            state.runtime.cancel_switcher();
-                            state.suppressed_keys.insert(code.raw());
-                            cancelled_switcher = true;
-                            return FilterResult::Intercept(None);
-                        }
-                        if pressed {
-                            let modifiers = Modifiers {
-                                ctrl: mods.ctrl,
-                                alt: mods.alt,
-                                shift: mods.shift,
-                                logo: mods.logo,
-                            };
-                            let action =
-                                binding_action(&state.runtime.bindings, modifiers, key.raw_syms());
-                            if let Some(action) = action {
-                                state.suppressed_keys.insert(code.raw());
-                                return FilterResult::Intercept(Some(action));
-                            }
-                        }
-                        FilterResult::Forward
-                    },
-                );
-                if let Some(Some(action)) = action {
-                    if matches!(action, Action::AltTab) {
-                        self.runtime.advance_switcher();
-                        self.dirty = true;
-                        self.reconcile();
-                    } else {
-                        self.action(action);
-                    }
-                }
-                if self.runtime.switcher.is_some() && !keyboard.modifier_state().alt {
-                    self.runtime.finish_switcher();
-                    self.dirty = true;
-                    self.reconcile();
-                } else if cancelled_switcher {
-                    self.dirty = true;
-                    self.reconcile();
-                }
+                self.keyboard_key(event.key_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let position = event.position_transformed(self.host_size);
@@ -285,116 +986,35 @@ impl Compositor {
                 self.motion(position, event.time_msec());
             }
             InputEvent::PointerButton { event, .. } => {
-                let button = event.button_code();
-                let pressed = event.state() == ButtonState::Pressed;
-                let pointer = self.seat.get_pointer().expect("pointer initialized");
-                let position = pointer.current_location();
-                if !pressed && self.suppressed_buttons.remove(&button) {
-                    if self.drag.as_ref().is_some_and(|drag| drag.button == button) {
-                        self.end_drag();
-                    }
-                    if button == 0x110 {
-                        self.titlebar_drag = None;
-                        if let Some((id, part)) = self.titlebar_press.take()
-                            && matches!(self.hit_test(position).map(|hit| hit.owner),
-                                Some(HitOwner::Decoration(target, hit)) if target == id && hit == part)
-                        {
-                            self.activate_titlebar(id, part);
-                        }
-                    }
-                    self.dirty = true;
-                    self.reconcile();
-                    return;
-                }
-                if pressed && self.drag.is_none() && !pointer.is_grabbed() {
-                    let logo = self
-                        .seat
-                        .get_keyboard()
-                        .expect("keyboard initialized")
-                        .modifier_state()
-                        .logo;
-                    let owner = self.hit_test(position).map(|hit| hit.owner);
-                    // Compositor gestures take precedence over SSD controls as well as clients.
-                    if let Some(id) = modifier_drag_target(&owner, logo, button)
-                        && self
-                            .runtime
-                            .desktop
-                            .window(id)
-                            .is_some_and(|w| w.role != WindowRole::Launcher)
-                    {
-                        self.layer_focus = None;
-                        self.runtime.desktop.command(Command::Focus(id));
-                        self.suppressed_buttons.insert(button);
-                        self.titlebar_press = None;
-                        self.titlebar_drag = None;
-                        let edges = if button == 0x111 {
-                            self.placements
-                                .iter()
-                                .find(|p| p.window == id)
-                                .map(|p| resize_corner(p.rect, position))
-                                .unwrap_or(10)
-                        } else {
-                            0
-                        };
-                        self.begin_drag(id, position, edges, button);
-                        self.dirty = true;
-                        self.reconcile();
-                        return;
-                    }
-                    match owner {
-                        Some(HitOwner::Layer(surface)) => self.focus_layer(&surface),
-                        Some(HitOwner::Decoration(id, part)) => {
-                            self.layer_focus = None;
-                            self.runtime.desktop.command(Command::Focus(id));
-                            self.suppressed_buttons.insert(button);
-                            if button == 0x110 {
-                                if part == TitlebarPart::Drag {
-                                    self.titlebar_drag = Some((id, position));
-                                } else {
-                                    self.titlebar_press = Some((id, part));
-                                }
-                            }
-                            self.dirty = true;
-                            self.reconcile();
-                            return;
-                        }
-                        Some(HitOwner::Window(id)) => {
-                            self.layer_focus = None;
-                            self.runtime.desktop.command(Command::Focus(id));
-                            self.dirty = true;
-                        }
-                        None => {
-                            self.layer_focus = None;
-                            self.dirty = true;
-                            if let Some(region) = self
-                                .outputs
-                                .iter()
-                                .find(|o| logical(o.rect).contains(position.to_i32_floor()))
-                            {
-                                self.runtime
-                                    .desktop
-                                    .command(Command::FocusOutput(region.id));
-                                self.dirty = true;
-                            }
-                        }
-                    }
-                    self.reconcile();
-                }
-                pointer.button(
-                    self,
-                    &ButtonEvent {
-                        button,
-                        state: event.state(),
-                        serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time_msec(),
-                    },
-                );
-                pointer.frame(self);
-                if !pressed && self.drag.as_ref().is_some_and(|drag| drag.button == button) {
-                    self.end_drag();
-                }
+                self.pointer_button(event.button_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerAxis { event, .. } => {
+                if self.runtime.overview.is_some() {
+                    if self.overview_press.is_some() || self.overview_drag.is_some() {
+                        return;
+                    }
+                    let amount = event
+                        .amount(Axis::Vertical)
+                        .or_else(|| event.amount_v120(Axis::Vertical))
+                        .or_else(|| event.amount(Axis::Horizontal))
+                        .unwrap_or(0.0);
+                    if amount != 0.0 {
+                        if let Some(session) = &mut self.runtime.overview {
+                            session.navigate(
+                                &self.runtime.desktop,
+                                if amount > 0.0 {
+                                    OverviewNavigation::WorkspaceNext
+                                } else {
+                                    OverviewNavigation::WorkspacePrevious
+                                },
+                                1,
+                            );
+                        }
+                        self.dirty = true;
+                        self.reconcile();
+                    }
+                    return;
+                }
                 let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
                     event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
                 });
@@ -436,6 +1056,32 @@ impl Compositor {
             }
             _ => {}
         }
+        self.service_overview();
+        self.reconcile();
+    }
+
+    /// Defer entry while any client/compositor operation still owns input.
+    pub fn service_overview(&mut self) {
+        if !self.runtime.overview_requested {
+            return;
+        }
+        let keyboard = self.seat.get_keyboard().expect("keyboard initialized");
+        let pointer = self.seat.get_pointer().expect("pointer initialized");
+        let blocked = keyboard.is_grabbed()
+            || pointer.is_grabbed()
+            || self.drag.is_some()
+            || self.titlebar_press.is_some()
+            || self.titlebar_drag.is_some()
+            || self.has_exclusive_layer()
+            || self.forwarded_keys.values().any(|modifier| !modifier)
+            || !self.suppressed_buttons.is_empty()
+            || !self.host_focused;
+        if self.runtime.overview.is_some() || !blocked {
+            self.runtime.toggle_overview();
+            self.overview_press = None;
+            self.overview_drag = None;
+            self.dirty = true;
+        }
     }
 
     fn activate_titlebar(&mut self, id: WindowId, part: TitlebarPart) {
@@ -475,6 +1121,34 @@ impl Compositor {
                 .y
                 .clamp(0.0, f64::from((self.host_size.h - 1).max(0))),
         ));
+        if self.runtime.overview.is_some() {
+            let target = self
+                .overview_layout()
+                .and_then(|l| l.hit(position.x, position.y));
+            if let Some(drag) = &mut self.overview_drag {
+                drag.position = position;
+                drag.active |=
+                    (position.x - drag.origin.x).hypot(position.y - drag.origin.y) >= 8.0;
+                drag.destination = if drag.active {
+                    match target {
+                        Some(OverviewTarget::Workspace(id)) if id != drag.workspace => Some(id),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.dirty = true;
+            } else if self.overview_press.is_none()
+                && let Some(target) = target
+                && (matches!(target, OverviewTarget::Window(_))
+                    || self.runtime.config.overview.preview_workspace_on_hover)
+            {
+                if let Some(session) = &mut self.runtime.overview {
+                    session.select(&self.runtime.desktop, target);
+                }
+                self.dirty = true;
+            }
+        }
         if let Some((id, origin)) = self.titlebar_drag
             && titlebar_drag_ready(origin, position)
         {
@@ -542,7 +1216,9 @@ impl Compositor {
         edges: u32,
         button: u32,
     ) {
-        if self.drag.is_some()
+        if self.runtime.overview.is_some()
+            || self.runtime.overview_requested
+            || self.drag.is_some()
             || edges & !15 != 0
             || self
                 .runtime

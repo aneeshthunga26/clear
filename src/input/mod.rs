@@ -10,6 +10,8 @@ use serde::Deserialize;
 pub enum Action {
     /// Advance the Alt-Tab selection; focus changes when Alt is released.
     AltTab,
+    /// Toggle the compositor-owned workspace and window overview.
+    ToggleOverview,
     FocusNext,
     FocusPrevious,
     CycleOutput,
@@ -261,6 +263,7 @@ fn normalize_key(key: &str) -> Option<String> {
 pub fn default_bindings() -> Vec<Binding> {
     let mut bindings = vec![
         ("Alt+Tab", Action::AltTab),
+        ("leader+w", Action::ToggleOverview),
         (
             "leader+Return",
             Action::Spawn {

@@ -86,6 +86,10 @@ action = "spawn"
 command = ["foot"]
 
 [[bindings]]
+key = "leader+w"
+action = "toggle_overview"
+
+[[bindings]]
 key = "Alt+Tab"
 action = "alt_tab"
 

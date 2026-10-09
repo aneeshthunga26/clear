@@ -363,6 +363,51 @@ impl Default for TitlebarCache {
 }
 
 impl TitlebarCache {
+    /// Rasterize a bounded overview label with the same prepared fonts and icons.
+    pub(super) fn overview_label(
+        &mut self,
+        text: &str,
+        width: i32,
+        icon: Option<&TitlebarImage>,
+        color: [u8; 4],
+    ) -> Vec<u8> {
+        let viewport = Rect::new(0, 0, width.clamp(1, 1024), 32);
+        let mut pixels = vec![0; (viewport.width * viewport.height * 4) as usize];
+        let inset = if let Some(icon) = icon {
+            draw_image(&mut pixels, viewport, Rect::new(4, 6, 20, 20), icon);
+            32
+        } else {
+            8
+        };
+        let text_width = (viewport.width - inset - 8).max(0);
+        if text_width > 0 && self.fonts.db().faces().next().is_some() {
+            let fonts = &mut self.fonts;
+            let mut buffer = Buffer::new(fonts, Metrics::new(14.0, 20.0));
+            buffer.set_wrap(fonts, Wrap::None);
+            buffer.set_size(fonts, Some(text_width as f32), Some(20.0));
+            buffer.set_text(
+                fonts,
+                &bounded_title(text),
+                &Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+                Some(cosmic_text::Align::Left),
+            );
+            buffer.draw(
+                fonts,
+                &mut SwashCache::new(),
+                Color::rgba(color[0], color[1], color[2], color[3]),
+                |x, y, _, _, color| {
+                    if (0..text_width).contains(&x) {
+                        let mut rgba = color.as_rgba();
+                        rgba[3] = (u32::from(rgba[3]) * (text_width - x).min(12) as u32 / 12) as u8;
+                        blend(&mut pixels, viewport, x + inset, y + 6, rgba);
+                    }
+                },
+            );
+        }
+        pixels
+    }
+
     /// Drop textures for windows no longer managed (or no longer using SSD).
     pub(super) fn retain(&mut self, mut keep: impl FnMut(WindowId) -> bool) {
         self.entries.retain(|(id, _), _| keep(*id));

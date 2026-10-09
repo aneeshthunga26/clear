@@ -44,7 +44,7 @@ fn defaults_are_complete_and_collision_free() {
         config.workspaces.iter().map(|w| w.id).collect::<Vec<_>>(),
         (1..=9).collect::<Vec<_>>()
     );
-    assert_eq!(config.bindings.len(), 32);
+    assert_eq!(config.bindings.len(), 33);
     assert!(config.script.is_none());
     let bindings = Bindings::new(&config.bindings).unwrap();
     assert_eq!(

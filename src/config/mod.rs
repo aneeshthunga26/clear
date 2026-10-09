@@ -54,6 +54,14 @@ fn default_mode() -> String {
     "columns".into()
 }
 
+/// Compositor overview interaction preferences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OverviewConfig {
+    /// Preview another workspace on pointer hover; clicking still activates it.
+    pub preview_workspace_on_hover: bool,
+}
+
 /// Runtime configuration, independent of the compositor's platform objects.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -73,6 +81,8 @@ pub struct Config {
     pub wallpaper: WallpaperConfig,
     /// Launcher roles and namespace-specific panel policies.
     pub shell: ShellConfig,
+    /// Pointer behavior in the compositor-owned overview.
+    pub overview: OverviewConfig,
 }
 
 impl Default for Config {
@@ -99,6 +109,7 @@ impl Default for Config {
             theme: Theme::default(),
             wallpaper: WallpaperConfig::default(),
             shell: ShellConfig::default(),
+            overview: OverviewConfig::default(),
         }
     }
 }
@@ -114,6 +125,7 @@ struct Source {
     theme: Theme,
     wallpaper: WallpaperConfig,
     shell: ShellConfig,
+    overview: OverviewConfig,
     keys: Keys,
 }
 
@@ -129,6 +141,7 @@ impl Default for Source {
             theme: config.theme,
             wallpaper: config.wallpaper,
             shell: config.shell,
+            overview: config.overview,
             keys: Keys::default(),
         }
     }
@@ -209,6 +222,7 @@ impl Config {
             theme: source.theme,
             wallpaper: source.wallpaper,
             shell: source.shell,
+            overview: source.overview,
         };
         config.validate()?;
         Ok(config)

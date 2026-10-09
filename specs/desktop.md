@@ -56,6 +56,10 @@ the window's home, restores it if minimized, and focuses that window/output.
 Workspace switching alone MUST NOT restore minimized windows.
 
 `MoveToWorkspace` moves the focused window without following it to the destination.
+`MoveWindowToWorkspace(window, workspace)` targets a specific window without
+revealing or restoring it, following the destination, or changing unrelated focus.
+If it moves the focused window, ordinary focus repair selects a remaining source
+window. Invalid IDs and same-workspace targets are complete no-ops.
 `MoveToOutput` moves it to the destination output's visible workspace and follows
 it. Transfers preserve saved window state; crossing workspace ownership appends
 the window to the destination's order. Invalid target IDs MUST be harmless no-ops,
@@ -65,6 +69,12 @@ Commands that spawn, close, or quit return explicit effects. Desktop policy MUST
 NOT execute processes, destroy a client in response to a close request, or stop
 the backend itself. The adapter performs these effects and observes later client
 lifecycle changes.
+
+## Overview preview
+
+The transient [overview](overview.md#preview-and-activation) reads desktop records
+and commits through existing commands. It does not own workspaces, compute hidden
+placements, or mutate saved desktop state during navigation.
 
 ## Modes and saved geometry
 

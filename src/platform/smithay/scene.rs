@@ -17,7 +17,11 @@ use smithay::{
         },
         gles::{GlesError, GlesRenderer, GlesTexture},
     },
-    desktop::{PopupManager, WindowSurfaceType, layer_map_for_output},
+    desktop::{
+        PopupManager, WindowSurfaceType, layer_map_for_output,
+        space::SpaceElement,
+        utils::{output_update, send_frames_surface_tree},
+    },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::protocol::wl_surface::WlSurface,
@@ -25,7 +29,7 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER},
     wayland::shell::wlr_layer::Layer,
 };
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 smithay::backend::renderer::element::render_elements! {
     pub(super) SceneElement<=GlesRenderer>;
@@ -104,6 +108,24 @@ impl Compositor {
         }
         self.dirty = false;
         self.shell_dirty = true;
+        self.runtime.refresh_overview();
+        if self.runtime.overview.is_none() {
+            self.overview_press = None;
+        }
+        if self.overview_drag.as_ref().is_some_and(|drag| {
+            self.runtime.overview.as_ref().is_none_or(|session| {
+                session.workspace != drag.workspace
+                    || session.output != drag.output
+                    || !session.windows.contains(&drag.window)
+            }) || self
+                .outputs
+                .iter()
+                .find(|o| o.id == drag.output)
+                .is_none_or(|o| o.rect != drag.output_rect)
+        }) {
+            self.overview_drag = None;
+            self.overview_press = None;
+        }
         self.refresh_layers();
         let layer_focus = self.layer_keyboard_focus();
         for region in &self.outputs {
@@ -158,6 +180,7 @@ impl Compositor {
             }
         }
         let placements = self.runtime.placements();
+        let overview_live = self.overview_live_windows();
         for (id, entry) in &self.windows {
             if let Some(window) = self.runtime.desktop.window(*id)
                 && let Some(top) = entry.window.toplevel()
@@ -168,7 +191,7 @@ impl Compositor {
                     } else {
                         pending.states.unset(xdg_toplevel::State::Maximized);
                     }
-                    if window.minimized {
+                    if window.minimized && !overview_live.contains(id) {
                         pending.states.set(xdg_toplevel::State::Suspended);
                     } else {
                         pending.states.unset(xdg_toplevel::State::Suspended);
@@ -219,8 +242,12 @@ impl Compositor {
                         }
                     }
                 });
-                window
-                    .set_activated(placement.focused && self.host_focused && layer_focus.is_none());
+                window.set_activated(
+                    placement.focused
+                        && self.host_focused
+                        && layer_focus.is_none()
+                        && self.runtime.overview.is_none(),
+                );
                 top.send_pending_configure();
             }
             self.space
@@ -237,7 +264,7 @@ impl Compositor {
                     .and_then(|w| w.window.toplevel())
                     .map(|t| t.wl_surface().clone())
             })
-            .filter(|_| self.host_focused);
+            .filter(|_| self.host_focused && self.runtime.overview.is_none());
         let keyboard = self.seat.get_keyboard().expect("keyboard is initialized");
         if !keyboard.is_grabbed() && keyboard.current_focus() != focus {
             keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
@@ -302,6 +329,9 @@ impl Compositor {
     }
 
     pub fn hit_test(&self, point: Point<f64, Logical>) -> Option<SurfaceHit> {
+        if self.runtime.overview.is_some() {
+            return None;
+        }
         if let Some(layer) = self.layer_under(point, &[Layer::Overlay, Layer::Top]) {
             return Some(layer);
         }
@@ -625,7 +655,42 @@ impl Compositor {
         }
     }
 
+    /// Apply preview output membership after Space refresh; preview trees are not
+    /// mapped into Space and must keep toolkits aware of their visible output.
+    pub fn refresh_overview_outputs(&mut self) {
+        let live = self.overview_live_windows();
+        let output = self.runtime.overview.as_ref().and_then(|session| {
+            self.outputs
+                .iter()
+                .find(|r| r.id == session.output)
+                .map(|r| r.output.clone())
+        });
+        self.overview_outputs.retain(|id, (window, previous)| {
+            if live.contains(id) && output.as_ref() == Some(previous) {
+                return true;
+            }
+            if let Some(top) = window.toplevel() {
+                output_update(previous, None, top.wl_surface());
+                // Restore ordinary output ownership, including per-surface clips.
+                window.refresh();
+            }
+            false
+        });
+        if let Some(output) = output {
+            for id in live {
+                let entry = &self.windows[&id];
+                if let Some(top) = entry.window.toplevel() {
+                    // Source geometry, never thumbnail geometry or popup trees.
+                    output_update(&output, Some(entry.window.geometry()), top.wl_surface());
+                    self.overview_outputs
+                        .insert(id, (entry.window.clone(), output.clone()));
+                }
+            }
+        }
+    }
+
     pub fn frame_callbacks(&self) {
+        let mut ordinary_live = BTreeSet::new();
         for placement in &self.placements {
             let Some(entry) = self.windows.get(&placement.window) else {
                 continue;
@@ -637,12 +702,30 @@ impl Compositor {
                         .iter()
                         .any(|clip| logical(o.rect).overlaps(logical(*clip)))
             }) {
+                ordinary_live.insert(placement.window);
                 entry.window.send_frame(
                     &region.output,
                     self.start.elapsed(),
                     Some(Duration::ZERO),
                     |_, _| Some(region.output.clone()),
                 );
+            }
+        }
+        if let Some(session) = &self.runtime.overview
+            && let Some(region) = self.outputs.iter().find(|r| r.id == session.output)
+        {
+            for id in self.overview_live_windows().difference(&ordinary_live) {
+                if let Some(top) = self.windows[id].window.toplevel() {
+                    // Includes offscreen placements and visible desktop miniatures;
+                    // None honors the throttle without pretending to be scanout.
+                    send_frames_surface_tree(
+                        top.wl_surface(),
+                        &region.output,
+                        self.start.elapsed(),
+                        Some(Duration::from_millis(33)),
+                        |_, _| None,
+                    );
+                }
             }
         }
         for region in &self.outputs {

@@ -27,7 +27,7 @@ Extra parameters MUST be rejected even for parameterless actions.
 
 | Action tags | Additional fields |
 | --- | --- |
-| `alt_tab`, `focus_next`, `focus_previous`, `cycle_output` | None |
+| `toggle_overview`, `alt_tab`, `focus_next`, `focus_previous`, `cycle_output` | None |
 | `switch_workspace`, `move_to_workspace` | `workspace`: positive `u64` |
 | `move_to_output` | `output`: `u64`; runtime target must exist |
 | `set_workspace_mode`, `set_output_mode` | `mode`: nonblank string, at most 256 bytes |
@@ -63,6 +63,7 @@ Super; pointer gestures below do not use the configurable leader.
 | leader+Down | Minimize |
 | leader+j / leader+k | Focus next / previous |
 | Alt+Tab | Advance switcher |
+| leader+w | Toggle [desktop overview](overview.md) |
 | leader+q | Request close |
 | leader+Shift+r | Reload |
 | leader+Escape | Quit |
@@ -83,6 +84,11 @@ Physical Alt release commits the selection through explicit desktop focus, which
 restores a minimized candidate. Escape cancels without changing focus or minimized
 state. A shell only presents the transient
 [switcher snapshot](shell.md#snapshot-fields); the compositor owns the gesture.
+
+## Overview
+
+The compositor owns [overview input and navigation](overview.md#layout-and-input),
+including grab/held-input precedence and release suppression.
 
 ## Pointer gestures
 

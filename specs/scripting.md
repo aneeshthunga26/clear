@@ -48,7 +48,8 @@ callback cannot forge those flags.
 An action function takes no arguments and returns an array of action maps using
 the [binding action schema](input.md#action-schema), without `key` fields.
 `alt_tab` is not supported by the Rhai decoder: its gesture belongs to physical
-input. All returned maps are decoded and validated before any is dispatched.
+input. `toggle_overview` is supported as a request for adapter authorization
+under the [overview contract](overview.md). All returned maps are decoded and validated before any is dispatched.
 Malformed results fail as a whole. Successful actions are applied in returned
 order; nested script dispatch shares runtime's 128-action expansion budget.
 

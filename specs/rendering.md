@@ -241,6 +241,12 @@ allocations; disabled blur retains the last blur-rendered size. Method shaders
 initialize lazily. Read/write attachments MUST be separate, auxiliary sampler
 state restored, and the window framebuffer restored before presentation/capture.
 
+## Overview pass
+
+[Overview rendering](overview.md#rendering-and-resource-bounds) is a final
+compositor-owned pass after desktop filtering, with independently bounded GPU
+thumbnails and labels. Cards reuse committed buffers without client resizes.
+
 ## Implementation and evidence
 
 - [Theme](../src/decoration/mod.rs), [rounded renderer/hit shapes](../src/platform/smithay/rounded.rs),

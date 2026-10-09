@@ -20,13 +20,26 @@ only directory allowed to depend on Smithay and Wayland types.
   lives in `runtime/titlebar.rs`, never filesystem IO/SVG decoding in rendering.
   No UI toolkit or shell dependency.
 - `layers.rs`: layer-shell lifecycle, namespace policy, and keyboard ownership.
+- `overview.rs`: shared canvas/desktop-strip layout and hits, GPU thumbnails and
+  compact metadata-label caches, plus the transient pointer drag/ghost description.
+  Input arms/drops it; reconciliation cancels invalid sources. Reuse one bounded texture across card/miniature
+  destinations, plan its resolution from the largest visible destination before
+  rendering any tile, and explicitly sample its full source when scaling. Apply
+  desktop corner masks to the composited content/SSD source before resizing the
+  complete image. Radii/insets scale with that source. A separate selection ring
+  follows its silhouette without masking the client image again.
+  Render as a final pass, with no hidden placement reconciliation or thumbnail-sized
+  configures. Share visible preview candidates with callback/suspension and output
+  membership handling; synchronize preview output notifications after Space refresh
+  and restore ordinary ownership on cleanup. Follow [overview](../../../specs/overview.md) bounds and cleanup.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
 - `shell.rs`: optional socket initialization and dispatch; reconcile commands
   before acknowledging/publishing. Wire types and transport stay in `src/shell/`.
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,
   shared visibility clips, and frame callbacks.
-- `wallpaper.rs`: renderer-owned immutable texture cache and per-output image
-  placement; resource decoding and filesystem access stay in runtime.
+- `wallpaper.rs`: renderer-owned immutable texture cache, per-output image
+  placement and scaled overview placement preserving the full-output crop.
+  Resource decoding and filesystem access stay in runtime.
 - `blur.rs`: renderer-owned backdrop scratch textures, bounded separable Gaussian
   and Dual Kawase filters, viewport-pyramid LRU, per-tree composition, and independent
   coverage/alpha masks. `magnify.frag` and `liquid_glass.frag` translate the two

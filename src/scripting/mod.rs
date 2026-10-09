@@ -428,6 +428,7 @@ fn decode_action(value: Dynamic) -> Result<Action, String> {
     let mut map = into_map(value, "action")?;
     let tag = take_string(&mut map, "action")?;
     let action = match tag.as_str() {
+        "toggle_overview" => Action::ToggleOverview,
         "focus_next" => Action::FocusNext,
         "focus_previous" => Action::FocusPrevious,
         "cycle_output" => Action::CycleOutput,

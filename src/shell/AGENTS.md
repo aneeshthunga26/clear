@@ -27,7 +27,8 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
 ## State and behavior
 
 - Snapshots are pure reads of core policy and runtime switcher state, including
-  hidden windows and launcher roles. Never compute placements or invoke scripts
+  hidden windows, launcher roles and read-only overview open state. The validated
+  `toggle_overview` request queues the same adapter authorization as the shortcut. Never compute placements or invoke scripts
   to build a snapshot.
 - Output `area` is usable logical geometry after reservations, not physical bounds.
   Groups describe presentation; workspaces retain ownership and stable window order.

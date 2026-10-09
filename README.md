@@ -180,6 +180,13 @@ controls, SVGs, app icons, alpha, insets, and cache limits. The
 [configuration example](examples/config.toml) includes titlebar fields and
 commented optional control paths.
 
+## Desktop overview
+
+Use the overview binding (default Super+W; Ctrl+Alt+W in the monitor examples)
+to preview workspaces and live window cards, or drag a window onto a desktop
+thumbnail to move it. See [overview](specs/overview.md)
+for navigation and supported behavior. It works without a shell client or IPC.
+
 ## Optional shell / Quickshell
 
 With Quickshell installed separately:
