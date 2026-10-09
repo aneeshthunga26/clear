@@ -11,6 +11,9 @@ only directory allowed to depend on Smithay and Wayland types.
   effect execution, and runtime bridge.
 - `backend.rs`: nested winit lifecycle, virtual outputs, rendering loop, bounded
   shutdown, and framebuffer capture.
+- `frame_scheduler.rs`: coalesced host redraw requests, monotonic frame capture,
+  absolute capped animation sampling, and explicitly identified host metadata or
+  nominal timing. Keep animation sampling separate from client callback pacing.
 - `protocols.rs`: XDG surface lifecycle, metadata, popups, seat/selection handling,
   and client move/resize requests.
 - `decorations.rs`: XDG/KDE negotiation and committed-versus-pending SSD mode.
@@ -201,6 +204,14 @@ only directory allowed to depend on Smithay and Wayland types.
   Optional IPC bind failures must not prevent compositor startup.
 - Framebuffer texture mapping can change the EGL target. Preserve the backend's
   restoration of the window target before swapping after capture.
+- Request synchronized EGL interval 1 after rendering to the host framebuffer;
+  `GlesRenderer::bind` only wraps the target and does not make EGL current. The
+  pinned `GlAttributes::vsync` only selects a compatible config. Do not change
+  interval or configured sampling target in response to lateness. Host redraw
+  metadata is not presentation feedback; follow the timing limitations in
+  [platform](../../../specs/platform.md#nested-frame-timing). Continuous redraw
+  remains necessary until all client/layer/exposure/callback invalidations and
+  capture deadlines have explicit wakeups.
 
 ## Verification
 

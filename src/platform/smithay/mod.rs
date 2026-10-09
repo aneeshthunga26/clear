@@ -3,6 +3,7 @@
 mod backend;
 mod blur;
 mod decorations;
+mod frame_scheduler;
 mod input;
 mod layers;
 mod overview;

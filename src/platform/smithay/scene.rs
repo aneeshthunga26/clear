@@ -807,7 +807,7 @@ impl Compositor {
                 ordinary_live.insert(placement.window);
                 entry.window.send_frame(
                     &region.output,
-                    self.start.elapsed(),
+                    self.frame_time,
                     Some(Duration::ZERO),
                     |_, _| Some(region.output.clone()),
                 );
@@ -823,7 +823,7 @@ impl Compositor {
                     send_frames_surface_tree(
                         top.wl_surface(),
                         &region.output,
-                        self.start.elapsed(),
+                        self.frame_time,
                         Some(Duration::from_millis(33)),
                         |_, _| None,
                     );
@@ -834,7 +834,7 @@ impl Compositor {
             for layer in layer_map_for_output(&region.output).layers() {
                 layer.send_frame(
                     &region.output,
-                    self.start.elapsed(),
+                    self.frame_time,
                     Some(Duration::ZERO),
                     |_, _| Some(region.output.clone()),
                 );

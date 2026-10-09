@@ -35,7 +35,7 @@ asynchronous configure contract at that boundary.
 | `src/management/` | Pure built-in geometry policies | [Layouts](../specs/layouts.md) |
 | `src/input/` | Shortcut parsing and typed actions | [Input](../specs/input.md) |
 | `src/config/` | TOML schema and defaults | [Configuration](../specs/configuration.md) |
-| `src/runtime/` | Config/reload, script routing, transient overview selection, prepared CPU resources | [Configuration](../specs/configuration.md), [wallpaper](../specs/wallpaper.md), [decorations](../specs/decorations.md) |
+| `src/runtime/` | Config/reload, script routing, transient overview selection, analytic animation tracks, prepared CPU resources | [Configuration](../specs/configuration.md), [animations](../specs/animations.md), [wallpaper](../specs/wallpaper.md), [decorations](../specs/decorations.md) |
 | `src/scripting/` | Bounded Rhai host and validation | [Rhai](../specs/scripting.md) |
 | `src/decoration/` | Backend-independent theme descriptions | [Rendering](../specs/rendering.md), [decorations](../specs/decorations.md) |
 | `src/shell/` | Toolkit-independent snapshots, commands, Unix transport | [Shell IPC](../specs/shell.md) |
@@ -61,6 +61,15 @@ hidden workspaces into the normal scene. See [overview](../specs/overview.md).
 See [maximize and minimize](../specs/desktop.md#maximize-and-minimize) for policy and
 [XDG lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures) for mapping,
 pre-map requests, configures, and committed state.
+
+## Animation foundation
+
+Runtime owns the pure animation clock and pose tracks. The nested backend selects
+frame sampling opportunities and synchronized swaps, while desktop policy remains
+instant. Visual transforms and effect triggers remain pending in the
+[implementation plan](animations-design.md); [animation](../specs/animations.md)
+and [platform timing](../specs/platform.md#nested-frame-timing) define implemented
+foundations and their limits.
 
 ## Interactive resizing
 

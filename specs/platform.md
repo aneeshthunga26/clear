@@ -31,8 +31,51 @@ Spawning is not shell-string evaluation.
 Configured outputs are virtual `wl_output`s within one host framebuffer, arranged
 horizontally at scale 1. Widths are relative weights of the host width; heights
 scale relative to the maximum configured output height. Host resizing recomputes
-those rectangles, output modes, and usable areas. Advertised refresh is 60000 mHz.
-These outputs are not physical DRM/KMS connectors.
+those rectangles, output modes, and usable areas. All virtual outputs share the
+host framebuffer's advertised refresh, as described below. These outputs are not
+physical DRM/KMS connectors.
+
+## Nested frame timing
+
+The backend MUST request synchronized EGL swaps at interval 1, compose into the
+back buffer, and submit serially through Smithay. It MUST NOT select a larger
+swap interval in response to late frames. Clear coalesces its own redraw requests;
+it does not maintain a queue of obsolete animation frames. EGL and the host
+compositor may allocate additional internal buffers, so this does not guarantee
+an exact two-buffer physical swapchain or a particular delivered frame rate.
+
+Each redraw captures one monotonic timestamp relative to compositor startup.
+Client frame callbacks share that timestamp. [Animation sampling](animations.md)
+has a separate captured timestamp: fixed caps select host opportunities nearest
+absolute 30/60/120 Hz deadlines and hold that timestamp between samples, while
+refresh-rate sampling selects every redraw. Missed deadlines MUST be skipped,
+not replayed; caps MUST NOT change normal client callback or repaint cadence.
+The effective cap is bounded by the advertised host refresh, without rounding to
+an integer divisor or lowering the configured target after a slow frame.
+
+The timing source is the host window's current monitor/video-mode metadata when
+the pinned winit API supplies a positive representable rate. The backend checks
+it on every redraw, updates virtual output modes on change, and resets sampling
+phase on monitor, refresh/source, or configured cap changes. When metadata is
+unavailable, it MUST report and advertise a nominal 60000 mHz estimate. It MUST
+NOT infer a display rate from measured compositor throughput. Animation caps do
+not change advertised `wl_output` refresh.
+
+The pinned Smithay backend requests host frame callbacks before swaps and exposes
+host redraw events, but does not expose presentation feedback, an actual presented
+timestamp, explicit readiness, or occlusion/monitor-move notifications. Captured
+times are redraw times, not predicted or confirmed presentation times. Monitor
+metadata is not a guarantee about host presentation. Interval-1 initialization
+and CPU scheduling tests alone do not establish physical synchronization.
+
+Continuous host redraw requests remain in place to preserve client/layer callback
+opportunities, overview preview throttling, captures, and content updates. The
+scheduler adds no animation timer or separate wakeup loop. It does not implement
+damage-driven idle scheduling or suspension handling. The event loop's 16 ms
+timeout remains for maintenance and bounded shutdown; it is not an animation
+sampling timer or a requested frame-rate ceiling. A scheduled capture still
+depends on a drawable host redraw opportunity; an occluded/suspended host can
+delay it. Explicit invalidation and capture timers are future work.
 
 ## XDG window lifecycle and configures
 

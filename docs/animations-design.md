@@ -1,12 +1,16 @@
 # Compositor animations — implementation plan
 
-**Status: proposed; no animation or fullscreen behavior is implemented by this
-document.** The [roadmap](../ROADMAP.md) tracks this work; the
-[specifications](../specs/README.md) describe current behavior. This plan covers
-workspace switching, opening/closing, tiled movement, minimize/restore,
-maximize/restore, overview, and fullscreen/restore. It includes presentation
-timing, configuration, input, asynchronous clients, resource ownership, and a
-delivery sequence.
+**Status: foundations implemented; visual effects remain proposed.** The
+[animation specification](../specs/animations.md) covers the strict settings,
+clock and bounded analytic pose engine; [platform timing](../specs/platform.md#nested-frame-timing)
+covers nested sampling and interval-1 swaps. Instant [fullscreen](../specs/desktop.md#fullscreen)
+policy and XDG integration are implemented. GPU transforms, snapshots, effect
+triggers, panel-icon hints and animated overview remain pending. The settings stay
+off by default, and enabling them does not yet produce visual motion.
+
+The [roadmap](../ROADMAP.md) tracks this work; the [specifications](../specs/README.md)
+describe current behavior. This plan retains the full target architecture and
+delivery sequence below; proposed API sketches are not current support claims.
 
 ## Intended result
 
@@ -26,7 +30,10 @@ All eight effects use the same clock, geometry transforms, damage rules, and
 interruption model. Disabling motion settles to the same policy and visual
 result without retaining animation textures or changing input authorization.
 
-## Current code and prerequisites
+## Baseline and prerequisites
+
+This table records the baseline when planning began; foundation progress follows
+below it.
 
 | Existing component | What is available | Required change |
 | --- | --- | --- |
@@ -39,22 +46,22 @@ result without retaining animation textures or changing input authorization.
 | [Shell model](../src/shell/mod.rs), [transport](../src/shell/server.rs), [adapter](../src/platform/smithay/shell.rs) | Optional bounded IPC, maximize/minimize commands, policy snapshots | Add optional, validated panel/icon geometry hints; no current request supplies them |
 | [Quickshell dock](../examples/quickshell/AppDock.qml) | App groups, icon delegates, panel-local positions | Report actual visible icon bounds after layout and scrolling |
 
-Important gaps to address explicitly:
+Foundation progress and remaining gaps:
 
-- Virtual outputs currently advertise 60000 mHz regardless of the host monitor.
-  All share one host framebuffer and presentation cycle; they cannot have
-  independent physical refresh rates in this backend.
-- The pinned Smithay `init_from_attributes` helper creates GL attributes with
-  `vsync: false`. Its `submit` calls `pre_present_notify` and swaps the EGL back
-  buffer. Switch to the explicit GL-attribute initializer and verify host pacing;
-  continuous `request_redraw()` alone is not a synchronization guarantee.
-- `dirty` currently controls reconciliation, not all rendering damage. Animation
-  redraws need a separate cause so they do not recompute placements or invoke
-  Rhai. Client commits must still wake rendering when no policy changed.
-- `SurfaceHit` currently describes an origin, which supports translation but
-  cannot represent scaled client input. It needs a local-coordinate transform.
-- Fullscreen is unsupported in core, XDG capabilities, and configuration/actions.
-  An animated maximize is not a fullscreen implementation.
+- Virtual outputs now share the host monitor's advertised refresh metadata, or a
+  reported nominal 60000 mHz fallback. The nested API does not expose actual
+  presentation feedback or independent physical refresh for virtual outputs.
+- Explicit GL attributes and a checked interval-1 EGL swap request are implemented.
+  Physical synchronization still needs host/presentation measurement.
+- The clock, bounded tracks, strict configuration and atomic reload are implemented;
+  scene construction does not yet create or sample visual tracks.
+- `dirty` controls reconciliation, not all rendering damage. Continuous repaint
+  remains in place; explicit damage/idle wakeups and capture deadlines are pending.
+- `SurfaceHit` describes an origin and cannot represent scaled client input.
+  Reusable window-image composition and shared visual/input transforms are pending.
+- Instant fullscreen now has core policy, separate full output bounds, XDG states,
+  pre-map/output requests, committed decoration handling and configurable actions.
+  Its animated transition remains pending.
 
 The pinned backend reference is
 [Smithay winit source](https://github.com/Smithay/smithay/blob/e1fb2496c9d7ec4d994cc50fe61b7439686ba8b9/src/backend/winit/mod.rs).
@@ -655,9 +662,12 @@ Native direct scanout should be disabled during transforms and re-enabled only
 after identity geometry settles when that backend exists; it is not implemented
 in the current nested path.
 
-## Configuration proposal
+## Configuration example
 
-The following is proposed TOML, not accepted by current Clear:
+The schema below is accepted by the implemented foundation. Visual effect
+triggers remain pending; use the [animation specification](../specs/animations.md#configuration)
+for current defaults and validation. This example opts the pure engine into motion
+and does not yet animate the compositor scene:
 
 ```toml
 [animations]
@@ -704,31 +714,17 @@ kind = "spring"
 stiffness = 800.0
 ```
 
-Each effect accepts `enabled = false` and a strict tagged easing/spring choice;
-restore uses its corresponding effect's settings. Omitted tables retain defaults.
-Allow `linear`, `ease-out-quad`, `ease-out-cubic`, and `ease-out-expo` initially.
-Do not expose custom shader or damping/bounce configuration in the first release.
-
-Proposed validation: finite speed `0.1..=10`, integer easing duration
-`0..=2000` ms (zero is instant), finite spring stiffness `1..=10000`, and finite
-open/close scale `1..=1.25`. Reject numeric frame rates other than 30/60/120,
-unknown keys/curves/kinds, and fields belonging to the wrong animation kind.
-Always validate disabled tables. Bound spring settling to two seconds of
-animation time; at the slowest speed this bounds an effect to twenty real seconds.
-Instant/reduced motion takes precedence over speed and frees retained resources.
-
-Atomic reload prepares the full candidate before replacement. Failed reload keeps
-all previous config and active behavior. A speed change rebases the clock;
-per-effect curve/duration changes apply to subsequently created tracks while
-active tracks keep their captured parameters. A frame-rate change reschedules
-future sampling without resetting phase/pose or publishing a new display mode.
-Disabling an active effect settles its tracks immediately and redraws final state.
-Re-enabling does not replay old operations.
+Restore is planned to share each corresponding effect's settings. Keep custom
+shaders and damping/bounce controls out of the first visual release. Engine
+validation, settling, speed rebasing and atomic reload are now specified in
+[animations](../specs/animations.md). Visual integration must retire retained GPU
+resources on instant settlement and redraw the final state; the pure engine
+currently owns no GPU images.
 
 Successful theme reload invalidates incompatible images and rebuilds or settles
 affected transitions; closing ghosts without a live source can finish with their
-captured appearance. Add commented examples to the standard/VM configs when the
-schema is implemented. Reduced motion initially means instant transitions;
+captured appearance. Commented foundation settings are included in the standard and liquid-glass
+examples. Reduced motion initially means instant transitions;
 automatic desktop accessibility preference integration is a separate feature.
 
 ## Bounds, failure handling and instrumentation
@@ -772,10 +768,12 @@ of physical presentation fps when the backend has only estimated feedback.
 ## Delivery sequence and acceptance gates
 
 Each slice updates its owning specification with implemented behavior and tests.
-Create `specs/animations.md` with the first implementation slice and link it from
-the spec index; it should own timing/configuration/transition rules, while existing
-component specs own desktop policy, XDG lifecycle, input, overview and IPC changes.
-Do not put this proposal into the implemented specification index beforehand.
+The [animation specification](../specs/animations.md) now owns engine/configuration
+contracts; existing component specs own desktop policy, protocol, input, overview
+and IPC behavior. Slice 2's foundation and slice 8's instant policy are implemented.
+Slice 1 has synchronized swaps and sampling, but idle invalidation/deadline timers
+and physical timing verification remain pending. Other effects and acceptance
+gates remain work below.
 
 1. **Timing and synchronization groundwork.** Implement the scheduler/timing-source
    seam, explicit synchronized initialization, separated render/reconcile dirtiness,

@@ -1,5 +1,6 @@
 use super::{
     blur::BackdropBlur,
+    frame_scheduler::{FrameScheduler, HostTiming},
     overview::OverviewCache,
     rounded::RoundedShaders,
     scene::SceneElement,
@@ -12,6 +13,7 @@ use crate::core::{OutputId, Rect};
 use smithay::{
     backend::{
         allocator::Fourcc,
+        egl::{context::GlAttributes, ffi::egl},
         renderer::{ExportMem, Frame, Renderer, damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent},
     },
@@ -42,7 +44,22 @@ pub(super) fn init(
         .with_title("Clear — nested compositor")
         .with_surface_size(LogicalSize::new(f64::from(width), f64::from(height)))
         .with_visible(true);
-    let (mut backend, events) = winit::init_from_attributes::<GlesRenderer>(attributes)?;
+    let (mut backend, events) = winit::init_from_attributes_with_gl_attr::<GlesRenderer>(
+        attributes,
+        GlAttributes {
+            version: (3, 0),
+            profile: None,
+            debug: cfg!(debug_assertions),
+            vsync: true,
+        },
+    )?;
+    let mut host_timing = host_timing(backend.window());
+    report_timing(host_timing);
+    let mut scheduler = FrameScheduler::new(
+        host_timing,
+        state.runtime.config.animations.frame_rate,
+        state.start.elapsed(),
+    );
     for (index, config) in state.runtime.config.outputs.iter().enumerate() {
         let output = Output::new(
             config.name.clone(),
@@ -61,7 +78,7 @@ pub(super) fn init(
             rect: Rect::new(0, 0, 1, 1),
         });
     }
-    resize(state, backend.window_size());
+    resize(state, backend.window_size(), host_timing.refresh_millihertz);
     state.runtime.configure_output_modes();
     let mut damage = OutputDamageTracker::new(backend.window_size(), 1.0, Transform::Flipped180);
     let mut wallpapers = WallpaperCache::default();
@@ -69,12 +86,18 @@ pub(super) fn init(
     let mut overview = OverviewCache::default();
     let mut rounded = None;
     let mut blur = None;
+    if scheduler.request_redraw() {
+        backend.window().request_redraw();
+    }
     event_loop
         .handle()
         .insert_source(events, move |event, _, state| match event {
             WinitEvent::Resized { size, .. } if size.w > 0 && size.h > 0 => {
-                resize(state, size);
+                resize(state, size, host_timing.refresh_millihertz);
                 damage = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
+                if scheduler.request_redraw() {
+                    backend.window().request_redraw();
+                }
             }
             WinitEvent::Input(event) => state.process_input(event),
             WinitEvent::Focus(focused) => {
@@ -91,6 +114,17 @@ pub(super) fn init(
                 state.dirty = true;
             }
             WinitEvent::Redraw => {
+                let now = state.start.elapsed();
+                let current_timing = self::host_timing(backend.window());
+                if current_timing != host_timing {
+                    host_timing = current_timing;
+                    report_timing(host_timing);
+                    update_output_refresh(state, host_timing.refresh_millihertz);
+                }
+                scheduler.update(host_timing, state.runtime.config.animations.frame_rate, now);
+                let timing = scheduler.redraw(now);
+                state.frame_time = timing.now;
+                state.animation_sample_time = timing.animation_sample;
                 let size = backend.window_size();
                 if size.w <= 0 || size.h <= 0 {
                     return;
@@ -160,7 +194,10 @@ pub(super) fn init(
                     damage
                         .render_output(renderer, &mut framebuffer, 0, &final_elements, background)
                         .map_err(|e| format!("present scene: {e}"))?;
-                    if state.start.elapsed() >= capture_after {
+                    // GlesRenderer::bind only wraps a target. The full-damage
+                    // window render above makes its EGL context/surface current.
+                    synchronize_swaps()?;
+                    if timing.now >= capture_after {
                         if let Some(path) = capture.take() {
                             use std::io::Write;
                             let mapping = renderer
@@ -209,7 +246,11 @@ pub(super) fn init(
                     return;
                 }
                 state.frame_callbacks();
-                backend.window().request_redraw();
+                // Client/layer callbacks and content still use continuous host
+                // opportunities until every scene invalidation has a wakeup.
+                if scheduler.request_redraw() {
+                    backend.window().request_redraw();
+                }
             }
             WinitEvent::CloseRequested => state.loop_signal.stop(),
             _ => {}
@@ -217,7 +258,7 @@ pub(super) fn init(
     Ok(())
 }
 
-fn resize(state: &mut Compositor, size: Size<i32, Physical>) {
+fn resize(state: &mut Compositor, size: Size<i32, Physical>, refresh_millihertz: u32) {
     state.host_size = (size.w, size.h).into();
     let total: i64 = state
         .runtime
@@ -243,7 +284,7 @@ fn resize(state: &mut Compositor, size: Size<i32, Physical>) {
         let rect = Rect::new(x, 0, (right - x).max(1), height.max(1));
         let mode = Mode {
             size: (rect.width, rect.height).into(),
-            refresh: 60_000,
+            refresh: refresh_millihertz as i32,
         };
         region.output.change_current_state(
             Some(mode),
@@ -257,7 +298,50 @@ fn resize(state: &mut Compositor, size: Size<i32, Physical>) {
         state
             .runtime
             .desktop
-            .add_output(region.id, config.name.clone(), rect);
+            .add_output_with_bounds(region.id, config.name.clone(), rect, rect);
     }
     state.dirty = true;
+}
+
+fn host_timing(window: &dyn smithay::reexports::winit::window::Window) -> HostTiming {
+    let mode = window.current_monitor().and_then(|monitor| {
+        let mode = monitor.current_video_mode()?;
+        Some((monitor.id(), mode.refresh_rate_millihertz()?.get()))
+    });
+    HostTiming::from_monitor(mode)
+}
+
+fn report_timing(timing: HostTiming) {
+    eprintln!(
+        "clear: nested refresh={} mHz source={}; synchronized EGL interval=1 requested",
+        timing.refresh_millihertz,
+        timing.source(),
+    );
+}
+
+fn update_output_refresh(state: &mut Compositor, refresh_millihertz: u32) {
+    for region in &state.outputs {
+        if let Some(mut mode) = region.output.current_mode() {
+            mode.refresh = refresh_millihertz as i32;
+            region
+                .output
+                .change_current_state(Some(mode), None, None, None);
+            region.output.set_preferred(mode);
+        }
+    }
+}
+
+fn synchronize_swaps() -> Result<(), String> {
+    // The window render has made its live EGL display and surface current on
+    // this thread. The pinned GlAttributes only selects a compatible config;
+    // explicitly set interval 1 for the current (possibly recreated) surface.
+    let result = unsafe { egl::SwapInterval(egl::GetCurrentDisplay(), 1) };
+    if result == egl::FALSE {
+        // Read the error on the same thread immediately after the failed call.
+        let error = unsafe { egl::GetError() };
+        return Err(format!(
+            "enable synchronized EGL swaps: EGL error {error:#x}"
+        ));
+    }
+    Ok(())
 }

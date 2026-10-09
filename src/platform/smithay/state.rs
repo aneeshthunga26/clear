@@ -37,7 +37,7 @@ use std::{
     ffi::OsString,
     process::{Child, Command},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub(super) struct ManagedWindow {
@@ -73,6 +73,8 @@ pub(super) struct Compositor {
     pub socket_name: OsString,
     pub loop_signal: LoopSignal,
     pub start: Instant,
+    pub frame_time: Duration,
+    pub animation_sample_time: Duration,
     pub error: Option<String>,
     pub space: Space<Window>,
     pub windows: BTreeMap<WindowId, ManagedWindow>,
@@ -170,6 +172,8 @@ impl Compositor {
             seat,
             loop_signal: event_loop.get_signal(),
             start: Instant::now(),
+            frame_time: Duration::ZERO,
+            animation_sample_time: Duration::ZERO,
             error: None,
             space: Space::default(),
             windows: BTreeMap::new(),
