@@ -144,6 +144,18 @@ controls, and overlay lifecycle: `examples/quickshell/shell.qml` retains the
 existing appearance, while `examples/quickshell/liquid-glass.qml` selects the
 glass appearance intended for `examples/liquid-glass.toml`.
 
+Both panels show registered StatusNotifierItem icons and a local two-line
+time/date display at the right. A volume control appears when PipeWire has a
+default audio sink: clicking it toggles mute, and scrolling changes volume
+within 0–100%. A Bluetooth control appears when an adapter exists and toggles
+that adapter's enabled state. A battery indicator appears only for a present
+laptop battery. Unavailable services MUST NOT produce placeholder controls.
+The show-desktop button minimizes the visible normal windows in its output's
+workspace and restores the same windows on a second click; it does not change
+other workspaces. On outputs narrower than 900 pixels, Bluetooth, battery,
+show-desktop, and mode controls are hidden to leave room for the launcher,
+workspace controls, dock, volume, and clock.
+
 The glass variant uses a 44-pixel top panel on every output, inset 12 pixels
 from the left/right edges and 10 pixels from the top, reserving 54 pixels total.
 Its background and input
@@ -173,6 +185,8 @@ another shell.
 - [Model, validation, serialization](../src/shell/mod.rs),
   [transport and inline tests](../src/shell/server.rs),
   [adapter polling/reconciliation](../src/platform/smithay/shell.rs).
+- [Optional panel status controls](../examples/quickshell/SystemStatus.qml) and
+  [StatusNotifierItem tray](../examples/quickshell/Tray.qml).
 - [IPC tests](../tests/shell_ipc.rs): strict shapes, large IDs, hidden windows,
   ordered snapshots, atomic target validation, groups/modes, and switcher state.
 - [Window-state tests](../tests/window_state.rs): validated state setters.

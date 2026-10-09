@@ -115,6 +115,7 @@ Scope {
 
                 Row {
                     spacing: 4
+                    visible: panel.width >= 900
                     ModeIcon {
                         width: 22; height: 22
                         anchors.verticalCenter: parent.verticalCenter
@@ -156,6 +157,11 @@ Scope {
                         notificationsLoader.active = true;
                         notificationsLoader.item.toggle();
                     }
+                }
+                SystemStatus {
+                    shellBridge: bridge
+                    currentOutput: panel.output
+                    compact: panel.width < 900
                 }
             }
         }

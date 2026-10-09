@@ -11,7 +11,8 @@ cargo build --locked
 ```
 
 The 36px top panel on each output offers workspace buttons, grouped applications,
-mode controls with SVG icons, a StatusNotifier tray, and a notification button.
+mode controls with SVG icons, a StatusNotifier tray, status controls, a two-line
+clock, and a notification button.
 Hover an application to see cards for all of its open windows, including windows
 on other workspaces; click a card to reveal and focus it. Left click an app icon
 to focus its first window or launch its desktop entry. Right click to pin or unpin
@@ -30,6 +31,10 @@ actions, and supports individual or bulk dismissal. The system tray uses
 Quickshell's StatusNotifier service. Both need a working session D-Bus; run the
 nested compositor with a private bus when testing to avoid competing with host
 services.
+Volume, Bluetooth, and battery indicators use the corresponding Quickshell
+services when available. The show-desktop button sits at the far right on wide
+outputs. See the [shell specification](../../specs/shell.md#optional-quickshell-appearances)
+for visibility and behavior.
 
 For notifications from all nested apps to reach this shell while a host
 notification daemon is running, start the entire nested session on one private
