@@ -10,6 +10,11 @@ with [Niri's overview](https://niri-wm.github.io/niri/Overview.html) as a refere
 for workspace navigation. Clear should implement its own UI rather than copy
 either compositor's workspace model.
 
+The [animation implementation plan](animations-design.md) details the proposed
+card and wallpaper transitions, opening/closing input ownership, refresh-aware
+scheduling, shared GPU sources and delivery dependencies. Its overview section
+extends this design; it does not change the current instant-transition contract.
+
 ## Decision and scope
 
 Clear owns the entire overview: activation, transient selection, layout,
