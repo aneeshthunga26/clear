@@ -53,10 +53,12 @@ See [input and default shortcuts](specs/input.md#default-shortcuts) for the bind
 table, leader configuration, pointer gestures, and Alt-Tab. Host desktops may
 intercept shortcuts before a nested compositor receives them.
 
-### Maximize and minimize
+### Window state
 
 See [window-state behavior](specs/desktop.md#maximize-and-minimize) for maximize,
 restore, minimize, saved-state preservation, and focus semantics.
+[Fullscreen](specs/desktop.md#fullscreen) uses full output bounds; it can be
+requested by clients, shell IPC, or a custom `toggle_fullscreen` binding.
 
 ### VM demo
 

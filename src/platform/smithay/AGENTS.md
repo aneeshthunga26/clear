@@ -59,12 +59,16 @@ only directory allowed to depend on Smithay and Wayland types.
 
 - A surface object is not necessarily mapped. Only buffered windows enter core
   policy. Preserve handles needed for subsequent mapping.
-- Advertise only implemented XDG capabilities: maximize and minimize. Retain
-  pre-map maximize intent until first buffered mapping and configure it with the
-  usable output size. Reconciliation synchronizes Maximized/Suspended states.
+- Advertise implemented maximize/minimize/fullscreen capabilities. Retain pre-map
+  maximize/fullscreen intent and optional fullscreen output until first mapping;
+  configure usable area for maximize and full bounds for fullscreen. Reconciliation
+  synchronizes Maximized/Fullscreen/Suspended states.
   Minimize removes placements/space visibility, never the managed mapping or core
   window. Clear initial intent and transient protocol states on client unmap.
-  State changes cancel active drags; maximized windows must restore before dragging.
+  State changes cancel active drags; maximized/fullscreen windows reject dragging.
+  Suppress SSD, borders and rounding only at a buffered fullscreen root commit;
+  an ACK alone cannot switch displayed decoration. Preserve negotiated mode.
+  Keep fullscreen-output Top layer ordering identical for rendering and hits.
 - Requested placement, client-committed geometry, and saved floating geometry are
   distinct. Account for nonzero XDG geometry offsets in rendering and hit tests.
 - Default negotiated XDG/KDE decorations to SSD, honor explicit CSD (and KDE none),
@@ -209,6 +213,10 @@ Use `scripts/vm-wallpaper-smoke.py` for full-output wallpaper placement, scaling
 per-output resources, and layer priority with real GPU captures.
 `scripts/vm-window-state-smoke.py` checks native XDG maximize/minimize (including
 pre-map maximize), restore, configure state/size, focus, IPC, and capture visibility.
+`scripts/vm-fullscreen-smoke.py` checks real fullscreen requests, full bounds,
+overlay/top priority, output targets, pre-map state, held SSD commits, restoration
+and launcher refusal. Synthetic gesture refusal is covered by adapter unit tests;
+neither establishes physical input.
 `scripts/vm-rounded-smoke.py` checks fitted/asymmetric radii, body/border alpha,
 subsurface composition, geometry offsets, cut-outs, and unchanged layers/popups.
 `scripts/vm-decoration-smoke.py` checks real XDG/KDE negotiation, held ACKs/commits,

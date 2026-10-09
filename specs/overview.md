@@ -193,6 +193,9 @@ source area before every composition and sample only that initialized area.
 Existing titlebar/client resources, prepared icons, driver overhead and outstanding
 render elements are additional to these retained texture bounds.
 
+Committed fullscreen mask changes MUST invalidate a thumbnail even when source
+dimensions and client buffer damage are unchanged. Fullscreen preview sources
+suppress compositor titlebars, borders and rounding as in [decorations](decorations.md).
 Unmap/destruction, changed thumbnail size, output geometry/identity changes,
 theme changes, renderer destruction, overview exit and shutdown release affected
 thumbnail resources. Successful reload rebuilds restyled resources without

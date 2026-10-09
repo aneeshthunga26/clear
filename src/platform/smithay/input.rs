@@ -299,6 +299,94 @@ mod tests {
     }
 
     #[test]
+    fn fullscreen_refuses_drag_without_mutation_and_restore_allows_drag() {
+        const CHILD: &str = "CLEAR_FULLSCREEN_DRAG_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("clear-fullscreen-drag-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "platform::smithay::input::tests::fullscreen_refuses_drag_without_mutation_and_restore_allows_drag",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("XDG_RUNTIME_DIR", &directory)
+                .status()
+                .unwrap();
+            std::fs::remove_dir_all(directory).unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut state = overview_input_fixture(&event_loop);
+        let id = WindowId(1);
+        let saved = Rect::new(31, 47, 280, 190);
+        state
+            .runtime
+            .desktop
+            .command(Command::SetFloatingRect(id, saved));
+        state
+            .runtime
+            .desktop
+            .command(Command::SetFullscreen(id, true));
+        state.placements = state.runtime.placements();
+        state.dirty = false;
+        let original = state.runtime.desktop.window(id).unwrap().clone();
+        let focused = state.runtime.desktop.focused_window();
+        let output = state.runtime.desktop.focused_output();
+        assert_eq!(focused, Some(WindowId(2)));
+        assert_eq!(original.floating_rect, saved);
+        let point = Point::from((120.0, 90.0));
+
+        // Exercise the shared adapter entry for compositor and validated native
+        // move/resize gestures; no physical device or client serial is injected.
+        for edges in [0, 10] {
+            state.begin_drag(id, point, edges, 0x110);
+            assert!(state.drag.is_none());
+            assert!(!state.dirty);
+            assert_eq!(state.runtime.desktop.window(id), Some(&original));
+            assert_eq!(state.runtime.desktop.focused_window(), focused);
+            assert_eq!(state.runtime.desktop.focused_output(), output);
+        }
+
+        state
+            .runtime
+            .desktop
+            .command(Command::SetFullscreen(id, false));
+        state.placements = state.runtime.placements();
+        state.begin_drag(id, point, 10, 0x111);
+        let drag = state.drag.as_ref().expect("restored columns allow resize");
+        assert_eq!(drag.window, id);
+        assert!(drag.resize.is_some());
+        assert_eq!(
+            state.runtime.desktop.window(id).unwrap().floating_rect,
+            saved
+        );
+        assert!(!state.runtime.desktop.window(id).unwrap().floating);
+        state.end_drag();
+
+        let restored = state
+            .placements
+            .iter()
+            .find(|p| p.window == id)
+            .unwrap()
+            .rect;
+        state.begin_drag(id, point, 0, 0x110);
+        let drag = state.drag.as_ref().expect("restored tile allows move");
+        assert_eq!(drag.window, id);
+        assert!(drag.resize.is_none());
+        assert!(state.runtime.desktop.window(id).unwrap().floating);
+        assert_eq!(
+            state.runtime.desktop.window(id).unwrap().floating_rect,
+            restored
+        );
+        state.end_drag();
+    }
+
+    #[test]
     fn overview_hover_click_and_drag_without_shell_ipc() {
         const CHILD: &str = "CLEAR_OVERVIEW_DRAG_TEST";
         if std::env::var_os(CHILD).is_none() {
@@ -1220,11 +1308,9 @@ impl Compositor {
             || self.runtime.overview_requested
             || self.drag.is_some()
             || edges & !15 != 0
-            || self
-                .runtime
-                .desktop
-                .window(id)
-                .is_none_or(|w| w.role == WindowRole::Launcher || w.maximized || w.minimized)
+            || self.runtime.desktop.window(id).is_none_or(|w| {
+                w.role == WindowRole::Launcher || w.maximized || w.fullscreen || w.minimized
+            })
         {
             return;
         }

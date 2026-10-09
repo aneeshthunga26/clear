@@ -40,8 +40,8 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
 - Set/clear mode updates the current workspace/output pair through the core API
   without focusing that output. Switch/stretch/split first focus their validated
   output, then use the existing core command. Focus-window may reveal a hidden
-  workspace and restores minimization. Additive v1 `maximized`/`minimized` fields
-  keep hidden windows in snapshots. Validated `set_maximized`/`set_minimized`
+  workspace and restores minimization. Additive v1 `maximized`/`minimized`/`fullscreen` fields
+  keep hidden windows in snapshots. Validated `set_maximized`/`set_minimized`/`set_fullscreen`
   commands target normal windows without implicit workspace switches; launchers
   reject them atomically. Minimize repairs focus through core; restore preserves
   maximize state. Do not add separate shell policy or undo core focus decisions.

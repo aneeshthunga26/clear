@@ -50,6 +50,10 @@ pub enum RequestKind {
         window: String,
         maximized: bool,
     },
+    SetFullscreen {
+        window: String,
+        fullscreen: bool,
+    },
     SetMinimized {
         window: String,
         minimized: bool,
@@ -151,6 +155,7 @@ pub struct WindowSnapshot {
     /// Saved per-window floating flag, independent of workspace mode or role.
     pub floating: bool,
     pub maximized: bool,
+    pub fullscreen: bool,
     pub minimized: bool,
     pub focused: bool,
 }
@@ -219,6 +224,7 @@ pub fn snapshot(runtime: &Runtime) -> Snapshot {
                 .into(),
                 floating: window.floating,
                 maximized: window.maximized,
+                fullscreen: window.fullscreen,
                 minimized: window.minimized,
                 focused: desktop.focused_window() == Some(window.id),
             })
@@ -305,18 +311,25 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
                 .ok_or_else(|| format!("unknown window {window:?}"))?;
             runtime.desktop.command(Command::Focus(window));
         }
-        RequestKind::SetMaximized { window, .. } | RequestKind::SetMinimized { window, .. } => {
+        RequestKind::SetMaximized { window, .. }
+        | RequestKind::SetFullscreen { window, .. }
+        | RequestKind::SetMinimized { window, .. } => {
             let window = runtime
                 .desktop
                 .windows()
                 .find(|candidate| candidate.id.0.to_string() == *window)
                 .ok_or_else(|| format!("unknown window {window:?}"))?;
             if window.role != WindowRole::Normal {
-                return Err("launcher windows remain client-sized and cannot be minimized".into());
+                return Err(
+                    "launcher windows remain client-sized and reject window state requests".into(),
+                );
             }
             let command = match &request.request {
                 RequestKind::SetMaximized { maximized, .. } => {
                     Command::SetMaximized(window.id, *maximized)
+                }
+                RequestKind::SetFullscreen { fullscreen, .. } => {
+                    Command::SetFullscreen(window.id, *fullscreen)
                 }
                 RequestKind::SetMinimized { minimized, .. } => {
                     Command::SetMinimized(window.id, *minimized)

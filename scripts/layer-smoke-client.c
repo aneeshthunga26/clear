@@ -14,6 +14,9 @@
 // decorate NAME xdg|kde MODE changes/creates negotiation; xdg also unset, both
 // destroy. Recreating XDG v1 requires an unmapped surface, before remap NAME.
 // hold NAME ACKs XDG configures without drawing; commit NAME releases the hold.
+// fullscreen NAME [OUTPUT_NAME] / unfullscreen NAME request XDG fullscreen.
+// app-fullscreen NAME W H FIXED OFFSET COLOR [OUTPUT_NAME] requests it before
+// the first bufferless commit. Output targeting uses advertised wl_output names.
 // remap NAME performs a fresh bufferless XDG handshake after unmap NAME.
 // title NAME TEXT changes the title (omitting TEXT clears it).
 // popup NAME PARENT X Y W H COLOR accepts layer or XDG toplevel parents.
@@ -55,7 +58,13 @@ struct view {
     int outputs;
     struct wl_callback *frame;
     uint32_t color, alpha;
-    bool mapped, configured, fixed, maximized;
+    bool mapped, configured, fixed, maximized, fullscreen, committed_fullscreen;
+    bool wm_fullscreen_capability;
+};
+struct fixture_output {
+    struct wl_output *object;
+    char name[128];
+
 };
 static struct wl_display *display;
 static struct wl_compositor *compositor;
@@ -71,6 +80,8 @@ static struct wl_seat *seat;
 static struct wl_keyboard *keyboard;
 static struct view views[16];
 static int count;
+static struct fixture_output outputs[16];
+static int output_count;
 static struct wl_surface *focus;
 
 static void fail(const char *message) {
@@ -168,6 +179,7 @@ static void draw(struct view *v) {
         wl_callback_add_listener(v->frame, &frame_listener, v);
     }
     wl_surface_commit(v->surface);
+    v->committed_fullscreen = v->fullscreen;
     v->committed_w = w;
     v->committed_h = h;
     v->commit_count++;
@@ -196,11 +208,14 @@ static void top_configure(void *data, struct xdg_toplevel *top, int32_t w,
     (void)top;
     struct view *v = data;
     v->maximized = false;
+    v->fullscreen = false;
     v->suspended = false;
     uint32_t *state;
     wl_array_for_each(state, states) {
         if (*state == XDG_TOPLEVEL_STATE_MAXIMIZED)
             v->maximized = true;
+        if (*state == XDG_TOPLEVEL_STATE_FULLSCREEN)
+            v->fullscreen = true;
         if (*state == XDG_TOPLEVEL_STATE_SUSPENDED)
             v->suspended = true;
     }
@@ -224,9 +239,14 @@ static void top_bounds(void *data, struct xdg_toplevel *top, int32_t w, int32_t 
     (void)h;
 }
 static void top_capabilities(void *data, struct xdg_toplevel *top, struct wl_array *caps) {
-    (void)data;
     (void)top;
-    (void)caps;
+    struct view *v = data;
+    v->wm_fullscreen_capability = false;
+    uint32_t *cap;
+    wl_array_for_each(cap, caps) {
+        if (*cap == XDG_TOPLEVEL_WM_CAPABILITIES_FULLSCREEN)
+            v->wm_fullscreen_capability = true;
+    }
 }
 static const struct xdg_toplevel_listener top_listener = {
     .configure = top_configure,
@@ -480,9 +500,36 @@ static void output_mode(void *data, struct wl_output *output, uint32_t flags,
     (void)h;
     (void)refresh;
 }
+static void output_done(void *data, struct wl_output *output) {
+    (void)data;
+    (void)output;
+}
+static void output_scale(void *data, struct wl_output *output, int32_t factor) {
+    (void)data;
+    (void)output;
+    (void)factor;
+}
+static void output_name(void *data, struct wl_output *output, const char *name) {
+    (void)output;
+    struct fixture_output *record = data;
+    snprintf(record->name, sizeof(record->name), "%s", name);
+}
+static void output_description(void *data, struct wl_output *output, const char *description) {
+    (void)data;
+    (void)output;
+    (void)description;
+}
 static const struct wl_output_listener output_listener = {
-    .geometry = output_geometry, .mode = output_mode,
+    .geometry = output_geometry, .mode = output_mode, .done = output_done,
+    .scale = output_scale, .name = output_name, .description = output_description,
 };
+static struct wl_output *find_output(const char *name) {
+    for (int i = 0; i < output_count; i++)
+        if (!strcmp(outputs[i].name, name))
+            return outputs[i].object;
+    fail("unknown output name");
+    return NULL;
+}
 static void surface_enter(void *data, struct wl_surface *surface, struct wl_output *output) {
     (void)surface;
     (void)output;
@@ -512,8 +559,12 @@ static void global(void *data, struct wl_registry *registry, uint32_t id,
         subcompositor = wl_registry_bind(registry, id,
                                          &wl_subcompositor_interface, 1);
     else if (!strcmp(interface, "wl_output")) {
-        struct wl_output *output = wl_registry_bind(registry, id, &wl_output_interface, 1);
-        wl_output_add_listener(output, &output_listener, NULL);
+        if (output_count == 16)
+            fail("too many outputs");
+        struct fixture_output *record = &outputs[output_count++];
+        record->object = wl_registry_bind(registry, id, &wl_output_interface,
+                                         version < 4 ? version : 4);
+        wl_output_add_listener(record->object, &output_listener, record);
     } else if (!strcmp(interface, "wl_shm"))
         shm = wl_registry_bind(registry, id, &wl_shm_interface, 1);
     else if (!strcmp(interface, "xdg_wm_base")) {
@@ -592,17 +643,19 @@ static void destroy(struct view *v) {
     v->xdg = NULL;
     v->surface = NULL;
     v->mapped = false;
+    v->committed_fullscreen = false;
     v->configured = false;
     v->committed_w = v->committed_h = 0;
 }
 static void command(char *line) {
     char op[32], name[32], parent[32], alpha_text[256];
-    char protocol[16], mode[16], title[256] = "";
+    char protocol[16], mode[16], title[256] = "", output_target[128];
     int w, h, kind, zone, interactive, fixed, offset, anchors, x, y;
     unsigned color;
     if (sscanf(line, "%31s", op) != 1)
         return;
     if ((!strcmp(op, "app") || !strcmp(op, "app-maximized") ||
+         !strcmp(op, "app-fullscreen") ||
          !strcmp(op, "app-xdg") || !strcmp(op, "app-kde") ||
          !strcmp(op, "app-xdg-deferred")) &&
         sscanf(line, "%*s %31s %d %d %d %d %x", name, &w, &h, &fixed, &offset,
@@ -621,6 +674,12 @@ static void command(char *line) {
         xdg_toplevel_set_title(v->top, name);
         if (!strcmp(op, "app-maximized"))
             xdg_toplevel_set_maximized(v->top);
+        if (!strcmp(op, "app-fullscreen")) {
+            struct wl_output *output = NULL;
+            if (sscanf(line, "%*s %*s %*d %*d %*d %*d %*x %127s", output_target) == 1)
+                output = find_output(output_target);
+            xdg_toplevel_set_fullscreen(v->top, output);
+        }
         if (!strcmp(op, "app-xdg") || !strcmp(op, "app-kde") ||
             !strcmp(op, "app-xdg-deferred")) {
             if (sscanf(line, "%*s %*s %*d %*d %*d %*d %*x %15s", mode) != 1)
@@ -705,6 +764,18 @@ static void command(char *line) {
         // Position is parent-commit state even for a desynchronized child.
         // All fixture subsurface ancestors are also desynchronized.
         wl_surface_commit(p->surface);
+    } else if ((!strcmp(op, "fullscreen") || !strcmp(op, "unfullscreen")) &&
+               sscanf(line, "%*s %31s", name) == 1) {
+        struct view *v = find(name);
+        if (!v->top)
+            fail("fullscreen requires XDG toplevel");
+        if (!strcmp(op, "fullscreen")) {
+            struct wl_output *output = NULL;
+            if (sscanf(line, "%*s %*s %127s", output_target) == 1)
+                output = find_output(output_target);
+            xdg_toplevel_set_fullscreen(v->top, output);
+        } else
+            xdg_toplevel_unset_fullscreen(v->top);
     } else if ((!strcmp(op, "maximize") || !strcmp(op, "unmaximize") ||
                 !strcmp(op, "minimize")) &&
                sscanf(line, "%*s %31s", name) == 1) {
@@ -813,6 +884,7 @@ static void command(char *line) {
         wl_surface_attach(v->surface, NULL, 0, 0);
         wl_surface_commit(v->surface);
         v->committed_w = v->committed_h = 0;
+        v->committed_fullscreen = false;
         v->configured = v->subsurface != NULL;
         v->hold_commit = false;
     } else if (!strcmp(op, "destroy") && sscanf(line, "%*s %31s", name) == 1) {
@@ -829,7 +901,8 @@ static void command(char *line) {
                 "\"configure_count\":%u,\"commit_count\":%u,"
                 "\"frame_count\":%u,\"color\":%u,\"outputs\":%d,\"suspended\":%s,"
                 "\"popup_x\":%d,\"popup_y\":%d,\"configured\":%s,\"mapped\":"
-                "%s,\"maximized\":%s,\"hold_commit\":%s,\"ack_serial\":%u,"
+                "%s,\"maximized\":%s,\"fullscreen\":%s,\"committed_fullscreen\":%s,"
+                "\"wm_fullscreen_capability\":%s,\"hold_commit\":%s,\"ack_serial\":%u,"
                 "\"xdg_decoration\":%s,\"kde_decoration\":%s,"
                 "\"xdg_mode\":%u,\"kde_mode\":%u,"
                 "\"xdg_decoration_count\":%u,\"kde_decoration_count\":%u}",
@@ -839,6 +912,9 @@ static void command(char *line) {
                 v->suspended ? "true" : "false", v->popup_x, v->popup_y,
                 v->configured ? "true" : "false", v->mapped ? "true" : "false",
                 v->maximized ? "true" : "false",
+                v->fullscreen ? "true" : "false",
+                v->committed_fullscreen ? "true" : "false",
+                v->wm_fullscreen_capability ? "true" : "false",
                 v->hold_commit ? "true" : "false", v->ack_serial,
                 v->xdg_decoration ? "true" : "false",
                 v->kde_decoration ? "true" : "false", v->xdg_mode, v->kde_mode,

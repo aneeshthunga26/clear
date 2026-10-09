@@ -51,6 +51,7 @@ Each line is a separate request. The complete allowlist is:
 | `switch_workspace` | `output`, `workspace` | Focus output, then switch its group |
 | `focus_window` | `window` | Explicit core focus, including restore/reveal |
 | `set_maximized` | `window`, `maximized` boolean | Set normal-window maximize state without explicitly changing focus |
+| `set_fullscreen` | `window`, `fullscreen` boolean | Set normal-window fullscreen state without revealing, restoring or explicitly focusing it |
 | `set_minimized` | `window`, `minimized` boolean | Hide/restore a normal window; repair focus when needed |
 | `set_mode` | `output`, `mode` | Set current workspace's override on that output without stealing focus |
 | `clear_mode` | `output` | Clear that workspace/output override |
@@ -64,7 +65,7 @@ permit arbitrary script or action execution.
 
 All targets and values MUST be validated before any mutation, including requests
 with multiple targets. Invalid requests cannot partly change focus. Launcher
-targets reject maximize/minimize without mutation. There are no spawn, quit,
+targets reject maximize/minimize/fullscreen without mutation. There are no spawn, quit,
 reload, close-window, script-action, or raw core-command requests.
 
 ## Responses and ordering
@@ -98,14 +99,14 @@ All identity fields below are decimal strings, including identities inside array
 | `outputs` | `{id,name,area,workspace,effective_mode,mode_override}`; `area` is `{x,y,width,height}` in usable logical coordinates after reservations; override may be null |
 | `workspaces` | `{id,name,mode,windows}`; window IDs in stable workspace order, including hidden workspaces |
 | `groups` | `{outputs,workspace}`; outputs jointly presenting a workspace |
-| `windows` | `{id,title,app_id,workspace,output,role,floating,maximized,minimized,focused}` |
+| `windows` | `{id,title,app_id,workspace,output,role,floating,maximized,minimized,fullscreen,focused}` |
 | `focused_output`, `focused_window` | ID or null |
 | `overview_open` | Boolean; active compositor-owned overview, excluding a deferred request |
 | `switcher` | null or `{output,windows,selected}` during the compositor's Alt-held gesture |
 
 Window `output` is its saved home or null, not a visibility test. `role` is
 `normal` or `launcher`. `floating` is the saved exception flag, not the effective
-mode. Minimized windows remain in snapshots with no placement. Maximized/minimized
+mode. Minimized windows remain in snapshots with no placement. Maximized/minimized/fullscreen
 fields and setters are additive v1 extensions; state transitions follow
 [desktop policy](desktop.md#maximize-and-minimize).
 

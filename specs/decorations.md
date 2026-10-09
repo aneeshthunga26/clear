@@ -21,6 +21,15 @@ and reconciliation of hidden windows MUST NOT send a premature initial configure
 The pinned Smithay handler has no XDG decoration destruction callback, so the
 adapter's dispatch bridge forwards destruction after normal protocol handling.
 
+Fullscreen preserves the underlying negotiated decoration mode. Pending fullscreen
+state removes SSD insets from requested content size; committed fullscreen hides
+SSD titlebars, borders and rounded masks in both composition and input. The last
+ACKed fullscreen bit becomes visible only at a buffered root commit. An ACK with
+held content MUST retain the previous decoration decision. Leaving fullscreen
+restores the negotiated mode at the corresponding commit. Client-drawn header
+bars remain client pixels. Fullscreen's outline is square with no compositor
+border, including overview sources; popups retain their existing shape rules.
+
 ## Titlebar configuration
 
 `[theme.titlebar]` is independent of borders and blur. Unknown fields and invalid

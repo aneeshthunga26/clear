@@ -45,6 +45,10 @@ pub(super) struct ManagedWindow {
     pub mapped: bool,
     // XDG permits maximize requests before the first buffer enters desktop policy.
     pub initial_maximized: bool,
+    pub initial_fullscreen: bool,
+    pub initial_fullscreen_output: Option<OutputId>,
+    // Fullscreen decoration visibility changes with the root buffer's committed state.
+    pub committed_fullscreen: bool,
     // Exact frame hints survive hiding and decoration changes, including tiny frames.
     pub last_frame: Cell<Option<Rect>>,
 }
@@ -149,7 +153,11 @@ impl Compositor {
             compositor_state: CompositorState::new::<Self>(&dh),
             xdg_shell_state: XdgShellState::new_with_capabilities::<Self>(
                 &dh,
-                [WmCapabilities::Maximize, WmCapabilities::Minimize],
+                [
+                    WmCapabilities::Maximize,
+                    WmCapabilities::Minimize,
+                    WmCapabilities::Fullscreen,
+                ],
             ),
             _xdg_decoration_state: XdgDecorationState::new::<Self>(&dh),
             kde_decoration_state: KdeDecorationState::new::<Self>(&dh, KdeDefaultMode::Server),

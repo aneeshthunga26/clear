@@ -32,7 +32,7 @@ Extra parameters MUST be rejected even for parameterless actions.
 | `move_to_output` | `output`: `u64`; runtime target must exist |
 | `set_workspace_mode`, `set_output_mode` | `mode`: nonblank string, at most 256 bytes |
 | `clear_output_mode`, `cycle_mode`, `stretch_all`, `unstretch` | None |
-| `toggle_floating`, `toggle_maximized`, `minimize` | None |
+| `toggle_floating`, `toggle_maximized`, `toggle_fullscreen`, `minimize` | None |
 | `scroll` | `amount`: `i32` logical pixels |
 | `close_focused`, `quit`, `reload` | None |
 | `spawn` | `command`: executable and argument array |
@@ -73,6 +73,10 @@ code, even if modifiers changed before release. Repeated intercepted presses are
 also suppressed while that code is held. Unhandled events are forwarded through
 the seat's normal keyboard path.
 
+`toggle_fullscreen` targets the focused normal window through the
+[fullscreen policy](desktop.md#fullscreen). It accepts no arguments and has no
+default shortcut; a custom binding such as `leader+Shift+f` may assign it.
+
 ## Alt-Tab
 
 The first press snapshots normal windows in active-workspace order, including
@@ -99,7 +103,7 @@ floating exception. A resize MUST retain tiled membership and use the
 the window to the output crossed by the pointer.
 
 Super+right selects a corner by the pointer's quadrant of the frame. Only supported
-internal tile boundaries move. Launchers and maximized windows reject ordinary
+internal tile boundaries move. Launchers, maximized windows, and fullscreen windows reject ordinary
 move/resize gestures. Client XDG move/resize requests require a valid pointer grab
 serial and a grab origin owned by the requesting client; merely sending a request
 does not authorize it.
@@ -122,3 +126,8 @@ Super gestures take precedence over those controls.
   switcher commit/cancel and restoring minimized candidates.
 - Inline adapter tests cover keysym translation, pointer quadrants, titlebar
   threshold, and control precedence. These are not physical gesture tests.
+
+- `fullscreen_refuses_drag_without_mutation_and_restore_allows_drag` in
+  [adapter input tests](../src/platform/smithay/input.rs) verifies synthetic
+  fullscreen gesture refusal and restoration. It does not exercise physical input
+  or XDG client grab serial authorization.

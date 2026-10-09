@@ -60,6 +60,38 @@ guests or repeat `--case maximized`, `--case minimized`, `--case restored`, and
 `--case initial-maximized` to select checks. Logs, client traces, results, and PPM
 captures remain under `target/vm-window-state-smoke/` by default.
 
+## Fullscreen
+
+Contract: [fullscreen policy](../specs/desktop.md#fullscreen),
+[XDG lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures), and
+[committed decorations](../specs/decorations.md#negotiation-and-commit-timing).
+
+```sh
+python3 -B scripts/vm-fullscreen-smoke.py --binary target/debug/clear
+```
+
+Six bounded cases use real XDG/layer SHM clients and shell IPC: `xdg-entry`,
+`state-interleavings`, `initial-fullscreen`, `output-target`, `ssd-held`, and
+`launcher-rejected`. They check full bounds despite panel reservations, top-panel
+occlusion with overlay priority, maximize/minimize restoration, first configure
+state, explicit output placement, decoration retention after an ACK with held
+commit, and launcher refusal. Each compositor runs for 16 seconds by default;
+allow two minutes overall. Repeat `--case NAME` to select cases and use
+`--seconds 10..30` for the bounded runtime. Dependencies match the layer fixture.
+No physical clicks/keys, delayed ACKs, visual animation or native DRM are tested.
+Artifacts stay under `target/vm-fullscreen-smoke/` by default.
+
+Animation foundation/fullscreen validation: Cargo fmt/check/test/build and editor
+warning diagnostics passed. All six fullscreen cases passed on private **local
+virtual KWin**, not a VM, in `target/animation-foundations/fullscreen/`. Overview
+`cards` and `rounded-asymmetric` passed in `target/animation-foundations/overview/`;
+window-state `restored` passed in `target/animation-foundations/window-state/` and
+`initial-maximized` in `target/animation-foundations/window-state-final/`.
+The layer and decoration compositor-free harnesses each passed 14 tests. These
+runs exercised interval-1 EGL initialization, but did not measure physical
+presentation synchronization/cadence, animate a visual track, or inject physical
+input. The scheduler's no-divisor-fallback assertions are CPU tests.
+
 ## Wallpapers
 
 Contract: [wallpaper selection, placement, and resources](../specs/wallpaper.md).

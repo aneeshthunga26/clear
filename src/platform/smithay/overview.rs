@@ -1,7 +1,7 @@
 //! Compositor-owned card layout, hits, and bounded renderer-local resources.
 
 use super::{
-    rounded::{RoundedShaders, WindowOutline},
+    rounded::RoundedShaders,
     scene::{SceneElement, logical, premultiply},
     state::Compositor,
     titlebar::{TitlebarCache, content_rect},
@@ -317,12 +317,19 @@ impl PreviewSizes {
     }
 }
 
-struct Thumbnail {
-    texture: GlesTexture,
+#[derive(Debug, Clone, PartialEq)]
+struct ThumbnailAppearance {
     signature: Vec<(Id, CommitCounter)>,
     color: [f32; 4],
     source: Rect,
     size: (i32, i32),
+    // Fullscreen changes the committed mask even without a new client buffer.
+    committed_fullscreen: bool,
+}
+
+struct Thumbnail {
+    texture: GlesTexture,
+    appearance: ThumbnailAppearance,
     last_use: u64,
     bytes: usize,
 }
@@ -450,7 +457,7 @@ impl OverviewCache {
                 0
             }),
         );
-        let outline = WindowOutline::new(frame, theme);
+        let outline = entry.outline(frame, theme);
         let source = outline.outer.rect;
         // Main cards sample at their display resolution. Smaller strip tiles and
         // ghosts share that texture without reducing its resolution first.
@@ -518,15 +525,23 @@ impl OverviewCache {
         } else {
             theme.inactive_border
         };
-        let changed = self.thumbnails.get(&id).is_none_or(|t| {
-            t.source != source || t.size != size || t.signature != signature || t.color != color
-        });
+        let appearance = ThumbnailAppearance {
+            signature,
+            color,
+            source,
+            size,
+            committed_fullscreen: entry.committed_fullscreen,
+        };
+        let changed = self
+            .thumbnails
+            .get(&id)
+            .is_none_or(|t| t.appearance != appearance);
         let bytes = size.0 as usize * size.1 as usize * 4;
         if changed {
             let reusable = self
                 .thumbnails
                 .remove(&id)
-                .filter(|old| old.size == size)
+                .filter(|old| old.appearance.size == size)
                 .map(|old| old.texture);
             while self.thumbnails.len() >= MAX_ENTRIES
                 || self.thumbnails.values().map(|t| t.bytes).sum::<usize>() + bytes > MAX_BYTES
@@ -665,10 +680,7 @@ impl OverviewCache {
                 id,
                 Thumbnail {
                     texture,
-                    signature,
-                    color,
-                    source,
-                    size,
+                    appearance,
                     last_use: self.generation,
                     bytes,
                 },
@@ -753,10 +765,8 @@ impl OverviewCache {
                     0
                 });
                 let frame = Rect::new(0, 0, size.w.max(1), height);
-                cached.source
-                    == WindowOutline::new(frame, &state.runtime.config.theme)
-                        .outer
-                        .rect
+                cached.appearance.source
+                    == entry.outline(frame, &state.runtime.config.theme).outer.rect
             })
         });
         let mut sizes = PreviewSizes::default();
@@ -1160,12 +1170,13 @@ impl Compositor {
                 0
             });
             Some(
-                WindowOutline::new(
-                    Rect::new(0, 0, size.w.max(1), height),
-                    &self.runtime.config.theme,
-                )
-                .outer
-                .rect,
+                entry
+                    .outline(
+                        Rect::new(0, 0, size.w.max(1), height),
+                        &self.runtime.config.theme,
+                    )
+                    .outer
+                    .rect,
             )
         });
         Some(layout)
@@ -1374,5 +1385,25 @@ mod tests {
             assert_eq!(fitted.intersection(dest), Some(fitted));
             assert!(fitted.width <= 512 && fitted.height <= 320);
         }
+    }
+
+    #[test]
+    fn fullscreen_root_commit_invalidates_preview_without_buffer_damage() {
+        let ordinary = ThumbnailAppearance {
+            signature: vec![(Id::new(), CommitCounter::default())],
+            color: [0.2, 0.3, 0.4, 1.0],
+            source: Rect::new(0, 0, 640, 480),
+            size: (320, 240),
+            committed_fullscreen: false,
+        };
+        let mut fullscreen = ordinary.clone();
+        fullscreen.committed_fullscreen = true;
+        // A CSD root can accept fullscreen while keeping its current buffer.
+        // With zero border width, source/texture geometry and damage are unchanged.
+        assert_eq!(ordinary.signature, fullscreen.signature);
+        assert_eq!(ordinary.source, fullscreen.source);
+        assert_ne!(ordinary, fullscreen);
+        fullscreen.committed_fullscreen = false;
+        assert_eq!(ordinary, fullscreen);
     }
 }

@@ -266,6 +266,7 @@ impl Runtime {
                 Action::Unstretch => Command::Unstretch,
                 Action::ToggleFloating => Command::ToggleFloating,
                 Action::ToggleMaximized => Command::ToggleMaximized,
+                Action::ToggleFullscreen => Command::ToggleFullscreen,
                 Action::Minimize => Command::MinimizeFocused,
                 Action::Scroll { amount } => Command::Scroll(amount),
                 Action::CloseFocused => Command::CloseFocused,

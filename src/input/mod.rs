@@ -37,6 +37,8 @@ pub enum Action {
     ToggleFloating,
     /// Toggle maximization without changing the saved layout or floating rectangle.
     ToggleMaximized,
+    /// Toggle fullscreen while retaining the underlying maximize/layout state.
+    ToggleFullscreen,
     /// Hide the focused window; explicit focus or Alt-Tab restores it.
     Minimize,
     Scroll {

@@ -24,6 +24,8 @@ keyboard ownership, grabs, and pointer events belong in `platform/smithay/`.
   physical Alt release and Escape cancellation; runtime retains pending selection.
 - `toggle_maximized` (leader+Up) and `minimize` (leader+Down) operate on the
   focused normal window. Restore minimized windows via explicit focus/Alt-Tab.
+- `toggle_fullscreen` is a configurable unit action with no default shortcut;
+  it routes through the same core policy from bindings and Rhai.
 - When extending `Action`, update validation, runtime dispatch, Rhai action
   conversion as needed, and config examples together.
 

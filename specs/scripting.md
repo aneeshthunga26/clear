@@ -27,7 +27,7 @@ directly from painting.
 
 The supplied window rectangle is saved floating geometry and may be unconfigured
 or outside the region. A script must initialize its requested layout as needed.
-Float exceptions, launchers, maximized windows, and minimized windows bypass this
+Float exceptions, launchers, maximized, fullscreen, and minimized windows bypass this
 interface. Empty window lists return an empty result without executing the script.
 
 The result MUST be an array with exactly one map per input window, using exactly
@@ -50,6 +50,7 @@ the [binding action schema](input.md#action-schema), without `key` fields.
 `alt_tab` is not supported by the Rhai decoder: its gesture belongs to physical
 input. `toggle_overview` is supported as a request for adapter authorization
 under the [overview contract](overview.md). All returned maps are decoded and validated before any is dispatched.
+`toggle_fullscreen` is also supported as a unit action using desktop policy.
 Malformed results fail as a whole. Successful actions are applied in returned
 order; nested script dispatch shares runtime's 128-action expansion budget.
 

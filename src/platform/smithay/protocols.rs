@@ -3,7 +3,7 @@ use super::{
     state::{ClientState, Compositor, ManagedWindow},
     titlebar::content_rect,
 };
-use crate::core::{Command, WindowId};
+use crate::core::{Command, OutputId, WindowId};
 use smithay::{
     backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state},
     desktop::{
@@ -19,7 +19,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             Client, Resource,
-            protocol::{wl_buffer, wl_seat, wl_surface::WlSurface},
+            protocol::{wl_buffer, wl_output::WlOutput, wl_seat, wl_surface::WlSurface},
         },
     },
     utils::Serial,
@@ -71,6 +71,15 @@ impl CompositorHandler for Compositor {
                 let unmapped = !has_buffer && entry.mapped;
                 if surface == &root {
                     entry.commit_decoration(has_buffer);
+                    entry.committed_fullscreen = has_buffer
+                        && top.with_cached_state(|state| {
+                            state.last_acked.as_ref().is_some_and(|configure| {
+                                configure
+                                    .state
+                                    .states
+                                    .contains(xdg_toplevel::State::Fullscreen)
+                            })
+                        });
                 }
                 if has_buffer && !entry.mapped {
                     entry.mapped = true;
@@ -89,13 +98,34 @@ impl CompositorHandler for Compositor {
                     self.runtime
                         .desktop
                         .command(Command::SetMaximized(id, entry.initial_maximized));
+                    self.runtime
+                        .desktop
+                        .command(Command::SetFullscreen(id, entry.initial_fullscreen));
+                    if entry.initial_fullscreen
+                        && let Some(output) = entry.initial_fullscreen_output
+                        && self.runtime.desktop.output(output).is_some()
+                        && self
+                            .runtime
+                            .desktop
+                            .window(id)
+                            .is_some_and(|w| w.role == crate::core::WindowRole::Normal)
+                    {
+                        self.runtime.desktop.command(Command::Focus(id));
+                        self.runtime.desktop.command(Command::MoveToOutput(output));
+                    }
                     entry.initial_maximized = false;
+                    entry.initial_fullscreen = false;
+                    entry.initial_fullscreen_output = None;
                     eprintln!("clear: mapped window {}", id.0);
                 } else if !has_buffer && entry.mapped {
                     entry.mapped = false;
                     entry.initial_maximized = false;
+                    entry.initial_fullscreen = false;
+                    entry.initial_fullscreen_output = None;
+                    entry.committed_fullscreen = false;
                     top.with_pending_state(|pending| {
                         pending.states.unset(xdg_toplevel::State::Maximized);
+                        pending.states.unset(xdg_toplevel::State::Fullscreen);
                         pending.states.unset(xdg_toplevel::State::Suspended);
                         pending.states.unset(xdg_toplevel::State::Resizing);
                     });
@@ -116,34 +146,8 @@ impl CompositorHandler for Compositor {
                     );
                 }
                 if !top.is_initial_configure_sent() && !unmapped {
-                    entry.prepare_decoration_configure();
-                    let pending_ssd = entry.pending_ssd();
-                    let is_launcher = self.runtime.config.shell.is_launcher(&metadata(&root).1);
-                    let area = self
-                        .runtime
-                        .desktop
-                        .focused_output()
-                        .and_then(|id| self.runtime.desktop.output(id))
-                        .map(|o| o.area);
-                    top.with_pending_state(|pending| {
-                        if entry.initial_maximized
-                            && !is_launcher
-                            && let Some(area) = area
-                        {
-                            entry.remember_frame(area);
-                            let content = content_rect(
-                                area,
-                                pending_ssd,
-                                self.runtime.config.theme.titlebar.height,
-                            );
-                            pending.size = Some((content.width, content.height).into());
-                            pending.states.set(xdg_toplevel::State::Maximized);
-                        } else {
-                            pending.size = (!is_launcher).then_some((640, 480).into());
-                            pending.states.unset(xdg_toplevel::State::Maximized);
-                        }
-                    });
-                    top.send_configure();
+                    let top = top.clone();
+                    self.configure_initial_window(id, &top);
                 }
             }
         }
@@ -226,6 +230,9 @@ impl XdgShellHandler for Compositor {
                 window: Window::new_wayland_window(surface),
                 mapped: false,
                 initial_maximized: false,
+                initial_fullscreen: false,
+                initial_fullscreen_output: None,
+                committed_fullscreen: false,
                 last_frame: Default::default(),
             },
         );
@@ -299,6 +306,18 @@ impl XdgShellHandler for Compositor {
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         self.set_client_maximized(surface, false);
     }
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
+        let output = output.and_then(|output| {
+            self.outputs
+                .iter()
+                .find(|region| region.output.owns(&output))
+                .map(|region| region.id)
+        });
+        self.set_client_fullscreen(surface, true, output);
+    }
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        self.set_client_fullscreen(surface, false, None);
+    }
     fn minimize_request(&mut self, surface: ToplevelSurface) {
         if let Some(id) = self.window_id(surface.wl_surface()) {
             self.runtime
@@ -323,6 +342,96 @@ impl XdgShellHandler for Compositor {
 }
 
 impl Compositor {
+    fn configure_initial_window(&self, id: WindowId, surface: &ToplevelSurface) {
+        let entry = &self.windows[&id];
+        entry.prepare_decoration_configure();
+        let launcher = self
+            .runtime
+            .config
+            .shell
+            .is_launcher(&metadata(surface.wl_surface()).1);
+        let fullscreen = entry.initial_fullscreen && !launcher;
+        let maximized = entry.initial_maximized && !launcher;
+        let output = entry
+            .initial_fullscreen_output
+            .filter(|output| self.runtime.desktop.output(*output).is_some())
+            .or(self.runtime.desktop.focused_output())
+            .and_then(|output| self.runtime.desktop.output(output));
+        let area = output.map(|output| {
+            if fullscreen {
+                output.bounds
+            } else {
+                output.area
+            }
+        });
+        // Compute decoration insets before taking XDG pending state: pending_ssd
+        // reads this surface's protocol data and must not recursively lock it.
+        let size = if (fullscreen || maximized)
+            && let Some(area) = area
+        {
+            entry.remember_frame(area);
+            let content = content_rect(
+                area,
+                !fullscreen && entry.pending_ssd(),
+                self.runtime.config.theme.titlebar.height,
+            );
+            Some((content.width, content.height).into())
+        } else {
+            (!launcher).then_some((640, 480).into())
+        };
+        surface.with_pending_state(|pending| {
+            if fullscreen {
+                pending.states.set(xdg_toplevel::State::Fullscreen);
+            } else {
+                pending.states.unset(xdg_toplevel::State::Fullscreen);
+            }
+            if maximized {
+                pending.states.set(xdg_toplevel::State::Maximized);
+            } else {
+                pending.states.unset(xdg_toplevel::State::Maximized);
+            }
+            pending.size = size;
+        });
+        surface.send_configure();
+    }
+
+    fn set_client_fullscreen(
+        &mut self,
+        surface: ToplevelSurface,
+        fullscreen: bool,
+        output: Option<OutputId>,
+    ) {
+        let Some(id) = self.window_id(surface.wl_surface()) else {
+            return;
+        };
+        if self.windows[&id].mapped {
+            if self
+                .runtime
+                .desktop
+                .window(id)
+                .is_some_and(|w| w.role == crate::core::WindowRole::Normal)
+            {
+                if fullscreen && let Some(output) = output {
+                    self.runtime.desktop.command(Command::Focus(id));
+                    self.runtime.desktop.command(Command::MoveToOutput(output));
+                }
+                self.runtime
+                    .desktop
+                    .command(Command::SetFullscreen(id, fullscreen));
+            }
+            self.dirty = true;
+            self.reconcile();
+            surface.send_configure();
+        } else {
+            let entry = self.windows.get_mut(&id).unwrap();
+            entry.initial_fullscreen = fullscreen;
+            entry.initial_fullscreen_output = fullscreen.then_some(output).flatten();
+            if surface.is_initial_configure_sent() {
+                self.configure_initial_window(id, &surface);
+            }
+        }
+    }
+
     fn set_client_maximized(&mut self, surface: ToplevelSurface, maximized: bool) {
         let Some(id) = self.window_id(surface.wl_surface()) else {
             return;
@@ -338,37 +447,7 @@ impl Compositor {
         } else {
             self.windows.get_mut(&id).unwrap().initial_maximized = maximized;
             if surface.is_initial_configure_sent() {
-                let launcher = self
-                    .runtime
-                    .config
-                    .shell
-                    .is_launcher(&metadata(surface.wl_surface()).1);
-                let pending_ssd = self.windows[&id].pending_ssd();
-                let area = self
-                    .runtime
-                    .desktop
-                    .focused_output()
-                    .and_then(|id| self.runtime.desktop.output(id))
-                    .map(|o| o.area);
-                surface.with_pending_state(|pending| {
-                    if maximized
-                        && !launcher
-                        && let Some(area) = area
-                    {
-                        pending.states.set(xdg_toplevel::State::Maximized);
-                        self.windows[&id].remember_frame(area);
-                        let content = content_rect(
-                            area,
-                            pending_ssd,
-                            self.runtime.config.theme.titlebar.height,
-                        );
-                        pending.size = Some((content.width, content.height).into());
-                    } else {
-                        pending.states.unset(xdg_toplevel::State::Maximized);
-                        pending.size = (!launcher).then_some((640, 480).into());
-                    }
-                });
-                surface.send_configure();
+                self.configure_initial_window(id, &surface);
             }
         }
     }

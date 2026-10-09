@@ -49,14 +49,27 @@ client's committed buffer and window geometry. Resizing is asynchronous: delayed
 clients do not block all other clients in a global transaction. Old tiled content
 remains clipped while waiting for new content.
 
-XDG maximize/unmaximize/minimize requests target core window state. Pre-map
-maximize is retained for the first map and reflected in initial size/state.
-Reconciliation owns Maximized and Suspended state; the [overview contract](overview.md)
-provides temporary protocol visibility for live previews without restoring core
-minimized state. Minimizing removes ordinary rendering without marking the client unmapped. State changes cancel incompatible drags.
-Launchers reject those operations. Capabilities advertise maximize/minimize,
-not unimplemented fullscreen or window-menu policy. See
-[desktop state](desktop.md#maximize-and-minimize) for restore/focus semantics.
+XDG maximize/unmaximize/minimize/fullscreen/unfullscreen requests target core
+window state. Pre-map maximize and fullscreen are retained for the first map and
+reflected in initial size/state. A connected requested fullscreen output is used
+for initial placement; a mapped normal window transfers through ordinary
+focus/move commands before setting fullscreen. An absent or unavailable output
+uses the window's home/focused output. Fullscreen requests MUST NOT affect
+launcher policy. Rejected requests still receive a configure.
+
+Reconciliation owns Maximized, Fullscreen, and Suspended state; the
+[overview contract](overview.md) provides temporary protocol visibility for live
+previews without restoring core minimized state. Minimizing removes ordinary
+rendering without marking the client unmapped. State changes cancel incompatible
+drags. Capabilities advertise maximize/minimize/fullscreen, but not window-menu
+policy. See [desktop state](desktop.md#fullscreen) for saved-state and placement
+semantics, including full bounds distinct from usable area.
+
+Fullscreen configure sizes use full output bounds without SSD insets. Displayed
+SSD/rounding suppression follows the fullscreen bit in the last ACKed configure
+at a buffered root commit; an ACK alone MUST NOT change it. Unmap clears committed
+fullscreen and pre-map intent. Delayed client commits do not block other clients;
+policy placement and scene priority may change before client content catches up.
 
 XDG popups are tracked separately from workspace-owned toplevels, configured and
 repositioned using their parent origin and output constraints. Layer popups can
@@ -111,7 +124,12 @@ precedence, focus reconciliation and committed-buffer previews.
 ## Scene and hit-testing
 
 Front-to-back priority is overlay, top, application placements, bottom, background,
-then wallpaper. Layer popup trees participate above their parent layer body and
+then wallpaper on outputs without visible fullscreen. On a fullscreen output,
+priority is overlay, launchers homed there, fullscreen windows, top layers, other
+application placements, bottom, background, then wallpaper. Top-layer input is
+partitioned by the output under the pointer to preserve the render priority when
+an oversized launcher crosses output boundaries. Exclusive layer keyboard
+ownership remains independent of this visual ordering. Layer popup trees participate above their parent layer body and
 are not cropped to that body. Within application content, rendering and input use
 the same placement order, origins, and visible workspace/output-group clips.
 
@@ -130,20 +148,27 @@ it. Popup/layer geometry is not subjected to application body rounding.
 ## Current limitations
 
 Native DRM/KMS, physical monitor hotplug, XWayland, fractional scaling, IME,
-fullscreen policy, animation, full cursor-surface handling, and activation policy
+visual animation effects, full cursor-surface handling, and activation policy
 are not implemented. Group editing exposes stretch-all and split, not arbitrary
 output subsets. Toplevel listing/capture protocols for live shell thumbnails are
 not exposed. Layer and popup support is intentionally limited to the implemented
 adapter paths; this is not a promise of every desktop protocol.
 
-The backend currently repaints continuously with buffer age zero. Rounded/blur
-coordinates assume one scale-1 framebuffer; a future native/scaled backend cannot
+The backend currently repaints continuously with buffer age zero, with the timing
+limitations described above. Rounded/blur coordinates assume one scale-1
+framebuffer; a future native/scaled backend cannot
 reuse those assumptions without adaptation. Physical keyboard/pointer behavior
 is not established merely by CPU tests or protocol/capture fixtures.
 
 ## Implementation and evidence
 
 - [CLI and parser tests](../src/main.rs), [backend](../src/platform/smithay/backend.rs),
+  [frame scheduler and tests](../src/platform/smithay/frame_scheduler.rs)
+  (`fixed_caps_keep_absolute_phase_on_144_hz`,
+  `missed_frames_do_not_replay_or_lower_the_target`,
+  `callbacks_can_redraw_between_animation_samples`,
+  `source_and_config_changes_reset_phase_without_stale_samples`,
+  `redraw_requests_coalesce_until_the_host_opportunity`),
   [protocols](../src/platform/smithay/protocols.rs),
   [layers](../src/platform/smithay/layers.rs),
   [scene and clip tests](../src/platform/smithay/scene.rs).
@@ -152,6 +177,9 @@ is not established merely by CPU tests or protocol/capture fixtures.
   [fixture assertion self-tests](../scripts/test_vm_layer_smoke.py): mapping,
   reservations, pending layer commits, popup pixels, keyboard ownership, and
   client-sized launchers. Assertion self-tests alone are not integration runs.
+- [Fullscreen fixture](../scripts/vm-fullscreen-smoke.py) and
+  [action/IPC tests](../tests/fullscreen.rs) cover fullscreen protocol states,
+  full bounds, output requests, held commits, and normal/launcher policy.
 - [Window-state fixture](../scripts/vm-window-state-smoke.py) and
   [decoration fixture](../scripts/vm-decoration-smoke.py): native state/configure
   transitions and framebuffer assertions. See [testing](../docs/vm-testing.md)

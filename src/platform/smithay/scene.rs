@@ -151,7 +151,7 @@ impl Compositor {
             self.runtime
                 .desktop
                 .window(drag.window)
-                .is_none_or(|w| w.minimized || w.maximized)
+                .is_none_or(|w| w.minimized || w.maximized || w.fullscreen)
         }) {
             self.end_drag();
         }
@@ -191,6 +191,11 @@ impl Compositor {
                     } else {
                         pending.states.unset(xdg_toplevel::State::Maximized);
                     }
+                    if window.fullscreen {
+                        pending.states.set(xdg_toplevel::State::Fullscreen);
+                    } else {
+                        pending.states.unset(xdg_toplevel::State::Fullscreen);
+                    }
                     if window.minimized && !overview_live.contains(id) {
                         pending.states.set(xdg_toplevel::State::Suspended);
                     } else {
@@ -215,8 +220,16 @@ impl Compositor {
             let window = &entry.window;
             entry.remember_frame(placement.rect);
             entry.prepare_decoration_configure();
-            let requested_content =
-                content_rect(placement.rect, entry.pending_ssd(), titlebar_height);
+            let requested_content = content_rect(
+                placement.rect,
+                entry.pending_ssd()
+                    && !self
+                        .runtime
+                        .desktop
+                        .window(placement.window)
+                        .is_some_and(|w| w.fullscreen),
+                titlebar_height,
+            );
             let content = content_rect(placement.rect, entry.uses_ssd(), titlebar_height);
             if let Some(top) = window.toplevel() {
                 top.with_pending_state(|pending| {
@@ -328,14 +341,58 @@ impl Compositor {
         })
     }
 
+    fn fullscreen_outputs(&self) -> BTreeSet<OutputId> {
+        self.placements
+            .iter()
+            .filter_map(|p| self.runtime.desktop.window(p.window))
+            .filter(|w| w.fullscreen)
+            .filter_map(|w| w.output)
+            .collect()
+    }
+
+    fn elevated_window(&self, id: WindowId, fullscreen_outputs: &BTreeSet<OutputId>) -> bool {
+        self.runtime.desktop.window(id).is_some_and(|w| {
+            w.fullscreen
+                || (w.role == WindowRole::Launcher
+                    && w.output.is_some_and(|o| fullscreen_outputs.contains(&o)))
+        })
+    }
+
     pub fn hit_test(&self, point: Point<f64, Logical>) -> Option<SurfaceHit> {
         if self.runtime.overview.is_some() {
             return None;
         }
-        if let Some(layer) = self.layer_under(point, &[Layer::Overlay, Layer::Top]) {
+        if let Some(layer) = self.layer_under(point, &[Layer::Overlay]) {
             return Some(layer);
         }
+        let full_outputs = self.fullscreen_outputs();
+        let over_fullscreen_output = self
+            .outputs
+            .iter()
+            .any(|region| full_outputs.contains(&region.id) && contains(region.rect, point));
+        if !over_fullscreen_output && let Some(layer) = self.layer_under(point, &[Layer::Top]) {
+            return Some(layer);
+        }
+        if let Some(hit) = self.window_hit(point, true, &full_outputs) {
+            return Some(hit);
+        }
+        if let Some(layer) = self.layer_under(point, &[Layer::Top]) {
+            return Some(layer);
+        }
+        self.window_hit(point, false, &full_outputs)
+            .or_else(|| self.layer_under(point, &[Layer::Bottom, Layer::Background]))
+    }
+
+    fn window_hit(
+        &self,
+        point: Point<f64, Logical>,
+        elevated: bool,
+        fullscreen_outputs: &BTreeSet<OutputId>,
+    ) -> Option<SurfaceHit> {
         for p in self.placements.iter().rev() {
+            if self.elevated_window(p.window, fullscreen_outputs) != elevated {
+                continue;
+            }
             if !self
                 .placement_clips(p)
                 .iter()
@@ -352,9 +409,11 @@ impl Compositor {
             let surface_origin = origin - entry.window.geometry().loc;
             if let Some((surface, offset)) = entry.window.surface_under(
                 point - surface_origin.to_f64(),
-                if ((p.tiled || ssd) && !contains(content, point))
-                    || (self.runtime.config.theme.corner_radius.is_rounded()
-                        && !WindowOutline::new(p.rect, &self.runtime.config.theme)
+                if ((p.tiled || ssd || entry.committed_fullscreen) && !contains(content, point))
+                    || (!entry.committed_fullscreen
+                        && self.runtime.config.theme.corner_radius.is_rounded()
+                        && !entry
+                            .outline(p.rect, &self.runtime.config.theme)
                             .inner
                             .contains(point))
                 {
@@ -370,7 +429,8 @@ impl Compositor {
                 });
             }
             if ssd
-                && WindowOutline::new(p.rect, &self.runtime.config.theme)
+                && entry
+                    .outline(p.rect, &self.runtime.config.theme)
                     .inner
                     .contains(point)
                 && let Some(part) = titlebar_hit(p.rect, point, &self.runtime.config.theme.titlebar)
@@ -383,7 +443,7 @@ impl Compositor {
                 });
             }
         }
-        self.layer_under(point, &[Layer::Bottom, Layer::Background])
+        None
     }
 
     fn placement_clips(&self, placement: &crate::core::Placement) -> Vec<Rect> {
@@ -405,161 +465,189 @@ impl Compositor {
         let mut elements = Vec::new();
         let mut groups = Vec::new();
         titlebars.retain(|id| self.windows.get(&id).is_some_and(|entry| entry.uses_ssd()));
-        self.layer_elements(
+        let full_outputs = self.fullscreen_outputs();
+        self.layer_elements(renderer, &[Layer::Overlay], &mut elements, &mut groups);
+        self.layer_elements_filtered(
             renderer,
-            &[Layer::Overlay, Layer::Top],
+            &[Layer::Top],
             &mut elements,
             &mut groups,
+            |output| !full_outputs.contains(&output),
         );
 
-        for placement in self.placements.iter().rev() {
-            let Some(entry) = self.windows.get(&placement.window) else {
-                continue;
-            };
-            let theme = &self.runtime.config.theme;
-            let rounded = rounded.filter(|_| theme.corner_radius.is_rounded());
-            let outline = WindowOutline::new(placement.rect, theme);
-            let ssd = entry.uses_ssd();
-            let content = content_rect(placement.rect, ssd, theme.titlebar.height);
-            for clip in self.placement_clips(placement) {
-                let titlebar = if ssd {
-                    let window = self
-                        .runtime
-                        .desktop
-                        .window(placement.window)
-                        .expect("placed window");
-                    let title = if window.title.is_empty() {
-                        &window.app_id
-                    } else {
-                        &window.title
-                    };
-                    titlebars.elements(
-                        renderer,
-                        placement.window,
-                        title,
-                        placement.rect,
-                        placement.focused
-                            && self.host_focused
-                            && self.layer_keyboard_focus().is_none(),
-                        window.maximized,
-                        clip,
-                        &theme.titlebar,
-                        &self.runtime.titlebar_assets,
-                        &window.app_id,
-                    )?
-                } else {
-                    Vec::new()
-                };
-                let Some(top) = entry.window.toplevel() else {
+        for elevated in [true, false] {
+            if !elevated {
+                self.layer_elements_filtered(
+                    renderer,
+                    &[Layer::Top],
+                    &mut elements,
+                    &mut groups,
+                    |output| full_outputs.contains(&output),
+                );
+            }
+            for placement in self.placements.iter().rev() {
+                if self.elevated_window(placement.window, &full_outputs) != elevated {
+                    continue;
+                }
+                let Some(entry) = self.windows.get(&placement.window) else {
                     continue;
                 };
-                // Popups may extend beyond the parent, but not its workspace viewport.
-                for (popup, offset) in PopupManager::popups_for_surface(top.wl_surface()) {
-                    let location: Point<i32, Physical> = (
-                        content.x + offset.x - popup.geometry().loc.x,
-                        content.y + offset.y - popup.geometry().loc.y,
-                    )
-                        .into();
+                let theme = &self.runtime.config.theme;
+                let rounded = rounded
+                    .filter(|_| !entry.committed_fullscreen && theme.corner_radius.is_rounded());
+                let outline = entry.outline(placement.rect, theme);
+                let ssd = entry.uses_ssd();
+                let content = content_rect(placement.rect, ssd, theme.titlebar.height);
+                for clip in self.placement_clips(placement) {
+                    let titlebar = if ssd {
+                        let window = self
+                            .runtime
+                            .desktop
+                            .window(placement.window)
+                            .expect("placed window");
+                        let title = if window.title.is_empty() {
+                            &window.app_id
+                        } else {
+                            &window.title
+                        };
+                        titlebars.elements(
+                            renderer,
+                            placement.window,
+                            title,
+                            placement.rect,
+                            placement.focused
+                                && self.host_focused
+                                && self.layer_keyboard_focus().is_none(),
+                            window.maximized,
+                            clip,
+                            &theme.titlebar,
+                            &self.runtime.titlebar_assets,
+                            &window.app_id,
+                        )?
+                    } else {
+                        Vec::new()
+                    };
+                    let Some(top) = entry.window.toplevel() else {
+                        continue;
+                    };
+                    // Popups may extend beyond the parent, but not its workspace viewport.
+                    for (popup, offset) in PopupManager::popups_for_surface(top.wl_surface()) {
+                        let location: Point<i32, Physical> = (
+                            content.x + offset.x - popup.geometry().loc.x,
+                            content.y + offset.y - popup.geometry().loc.y,
+                        )
+                            .into();
+                        let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                            render_elements_from_surface_tree(
+                                renderer,
+                                popup.wl_surface(),
+                                location,
+                                1.0,
+                                1.0,
+                                Kind::Unspecified,
+                            );
+                        let shape = client_tree_shape(&surfaces);
+                        let start = elements.len();
+                        elements.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|e| {
+                                    CropRenderElement::from_element(e, 1.0, physical(clip))
+                                })
+                                .map(SceneElement::Surface),
+                        );
+                        groups.push(SceneGroup {
+                            elements: start..elements.len(),
+                            clip: physical(clip),
+                            mask: shape.map(BlurMask::ClientAlpha),
+                        });
+                    }
+                    let offset = entry.window.geometry().loc;
+                    let location: Point<i32, Physical> =
+                        (content.x - offset.x, content.y - offset.y).into();
                     let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
                         render_elements_from_surface_tree(
                             renderer,
-                            popup.wl_surface(),
+                            top.wl_surface(),
                             location,
                             1.0,
                             1.0,
                             Kind::Unspecified,
                         );
-                    let shape = client_tree_shape(&surfaces);
+                    let color = if placement.focused {
+                        theme.active_border
+                    } else {
+                        theme.inactive_border
+                    };
                     let start = elements.len();
+                    if let Some(shaders) = rounded {
+                        if let Some(window) = shaders.window(
+                            renderer,
+                            surfaces,
+                            content,
+                            titlebar,
+                            outline,
+                            color,
+                            self.host_size.h,
+                            physical(clip),
+                        )? {
+                            elements.push(SceneElement::RoundedSurface(window));
+                        }
+                        groups.push(SceneGroup {
+                            elements: start..elements.len(),
+                            clip: physical(clip),
+                            mask: Some(BlurMask::Window(outline.outer)),
+                        });
+                        continue;
+                    }
+                    // A client can commit an old or oversized buffer after a new configure.
+                    // Constrain its body without clipping the separately rendered popups.
                     elements.extend(
-                        surfaces
+                        titlebar
                             .into_iter()
-                            .filter_map(|e| CropRenderElement::from_element(e, 1.0, physical(clip)))
-                            .map(SceneElement::Surface),
+                            .filter_map(|bar| {
+                                CropRenderElement::from_element(bar, 1.0, physical(clip))
+                            })
+                            .map(SceneElement::Titlebar),
                     );
-                    groups.push(SceneGroup {
-                        elements: start..elements.len(),
-                        clip: physical(clip),
-                        mask: shape.map(BlurMask::ClientAlpha),
-                    });
-                }
-                let offset = entry.window.geometry().loc;
-                let location: Point<i32, Physical> =
-                    (content.x - offset.x, content.y - offset.y).into();
-                let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-                    render_elements_from_surface_tree(
-                        renderer,
-                        top.wl_surface(),
-                        location,
-                        1.0,
-                        1.0,
-                        Kind::Unspecified,
-                    );
-                let color = if placement.focused {
-                    theme.active_border
-                } else {
-                    theme.inactive_border
-                };
-                let start = elements.len();
-                if let Some(shaders) = rounded {
-                    if let Some(window) = shaders.window(
-                        renderer,
-                        surfaces,
-                        content,
-                        titlebar,
-                        outline,
-                        color,
-                        self.host_size.h,
-                        physical(clip),
-                    )? {
-                        elements.push(SceneElement::RoundedSurface(window));
+                    let body_clip = if placement.tiled || ssd || entry.committed_fullscreen {
+                        physical(clip).intersection(physical(content))
+                    } else {
+                        Some(physical(clip))
+                    };
+                    if let Some(body_clip) = body_clip {
+                        elements.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|e| CropRenderElement::from_element(e, 1.0, body_clip))
+                                .map(SceneElement::Surface),
+                        );
+                    }
+                    let b = if entry.committed_fullscreen {
+                        0
+                    } else {
+                        theme.border_width
+                    };
+                    if b > 0 {
+                        for rect in square_border_regions(outline, clip, blur || ssd) {
+                            let buffer = SolidColorBuffer::new(rect.size, premultiply(color));
+                            elements.push(SceneElement::Border(
+                                SolidColorRenderElement::from_buffer(
+                                    &buffer,
+                                    (rect.loc.x, rect.loc.y),
+                                    1.0,
+                                    1.0,
+                                    Kind::Unspecified,
+                                ),
+                            ));
+                        }
                     }
                     groups.push(SceneGroup {
                         elements: start..elements.len(),
                         clip: physical(clip),
-                        mask: Some(BlurMask::Window(outline.outer)),
+                        mask: Some(BlurMask::SquareWindow(outline.outer)),
                     });
-                    continue;
                 }
-                // A client can commit an old or oversized buffer after a new configure.
-                // Constrain its body without clipping the separately rendered popups.
-                elements.extend(
-                    titlebar
-                        .into_iter()
-                        .filter_map(|bar| CropRenderElement::from_element(bar, 1.0, physical(clip)))
-                        .map(SceneElement::Titlebar),
-                );
-                let body_clip = if placement.tiled || ssd {
-                    physical(clip).intersection(physical(content))
-                } else {
-                    Some(physical(clip))
-                };
-                if let Some(body_clip) = body_clip {
-                    elements.extend(
-                        surfaces
-                            .into_iter()
-                            .filter_map(|e| CropRenderElement::from_element(e, 1.0, body_clip))
-                            .map(SceneElement::Surface),
-                    );
-                }
-                let b = theme.border_width;
-                if b > 0 {
-                    for rect in square_border_regions(outline, clip, blur || ssd) {
-                        let buffer = SolidColorBuffer::new(rect.size, premultiply(color));
-                        elements.push(SceneElement::Border(SolidColorRenderElement::from_buffer(
-                            &buffer,
-                            (rect.loc.x, rect.loc.y),
-                            1.0,
-                            1.0,
-                            Kind::Unspecified,
-                        )));
-                    }
-                }
-                groups.push(SceneGroup {
-                    elements: start..elements.len(),
-                    clip: physical(clip),
-                    mask: Some(BlurMask::SquareWindow(outline.outer)),
-                });
             }
         }
         self.layer_elements(
@@ -595,8 +683,22 @@ impl Compositor {
         elements: &mut Vec<SceneElement>,
         groups: &mut Vec<SceneGroup>,
     ) {
+        self.layer_elements_filtered(renderer, kinds, elements, groups, |_| true);
+    }
+
+    fn layer_elements_filtered(
+        &self,
+        renderer: &mut GlesRenderer,
+        kinds: &[Layer],
+        elements: &mut Vec<SceneElement>,
+        groups: &mut Vec<SceneGroup>,
+        include: impl Fn(OutputId) -> bool,
+    ) {
         for kind in kinds {
             for region in &self.outputs {
+                if !include(region.id) {
+                    continue;
+                }
                 let map = layer_map_for_output(&region.output);
                 for layer in map.layers_on(*kind).rev() {
                     let Some(geometry) = map.layer_geometry(layer) else {

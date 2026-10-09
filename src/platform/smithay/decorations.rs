@@ -1,10 +1,11 @@
 //! Decoration negotiation is separate from the mode of the committed client buffer.
 
+use super::rounded::{RoundedShape, WindowOutline};
 use super::{
     state::{Compositor, ManagedWindow},
     titlebar::content_rect,
 };
-use crate::core::Rect;
+use crate::{core::Rect, decoration::Theme};
 use smithay::{
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::{
@@ -114,7 +115,7 @@ impl ManagedWindow {
     /// XDG takes precedence over KDE through the first root commit after destruction.
     /// Without either protocol, this is CSD.
     pub fn uses_ssd(&self) -> bool {
-        if !self.mapped {
+        if !self.mapped || self.committed_fullscreen {
             return false;
         }
         let Some(top) = self.window.toplevel() else {
@@ -134,6 +135,22 @@ impl ManagedWindow {
                     .is_some_and(|(object, _)| object.is_alive());
             state.render_ssd(committed, kde)
         })
+    }
+
+    /// Committed fullscreen content has no compositor titlebar, border or corner cut-outs.
+    pub fn outline(&self, frame: Rect, theme: &Theme) -> WindowOutline {
+        if self.committed_fullscreen {
+            let shape = RoundedShape {
+                rect: frame,
+                radii: [0.0; 4],
+            };
+            WindowOutline {
+                outer: shape,
+                inner: shape,
+            }
+        } else {
+            WindowOutline::new(frame, theme)
+        }
     }
 
     /// Negotiated next mode for configure sizing, including before the first commit.
@@ -216,7 +233,12 @@ impl Compositor {
             entry.remember_frame(frame);
             let content = content_rect(
                 frame,
-                entry.pending_ssd(),
+                entry.pending_ssd()
+                    && !self
+                        .runtime
+                        .desktop
+                        .window(id)
+                        .map_or(entry.initial_fullscreen, |w| w.fullscreen),
                 self.runtime.config.theme.titlebar.height,
             );
             top.with_pending_state(|pending| {
