@@ -38,6 +38,8 @@ validation, command arguments, child environment, capture timing, and shutdown.
 ## Desktop behavior
 
 The [specification index](specs/README.md) is the canonical behavior reference.
+The [feature roadmap](ROADMAP.md) tracks proposed work separately from those
+implemented contracts.
 Use these component specs for workspace groups, layouts, floating geometry,
 focus, panel interactions, and window lifecycle:
 
