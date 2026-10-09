@@ -12,8 +12,13 @@ use std::{
 
 use serde::Deserialize;
 
+mod animations;
 mod shell;
 mod wallpaper;
+pub use animations::{
+    AnimationConfig, AnimationCurve, AnimationEffect, AnimationFrameRate, AnimationKind,
+    AnimationsConfig,
+};
 pub use shell::{PanelLayer, PanelRule, ShellConfig};
 pub use wallpaper::{WallpaperConfig, WallpaperMode, WallpaperOverride};
 
@@ -83,6 +88,8 @@ pub struct Config {
     pub shell: ShellConfig,
     /// Pointer behavior in the compositor-owned overview.
     pub overview: OverviewConfig,
+    /// Animation engine preferences; visible effects are not yet connected.
+    pub animations: AnimationsConfig,
 }
 
 impl Default for Config {
@@ -110,6 +117,7 @@ impl Default for Config {
             wallpaper: WallpaperConfig::default(),
             shell: ShellConfig::default(),
             overview: OverviewConfig::default(),
+            animations: AnimationsConfig::default(),
         }
     }
 }
@@ -126,6 +134,7 @@ struct Source {
     wallpaper: WallpaperConfig,
     shell: ShellConfig,
     overview: OverviewConfig,
+    animations: AnimationsConfig,
     keys: Keys,
 }
 
@@ -142,6 +151,7 @@ impl Default for Source {
             wallpaper: config.wallpaper,
             shell: config.shell,
             overview: config.overview,
+            animations: config.animations,
             keys: Keys::default(),
         }
     }
@@ -223,6 +233,7 @@ impl Config {
             wallpaper: source.wallpaper,
             shell: source.shell,
             overview: source.overview,
+            animations: source.animations,
         };
         config.validate()?;
         Ok(config)
@@ -283,6 +294,7 @@ impl Config {
         self.wallpaper.validate(&outputs)?;
         self.theme.validate()?;
         self.shell.validate()?;
+        self.animations.validate()?;
         Bindings::new(&self.bindings)?;
         Ok(())
     }

@@ -1,7 +1,12 @@
 //! Configuration and scripting orchestration, without Wayland or renderer types.
 
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
+pub mod animation;
 pub mod overview;
 pub use overview::{OverviewNavigation, OverviewSession, OverviewTarget};
 pub mod titlebar;
@@ -54,6 +59,9 @@ pub struct Runtime {
     pub overview: Option<OverviewSession>,
     /// Toggle request awaiting adapter grab/held-input authorization.
     pub overview_requested: bool,
+    /// Pure presentation tracks; the adapter does not yet create visual effects.
+    pub animations: animation::AnimationEngine,
+    animation_origin: Instant,
     config_path: Option<PathBuf>,
     script: Option<ScriptHost>,
     failed_functions: BTreeSet<String>,
@@ -82,6 +90,8 @@ impl Runtime {
 
     /// Construct policy from validated configuration, without creating any outputs.
     pub fn new(config: Config, config_path: Option<PathBuf>) -> Result<Self, String> {
+        let animations =
+            animation::AnimationEngine::new(config.animations.clone(), Duration::ZERO)?;
         let bindings = Bindings::new(&config.bindings)?;
         let script = load_script(&config).unwrap_or_else(|error| {
             eprintln!("clear: {error}; scripted layouts will use master_stack");
@@ -105,6 +115,8 @@ impl Runtime {
             switcher: None,
             overview: None,
             overview_requested: false,
+            animations,
+            animation_origin: Instant::now(),
             config_path,
             script,
             failed_functions: BTreeSet::new(),
@@ -184,6 +196,10 @@ impl Runtime {
         let script = load_script(&config)?;
         let wallpapers = Wallpapers::prepare(&config)?;
         let titlebar_assets = TitlebarAssets::prepare(&config.theme.titlebar)?;
+        self.animations.apply_config(
+            config.animations.clone(),
+            self.animation_time_at(Instant::now()),
+        )?;
         self.config = config;
         self.wallpapers = wallpapers;
         self.titlebar_assets = titlebar_assets;
@@ -193,6 +209,11 @@ impl Runtime {
         self.apply_config();
         eprintln!("clear: configuration reloaded");
         Ok(())
+    }
+
+    /// Convert an adapter's monotonic target timestamp into the engine's time domain.
+    pub fn animation_time_at(&self, target: Instant) -> Duration {
+        target.saturating_duration_since(self.animation_origin)
     }
 
     /// Execute a typed action, returning only the effects requiring platform IO.

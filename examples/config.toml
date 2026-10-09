@@ -15,6 +15,19 @@ leader = "Super" # Also accepts modifier combinations, e.g. "Ctrl+Alt".
 # Clicking a desktop activates it; enable this only for hover-driven previews.
 preview_workspace_on_hover = false
 
+# Engine preferences are accepted; visual effects are not yet connected.
+# See specs/animations.md. Motion remains off by default pending visual/input checks.
+# [animations]
+# enabled = false
+# reduced_motion = false
+# speed = 1.0 # 2 is twice as fast; 0.5 is half as fast.
+# frame_rate = "refresh-rate" # Or the integer 30, 60, or 120.
+# [animations.window_open]
+# kind = "easing"
+# duration_ms = 150
+# curve = "ease-out-expo"
+# scale = 1.04
+
 # Shell rules only classify clients; no autostart or launcher/panel toggles.
 # Each array replaces its default; [] disables that policy. Matching is exact.
 [shell]

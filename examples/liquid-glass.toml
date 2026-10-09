@@ -4,6 +4,12 @@
 # Glass panels: dbus-run-session -- target/debug/clear --config examples/liquid-glass.toml --command quickshell -p examples/quickshell/liquid-glass.qml
 gaps = 24
 
+# Engine preferences only; visual effects are not yet connected. See specs/animations.md.
+# [animations]
+# enabled = false
+# speed = 1.0
+# frame_rate = "refresh-rate" # Or integer 30, 60, or 120; never changes the display mode.
+
 [[outputs]]
 name = "virtual-1"
 width = 1280

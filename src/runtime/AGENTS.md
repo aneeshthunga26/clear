@@ -12,6 +12,11 @@ objects out of this module; return effects for the platform to execute.
   move explicit window IDs without incidental focus/reveal. Commit through core
   commands, never compute hidden placements. The adapter authorizes queued toggles.
   See [overview](../../specs/overview.md) for lifecycle and input requirements.
+- `animation.rs` owns the pure monotonic clock, closed-form pose tracks, group IDs,
+  and bounded track storage. Keep policy, surfaces, and GPU resources outside it.
+  Convert adapter timestamps through the runtime's absolute monotonic origin.
+  Reload preparation must finish before clock rebasing/settlement; see
+  [animations](../../specs/animations.md). Visible effects are not yet connected.
 - Startup may fall back to safe defaults. Reload must prepare and validate the
   candidate config, bindings, and script host before replacing live state.
   Rejected reloads retain the last good configuration and behavior.

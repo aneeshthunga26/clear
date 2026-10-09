@@ -15,6 +15,9 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   theme background. Reject empty paths, unknown modes/outputs/fields.
 - `shell.rs`: exact app-ID launcher matching and namespace-to-panel-layer rules.
   These declarations describe placement, not autostart or process toggles.
+- `animations.rs`: strict global/per-effect preferences and kind-specific validation;
+  [animations](../../specs/animations.md) owns defaults, accepted ranges, and the
+  distinction between accepted engine settings and unconnected visual effects.
 
 ## Invariants
 
