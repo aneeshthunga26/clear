@@ -109,6 +109,15 @@ fn assert_invariants(desktop: &Desktop) {
         desktop.focused_window().into_iter().collect::<Vec<_>>()
     );
     for placement in placements {
+        let window = desktop.window(placement.window).unwrap();
+        if window.fullscreen {
+            let bounds = desktop.output(window.output.unwrap()).unwrap().bounds;
+            assert!(!bounds.is_empty());
+            assert_eq!(placement.rect, bounds);
+            assert_eq!(placement.clip, Some(bounds));
+            assert!(!placement.tiled);
+            assert_eq!(window.role, WindowRole::Normal);
+        }
         assert_eq!(placement.rect, placement.rect.normalized());
         if let Some(clip) = placement.clip {
             assert_eq!(clip, clip.normalized());
@@ -1706,7 +1715,7 @@ fn deterministic_random_commands_preserve_all_global_invariants() {
             7 => Mode::Monocle,
             _ => Mode::Script("test".into()),
         };
-        match (state >> 16) % 28 {
+        match (state >> 16) % 31 {
             0 => output(&mut desktop, output_id.0),
             1 => desktop.remove_output(output_id),
             2 | 3 => window(&mut desktop, id),
@@ -1777,10 +1786,273 @@ fn deterministic_random_commands_preserve_all_global_invariants() {
             27 => {
                 desktop.command(Command::SetMinimized(WindowId(id), state & 1 != 0));
             }
+            28 => {
+                desktop.command(Command::ToggleFullscreen);
+            }
+            29 => {
+                desktop.command(Command::SetFullscreen(WindowId(id), state & 1 != 0));
+            }
+            30 => desktop.set_output_bounds(
+                output_id,
+                Rect::new(
+                    -500,
+                    -100,
+                    (step % 1300 + 1) as i32,
+                    (step % 900 + 1) as i32,
+                ),
+            ),
             _ => {
                 desktop.command(Command::CycleOutput);
             }
         }
         assert_invariants(&desktop);
     }
+}
+
+#[test]
+fn fullscreen_uses_full_home_bounds_and_preserves_every_modes_restore_state() {
+    for mode in [
+        Mode::Floating,
+        Mode::Scrolling,
+        Mode::MasterStack,
+        Mode::Columns,
+        Mode::Rows,
+        Mode::Grid,
+        Mode::Spiral,
+        Mode::Monocle,
+        Mode::Script("fallback".into()),
+    ] {
+        let mut d = populated(3);
+        let bounds = Rect::new(-20, -30, 1020, 830);
+        let area = Rect::new(0, 50, 900, 700);
+        d.add_output_with_bounds(OutputId(1), "reserved".into(), bounds, area);
+        d.command(Command::SetWorkspaceMode(mode));
+        let saved = Rect::new(-800, -600, 1500, 1200);
+        d.command(Command::SetFloatingRect(WindowId(3), saved));
+        let before = d.placements();
+        let state = d.window(WindowId(3)).unwrap().clone();
+        let order = d.workspace(WorkspaceId(1)).unwrap().windows().to_vec();
+        d.command(Command::ToggleFullscreen);
+        let p = d.placements().pop().unwrap();
+        assert_eq!(p.window, WindowId(3));
+        assert_eq!(p.rect, bounds);
+        assert_eq!(p.clip, Some(bounds));
+        assert!(!p.tiled);
+        assert!(p.focused);
+        assert_eq!(d.window(WindowId(3)).unwrap().floating_rect, saved);
+        d.set_window_committed_size(WindowId(3), 1020, 830);
+        d.command(Command::ToggleFullscreen);
+        assert_eq!(d.placements(), before);
+        let restored = d.window(WindowId(3)).unwrap();
+        assert_eq!(restored.output, state.output);
+        assert_eq!(restored.workspace, state.workspace);
+        assert_eq!(restored.floating, state.floating);
+        assert_eq!(d.workspace(WorkspaceId(1)).unwrap().windows(), order);
+    }
+}
+
+#[test]
+fn fullscreen_bounds_are_independent_of_reservations_and_repair_on_topology_changes() {
+    let mut d = populated(3);
+    let full = Rect::new(0, 0, 1000, 800);
+    d.command(Command::ToggleFullscreen);
+    d.set_output_area(OutputId(1), Rect::new(0, 90, 1000, 710));
+    assert_eq!(d.placements().last().unwrap().rect, full);
+    let changed = Rect::new(-100, -200, 800, 600);
+    d.set_output_bounds(OutputId(1), changed);
+    assert_eq!(d.placements().last().unwrap().rect, changed);
+    let right = Rect::new(1000, -50, 600, 900);
+    d.add_output_with_bounds(
+        OutputId(2),
+        "right".into(),
+        right,
+        Rect::new(1000, -10, 600, 860),
+    );
+    d.command(Command::StretchAll);
+    d.command(Command::MoveToOutput(OutputId(2)));
+    assert_eq!(d.placements().last().unwrap().rect, right);
+    assert_eq!(d.window(WindowId(3)).unwrap().output, Some(OutputId(2)));
+    d.remove_output(OutputId(2));
+    assert_eq!(d.placements().last().unwrap().rect, changed);
+    d.remove_output(OutputId(1));
+    assert!(d.placements().is_empty());
+    assert_eq!(d.focused_window(), None);
+    assert!(d.window(WindowId(3)).unwrap().fullscreen);
+    d.add_output_with_bounds(OutputId(1), "returned".into(), full, full);
+    assert_eq!(d.placements().last().unwrap().rect, full);
+    assert_eq!(d.placements().last().unwrap().window, WindowId(3));
+}
+
+#[test]
+fn fullscreen_preserves_underlying_maximize_and_minimize_interleavings() {
+    let mut d = populated(3);
+    let area = Rect::new(0, 40, 1000, 760);
+    d.set_output_area(OutputId(1), area);
+    d.command(Command::SetFullscreen(WindowId(3), true));
+    d.command(Command::SetMaximized(WindowId(3), true));
+    assert_eq!(
+        d.placements().last().unwrap().rect,
+        Rect::new(0, 0, 1000, 800)
+    );
+    d.command(Command::SetMinimized(WindowId(3), true));
+    assert!(!ids(&d.placements()).contains(&WindowId(3)));
+    assert!(d.window(WindowId(3)).unwrap().fullscreen);
+    assert!(d.window(WindowId(3)).unwrap().maximized);
+    d.command(Command::SwitchWorkspace(WorkspaceId(2)));
+    d.command(Command::SwitchWorkspace(WorkspaceId(1)));
+    assert!(d.window(WindowId(3)).unwrap().minimized);
+    d.command(Command::Focus(WindowId(3)));
+    assert_eq!(
+        d.placements().last().unwrap().rect,
+        Rect::new(0, 0, 1000, 800)
+    );
+    d.command(Command::SetFullscreen(WindowId(3), false));
+    assert_eq!(d.placements().last().unwrap().rect, area);
+    d.command(Command::SetFullscreen(WindowId(3), true));
+    d.command(Command::SetMaximized(WindowId(3), false));
+    d.command(Command::SetMinimized(WindowId(3), true));
+    d.command(Command::SetFullscreen(WindowId(3), false));
+    assert!(d.window(WindowId(3)).unwrap().minimized);
+    d.command(Command::SetMinimized(WindowId(3), false));
+    assert!(!d.window(WindowId(3)).unwrap().maximized);
+    assert!(
+        d.placements()
+            .iter()
+            .find(|p| p.window == WindowId(3))
+            .unwrap()
+            .tiled
+    );
+}
+
+#[test]
+fn fullscreen_and_launcher_reclassification_preserve_state_but_reject_unsupported_flags() {
+    let mut d = populated(3);
+    let saved = d.window(WindowId(3)).unwrap().floating_rect;
+    d.command(Command::SetFullscreen(WindowId(3), true));
+    d.command(Command::SetMaximized(WindowId(3), true));
+    d.command(Command::SetMinimized(WindowId(3), true));
+    d.set_window_role(WindowId(3), WindowRole::Launcher);
+    for id in [WindowId(3), WindowId(999)] {
+        d.command(Command::SetFullscreen(id, true));
+    }
+    d.command(Command::Focus(WindowId(3)));
+    d.command(Command::ToggleFullscreen);
+    let w = d.window(WindowId(3)).unwrap();
+    assert!(!w.fullscreen && !w.maximized && !w.minimized);
+    assert_eq!(w.floating_rect, saved);
+    assert_eq!(w.workspace, WorkspaceId(1));
+    d.remove_window(WindowId(3));
+    window(&mut d, 3);
+    assert!(!d.window(WindowId(3)).unwrap().fullscreen);
+}
+
+#[test]
+fn fullscreen_script_exclusion_and_stack_are_deterministic() {
+    let mut d = populated(4);
+    d.command(Command::SetWorkspaceMode(Mode::Script("test".into())));
+    d.command(Command::SetFullscreen(WindowId(1), true));
+    d.command(Command::SetFullscreen(WindowId(3), true));
+    d.command(Command::SetMaximized(WindowId(2), true));
+    let mut calls = 0;
+    let p = d.placements_with(|_, context| {
+        calls += 1;
+        assert_eq!(
+            context.windows.iter().map(|w| w.id).collect::<Vec<_>>(),
+            vec![WindowId(4)]
+        );
+        None
+    });
+    assert_eq!(calls, 1);
+    assert_eq!(
+        p.iter().map(|p| p.window).collect::<Vec<_>>(),
+        vec![WindowId(2), WindowId(4), WindowId(1), WindowId(3)]
+    );
+    d.command(Command::Focus(WindowId(1)));
+    assert_eq!(d.placements().last().unwrap().window, WindowId(1));
+    d.command(Command::Focus(WindowId(4)));
+    assert_eq!(d.placements().last().unwrap().window, WindowId(3));
+    d.set_window_role(WindowId(2), WindowRole::Launcher);
+    assert_eq!(d.placements().last().unwrap().window, WindowId(2));
+    let first = d.placements();
+    assert_eq!(first, d.placements());
+}
+
+#[test]
+fn fullscreen_on_hidden_or_headless_windows_does_not_reveal_or_transfer_them() {
+    let mut d = Desktop::new();
+    window(&mut d, 1);
+    d.command(Command::SetFullscreen(WindowId(1), true));
+    assert!(d.placements().is_empty());
+    output(&mut d, 1);
+    assert_eq!(
+        d.placements().last().unwrap().rect,
+        Rect::new(0, 0, 1000, 800)
+    );
+    d.command(Command::SwitchWorkspace(WorkspaceId(2)));
+    window(&mut d, 2);
+    d.command(Command::SetFullscreen(WindowId(1), false));
+    d.command(Command::SetFullscreen(WindowId(1), true));
+    assert_eq!(d.focused_window(), Some(WindowId(2)));
+    assert_eq!(d.workspace_for_output(OutputId(1)), Some(WorkspaceId(2)));
+    assert_eq!(d.window(WindowId(1)).unwrap().workspace, WorkspaceId(1));
+    d.command(Command::Focus(WindowId(1)));
+    assert_eq!(
+        d.placements().last().unwrap().rect,
+        Rect::new(0, 0, 1000, 800)
+    );
+}
+
+#[test]
+fn full_bounds_validation_is_atomic_and_legacy_empty_areas_remain_supported() {
+    let mut d = populated(1);
+    let before = format!("{d:?}");
+    let empty = Rect::new(i32::MAX, i32::MAX, 100, 100);
+    d.set_output_bounds(OutputId(1), empty);
+    d.add_output_with_bounds(OutputId(1), "invalid rename".into(), empty, empty);
+    d.add_output_with_bounds(OutputId(2), "invalid new".into(), empty, empty);
+    d.set_output_bounds(OutputId(999), Rect::new(0, 0, 20, 20));
+    assert_eq!(format!("{d:?}"), before);
+    d.add_output(OutputId(1), "empty update".into(), Rect::default());
+    assert_eq!(
+        d.output(OutputId(1)).unwrap().bounds,
+        Rect::new(0, 0, 1000, 800)
+    );
+    d.command(Command::ToggleFullscreen);
+    assert_eq!(
+        d.placements().last().unwrap().rect,
+        Rect::new(0, 0, 1000, 800)
+    );
+    let mut empty_desktop = Desktop::new();
+    empty_desktop.add_output(OutputId(1), "legacy empty".into(), Rect::default());
+    assert!(empty_desktop.output(OutputId(1)).is_some());
+    window(&mut empty_desktop, 1);
+    empty_desktop.command(Command::ToggleFullscreen);
+    assert!(empty_desktop.placements().is_empty());
+    empty_desktop.set_output_bounds(OutputId(1), Rect::new(0, 0, 10, 10));
+    assert_eq!(
+        empty_desktop.placements().last().unwrap().rect,
+        Rect::new(0, 0, 10, 10)
+    );
+}
+
+#[test]
+fn fullscreen_invalidates_region_resize_even_after_reversal_without_erasing_proportions() {
+    let mut d = populated(3);
+    d.command(Command::SetWorkspaceMode(Mode::Columns));
+    let edges = ResizeEdges {
+        right: true,
+        ..Default::default()
+    };
+    let session = d.begin_resize(WindowId(1), edges).unwrap();
+    assert!(d.update_resize(&session, 130, 0));
+    let before = d.placements();
+    d.command(Command::SetFullscreen(WindowId(1), true));
+    assert!(d.begin_resize(WindowId(1), edges).is_none());
+    assert!(!d.update_resize(&session, 140, 0));
+    d.command(Command::SetFullscreen(WindowId(1), false));
+    assert!(!d.update_resize(&session, 140, 0));
+    assert_eq!(d.placements(), before);
+    let neighbor = d.begin_resize(WindowId(1), edges).unwrap();
+    d.command(Command::SetFullscreen(WindowId(3), true));
+    assert!(!d.update_resize(&neighbor, 20, 0));
 }

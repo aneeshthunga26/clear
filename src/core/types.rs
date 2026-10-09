@@ -106,7 +106,7 @@ pub enum WindowRole {
 pub struct LayoutContext {
     /// Usable output area, already excluding host-managed reservations.
     pub area: Rect,
-    /// Layout participants in stable order, excluding launchers, minimized/maximized
+    /// Layout participants in stable order, excluding launchers, minimized/maximized/fullscreen
     /// windows, and tiled-mode floating exceptions.
     pub windows: Vec<LayoutWindow>,
     /// Globally focused window, if it belongs to this region.
@@ -178,10 +178,14 @@ pub enum Command {
     ToggleFloating,
     /// Toggle maximization of the focused normal window within its usable output.
     ToggleMaximized,
+    /// Toggle fullscreen on the focused normal window within its full home output.
+    ToggleFullscreen,
     /// Hide the focused normal window without unmapping or discarding its state.
     MinimizeFocused,
     /// Set maximization without changing focus, floating state, or saved geometry.
     SetMaximized(WindowId, bool),
+    /// Set fullscreen without changing focus or the underlying maximized restore state.
+    SetFullscreen(WindowId, bool),
     /// Set minimization; restoring this way does not reveal its workspace or focus it.
     SetMinimized(WindowId, bool),
     /// Scroll the active scrolling region by logical pixels, clamped to its content.
@@ -207,14 +211,16 @@ pub enum Effect {
     Quit,
 }
 
-/// A connected output and its usable geometry.
+/// A connected output with separate full and usable logical geometry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     /// Stable platform identity.
     pub id: OutputId,
     /// Human-readable connector name.
     pub name: String,
-    /// Usable logical geometry.
+    /// Full logical bounds including reservations; legacy empty outputs may lack bounds.
+    pub bounds: Rect,
+    /// Usable logical geometry after reservations; may be empty.
     pub area: Rect,
 }
 
@@ -248,6 +254,8 @@ pub struct Window {
     pub floating: bool,
     /// Fill the home output's usable area, independently of saved layout state.
     pub maximized: bool,
+    /// Fill the full home output, preserving the underlying maximized restore state.
+    pub fullscreen: bool,
     /// Hidden from placements and ordinary focus cycling; explicit focus restores it.
     pub minimized: bool,
     /// Saved geometry, not overwritten by tiling or temporary output constraints.

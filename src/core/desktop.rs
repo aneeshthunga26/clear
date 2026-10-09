@@ -101,10 +101,32 @@ impl Desktop {
     }
 
     /// Connects an output with an unused workspace, restoring its disconnected presentation if free.
-    /// Repeated IDs update metadata without changing topology.
+    /// Full bounds initially equal the usable area; an empty update retains prior bounds.
+    /// Repeated IDs update metadata without changing topology. A newly connected empty
+    /// area has no full bounds until positive geometry is supplied.
     pub fn add_output(&mut self, id: OutputId, name: String, area: Rect) {
+        let area = area.normalized();
+        let bounds = if area.is_empty() {
+            self.outputs.get(&id).map_or(area, |output| output.bounds)
+        } else {
+            area
+        };
+        self.connect_output(id, name, bounds, area);
+    }
+
+    /// Connects or updates an output with full bounds separate from its usable area.
+    /// Empty normalized full bounds are ignored without changing metadata or topology.
+    pub fn add_output_with_bounds(&mut self, id: OutputId, name: String, bounds: Rect, area: Rect) {
+        let bounds = bounds.normalized();
+        if !bounds.is_empty() {
+            self.connect_output(id, name, bounds, area);
+        }
+    }
+
+    fn connect_output(&mut self, id: OutputId, name: String, bounds: Rect, area: Rect) {
         if let Some(output) = self.outputs.get_mut(&id) {
             output.name = name;
+            output.bounds = bounds;
             output.area = area.normalized();
             self.settle(true);
             return;
@@ -124,6 +146,7 @@ impl Desktop {
             Output {
                 id,
                 name,
+                bounds,
                 area: area.normalized(),
             },
         );
@@ -162,6 +185,18 @@ impl Desktop {
         }
     }
 
+    /// Updates full logical bounds while retaining usable area and saved window state.
+    /// Unknown outputs and empty normalized bounds are ignored.
+    pub fn set_output_bounds(&mut self, id: OutputId, bounds: Rect) {
+        let bounds = bounds.normalized();
+        if !bounds.is_empty() {
+            if let Some(output) = self.outputs.get_mut(&id) {
+                output.bounds = bounds;
+                self.settle(false);
+            }
+        }
+    }
+
     /// Adds and focuses a window in the active workspace and region.
     /// Repeated IDs update metadata without resetting persistent window state.
     pub fn add_window(&mut self, id: WindowId, title: String, app_id: String) {
@@ -190,6 +225,7 @@ impl Desktop {
                 committed_size: None,
                 floating: false,
                 maximized: false,
+                fullscreen: false,
                 minimized: false,
                 floating_rect,
             },
@@ -240,6 +276,7 @@ impl Desktop {
                 window.role = role;
                 if role == WindowRole::Launcher {
                     window.maximized = false;
+                    window.fullscreen = false;
                     window.minimized = false;
                 }
                 self.settle(false);
@@ -294,6 +331,7 @@ impl Desktop {
             Command::Focus(id)
             | Command::SetFloatingRect(id, _)
             | Command::SetMaximized(id, _)
+            | Command::SetFullscreen(id, _)
             | Command::SetMinimized(id, _) => self.windows.contains_key(id),
             Command::FocusOutput(id) | Command::MoveToOutput(id) => self.outputs.contains_key(id),
             Command::SwitchWorkspace(id) | Command::MoveToWorkspace(id) => {
@@ -417,6 +455,13 @@ impl Desktop {
                     }
                 }
             }
+            Command::ToggleFullscreen => {
+                if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
+                    if window.role == WindowRole::Normal {
+                        window.fullscreen = !window.fullscreen;
+                    }
+                }
+            }
             Command::MinimizeFocused => {
                 if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
                     if window.role == WindowRole::Normal {
@@ -429,6 +474,14 @@ impl Desktop {
                 if let Some(window) = self.windows.get_mut(&id) {
                     if window.role == WindowRole::Normal {
                         window.maximized = maximized;
+                    }
+                }
+            }
+            Command::SetFullscreen(id, fullscreen) => {
+                reveal = false;
+                if let Some(window) = self.windows.get_mut(&id) {
+                    if window.role == WindowRole::Normal {
+                        window.fullscreen = fullscreen;
                     }
                 }
             }
@@ -475,8 +528,8 @@ impl Desktop {
     /// Computes each region independently, calling the host only for script modes.
     /// `None` or a result with missing, duplicate, or foreign windows falls back to master-stack.
     /// The host owns script evaluation and detailed geometry validation. Floating exceptions
-    /// and launchers bypass the callback, as do maximized and minimized windows.
-    /// Tiles precede floats and maximized windows; launchers remain above them all.
+    /// and launchers bypass the callback, as do maximized, fullscreen, and minimized windows.
+    /// Tiles precede floats, maximized windows, and fullscreen; launchers remain above them all.
     /// Focus can raise a normal window above a maximized neighbor on its output.
     pub fn placements_with(
         &self,
@@ -513,9 +566,11 @@ impl Desktop {
             }
             region.extend(
                 self.region_windows(workspace, output)
+                    .filter(|window| !window.fullscreen || !metadata.bounds.is_empty())
                     .filter(|window| {
                         window.role == WindowRole::Launcher
                             || window.maximized
+                            || window.fullscreen
                             || (window.floating && !matches!(mode, Mode::Floating))
                     })
                     .map(|window| {
@@ -525,6 +580,8 @@ impl Desktop {
                                 window.floating_rect.height,
                             ));
                             metadata.area.centered_unbounded(width, height)
+                        } else if window.fullscreen {
+                            metadata.bounds
                         } else if window.maximized {
                             metadata.area
                         } else {
@@ -533,7 +590,11 @@ impl Desktop {
                         Placement {
                             window: window.id,
                             rect,
-                            clip: window.maximized.then_some(metadata.area),
+                            clip: if window.fullscreen {
+                                Some(metadata.bounds)
+                            } else {
+                                window.maximized.then_some(metadata.area)
+                            },
                             focused: self.focused_window == Some(window.id),
                             tiled: false,
                         }
@@ -557,6 +618,8 @@ impl Desktop {
         placements.sort_by_key(|placement| {
             let window = &self.windows[&placement.window];
             if window.role == WindowRole::Launcher {
+                (5, placement.focused)
+            } else if window.fullscreen {
                 (4, placement.focused)
             } else if placement.focused
                 && window
@@ -637,6 +700,7 @@ impl Desktop {
             .filter(|window| {
                 window.role == WindowRole::Normal
                     && !window.maximized
+                    && !window.fullscreen
                     && (!window.floating || matches!(mode, Mode::Floating))
             })
             .map(|window| LayoutWindow {

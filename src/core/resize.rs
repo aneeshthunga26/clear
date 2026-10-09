@@ -36,7 +36,7 @@ pub(super) struct ResizeEnvironment {
     area: Rect,
     gaps: i32,
     group: Vec<OutputId>,
-    members: Vec<(WindowId, bool, WindowRole, bool, bool)>,
+    members: Vec<(WindowId, bool, WindowRole, bool, bool, bool)>,
 }
 
 /// Opaque baseline for a resize gesture. Drop it to end or cancel the gesture.
@@ -88,6 +88,7 @@ impl Desktop {
         let workspace = window.workspace;
         if window.role != WindowRole::Normal
             || window.maximized
+            || window.fullscreen
             || window.minimized
             || self.workspace_for_output(output) != Some(workspace)
         {
@@ -353,6 +354,7 @@ impl Desktop {
                                 window.floating,
                                 window.role,
                                 window.maximized,
+                                window.fullscreen,
                                 window.minimized,
                             )
                         })

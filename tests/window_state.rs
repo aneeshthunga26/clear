@@ -62,7 +62,7 @@ fn maximize_restore_preserves_every_modes_saved_state_and_order() {
 }
 
 #[test]
-fn resized_tile_proportions_return_after_maximize_and_minimize() {
+fn resized_tile_proportions_return_after_maximize_minimize_and_fullscreen() {
     let mut d = desktop(Mode::Columns);
     let edges = ResizeEdges {
         right: true,
@@ -74,12 +74,14 @@ fn resized_tile_proportions_return_after_maximize_and_minimize() {
     for command in [
         Command::SetMaximized(WindowId(1), true),
         Command::SetMinimized(WindowId(1), true),
+        Command::SetFullscreen(WindowId(1), true),
     ] {
         d.command(command);
         assert!(!d.update_resize(&session, 130, 0));
         assert!(d.begin_resize(WindowId(1), edges).is_none());
         d.command(Command::SetMaximized(WindowId(1), false));
         d.command(Command::SetMinimized(WindowId(1), false));
+        d.command(Command::SetFullscreen(WindowId(1), false));
         assert_eq!(d.placements(), before);
     }
 }

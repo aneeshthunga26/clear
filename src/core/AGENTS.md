@@ -46,13 +46,20 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   committed size in their home output's usable area without shrinking them or
   changing saved floating state. Role classification belongs to runtime.
 - Maximize/minimize are independent window flags, not modes or client unmaps.
-  Both exclude normal layout inputs without erasing saved geometry, order, or
-  proportions. Maximized rectangles use only the home output's usable area.
+  Fullscreen is an independent third flag preserving underlying maximize state.
+  All exclude normal layout inputs without erasing saved geometry, order, or
+  proportions. Maximized rectangles use only the home output's usable area;
+  fullscreen uses only its full bounds, never a stretched group's bounds.
   Minimized windows have no placements, focus-cycle entries, or remembered-focus
   eligibility. Explicit focus restores them; workspace switching does not.
-  Launchers reject these states, and launcher reclassification clears both.
-- Placements are back-to-front: tiles, floats, maximized windows, then launchers.
-  A focused normal window can rise above a maximized neighbor on its visible output.
+  Launchers reject these states, and launcher reclassification clears all three.
+  Full bounds and usable output area are independent. Full-bounds setters reject
+  empty normalized rectangles; retain the legacy empty-output behavior without
+  emitting empty fullscreen placements. See [desktop](../../specs/desktop.md#fullscreen).
+- Placements are back-to-front: tiles, floats, maximized windows, fullscreen,
+  then launchers. A focused normal window can rise above a maximized neighbor on
+  its visible output, but remains below fullscreen. Focused fullscreen rises above
+  other fullscreen windows; stable policy order resolves the rest.
   The adapter owns protocol layer stacking and visible output-group clips.
 - Keep custom-layout result validation and built-in fallback at this boundary,
   even though the scripting host also validates its output.

@@ -39,7 +39,17 @@ focus and sizing entries, including entries retained in other workspaces/modes.
   keeps that workspace visible. Disconnecting everything MUST retain policy state
   for reconnection.
 
-The core accepts arbitrary logical output rectangles. Current runtime topology
+Outputs retain separate full `bounds` and usable `area` rectangles. Normal layouts,
+launchers, and maximized windows use `area`; fullscreen uses `bounds`.
+`add_output_with_bounds` and `set_output_bounds` normalize full bounds and MUST
+ignore empty results atomically, including metadata and topology changes. Updating
+usable area MUST NOT overwrite full bounds or saved floating geometry. Usable area
+MAY be empty when entirely reserved. The legacy `add_output` initializes both
+rectangles from its area; an empty update retains existing full bounds. A newly
+added empty legacy output has no fullscreen placement until valid bounds arrive.
+Repeated valid output IDs update metadata/geometry without changing presentation.
+
+The core accepts arbitrary logical output origins. Current runtime topology
 and backend limits are defined in [configuration](configuration.md#reload) and
 [platform](platform.md#virtual-outputs).
 
@@ -92,10 +102,11 @@ without changing the floating flag. See [surface clipping](platform.md#scene-and
 for the limits on their visible/input regions.
 
 Floating exceptions do not consume tiles or scrolling content in tiled modes.
-Launcher roles and maximized/minimized windows are also excluded from normal
-layout inputs. Placement order is back-to-front: tiles, normal floats, maximized
-windows, then launchers. A focused normal window may rise above a maximized
-neighbor on its output; launchers remain above all normal windows.
+Launcher roles and maximized/minimized/fullscreen windows are also excluded from
+normal layout inputs. Placement order is back-to-front: tiles, normal floats,
+maximized windows, fullscreen windows, then launchers. A focused normal window
+may rise above a maximized neighbor on its output; fullscreen remains above that
+window. Launchers remain above all normal windows, including fullscreen.
 
 ## Maximize and minimize
 
@@ -116,10 +127,53 @@ revealing its workspace or focusing it; ordinary focus repair can select it if n
 other suitable focus exists. Explicit focus or accepting Alt-Tab restores and
 focuses the selected window.
 
-Launchers reject maximize/minimize. Late classification as a launcher clears
-both flags while preserving ownership, order, and saved floating state. Launcher
+Launchers reject maximize/minimize/fullscreen. Late classification as a launcher
+clears all three flags while preserving ownership, order, and saved floating state. Launcher
 classification and sizing are specified in [configuration](configuration.md#shell-rules)
 and [platform](platform.md#launcher-geometry).
+
+## Fullscreen
+
+Fullscreen is an independent normal-window policy flag exposed by
+`ToggleFullscreen` for the focused window and `SetFullscreen(window, bool)` for
+an explicit window. Setters MUST NOT reveal a hidden workspace, transfer ownership,
+restore minimized state, or explicitly focus the window. Invalid IDs and launcher
+roles are harmless no-ops. A headless or hidden window MAY retain the flag before
+it receives a visible output placement.
+
+A visible fullscreen window MUST occupy and clip to its home output's full,
+nonempty `bounds`, without panel reservations or layout gaps. It MUST NOT span a
+stretched output group. Bounds updates and ordinary topology/home repair determine
+its current rectangle; disconnecting all outputs retains its flags and saved
+state while producing no placements. Empty full bounds produce no fullscreen
+placement, rather than an invalid size.
+
+Fullscreen MUST preserve workspace order, floating state, saved floating geometry,
+persistent layout proportions, and the underlying maximized flag. Setting or
+toggling maximize during fullscreen updates the restore state without changing
+fullscreen placement. Minimization hides fullscreen and preserves both fullscreen
+and maximized flags; explicit focus restores it to fullscreen. Exiting fullscreen
+while minimized leaves it minimized. Exiting while visible restores to maximized
+usable area or the current ordinary layout/saved floating rectangle as appropriate.
+Newly remapped windows start with fullscreen disabled.
+
+Fullscreen MUST bypass normal built-in and custom layout inputs, including
+scrolling content. Entering or leaving fullscreen invalidates resize sessions in
+its region, including a session that outlives a fullscreen/restore round trip.
+A fullscreen window cannot start an interactive resize. Layout proportions remain
+retained for restoration.
+
+Multiple fullscreen windows use deterministic stable placement order, with the
+globally focused fullscreen window placed above other fullscreen windows. Focusing
+an ordinary or maximized window does not lift it above fullscreen. Launchers still
+stack above fullscreen at the core boundary. Protocol layer ordering and hit
+authorization belong to the adapter.
+
+This section specifies desktop policy. XDG request/state handling, protocol
+capability advertisement, requested versus committed geometry, layer stacking,
+and decoration behavior are separately specified in [platform](platform.md) and
+[decorations](decorations.md); a core command alone does not establish those
+capabilities or animated presentation.
 
 ## Implementation and evidence
 
@@ -127,8 +181,12 @@ and [platform](platform.md#launcher-geometry).
   [geometry](../src/core/geometry.rs).
 - [Core tests](../tests/core.rs): workspace swaps, stretched groups, disconnected
   outputs, hidden windows, focus restoration, saved geometry, clipping inputs,
-  and deterministic random-command invariants.
+  and deterministic random-command invariants. Fullscreen cases cover every mode,
+  saved geometry/order, full versus reserved bounds, stretched home output repair,
+  headless/hidden setters, maximize/minimize interleavings, deterministic stacking,
+  launcher rejection, positive bounds validation, and persistent resize proportions.
 - [Window-state tests](../tests/window_state.rs): preservation across every mode,
-  minimized focus behavior, maximize reservations, role changes, and shell setters.
+  minimized focus behavior, maximize reservations, role changes, shell setters,
+  and resize-session cancellation/restoration across fullscreen.
 - [Window-state fixture](../scripts/vm-window-state-smoke.py): protocol and GPU
   assertions; it does not synthesize physical keyboard or pointer input.
