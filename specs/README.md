@@ -19,7 +19,7 @@ permission to change behavior silently.
 | [Layouts and resizing](layouts.md) | Built-in geometry, scrolling, persistent proportions, resize sessions |
 | [Desktop overview](overview.md) | Compositor-owned preview, navigation, input ownership and bounded live cards |
 | [Input and actions](input.md) | Shortcut parsing, action schema, default bindings, gestures, Alt-Tab |
-| [Animation foundation](animations.md) | Strict preferences, clock and bounded pose tracks; visual effects remain pending |
+| [Animation foundation](animations.md) | Strict preferences, clock, bounded pose tracks and pure presentation planner; scene effects remain pending |
 | [Configuration and runtime](configuration.md) | TOML schema, defaults, startup fallback, atomic reload, orchestration |
 | [Rhai extensions](scripting.md) | Layout/action interfaces, validation, execution limits, fallback |
 | [Platform and surfaces](platform.md) | CLI, nested outputs, mapping/configures, clipping, layer-shell lifecycle |

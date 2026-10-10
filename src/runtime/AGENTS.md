@@ -17,6 +17,15 @@ objects out of this module; return effects for the platform to execute.
   Convert adapter timestamps through the runtime's absolute monotonic origin.
   Reload preparation must finish before clock rebasing/settlement; see
   [animations](../../specs/animations.md). Visible effects are not yet connected.
+- `presentation.rs` owns pure validated snapshot diffs, retained-image request IDs,
+  workspace/window transition tracks, and immutable sampled frames. Policy and
+  GPU ownership stay with core and the adapter. Only acknowledge actual submitted
+  draws, preserving captured phase and opaque track revision metadata; retirement
+  requires an acknowledged terminal frame, even after config settlement.
+  `is_animating` includes a pending final redraw. Keep overview composition and
+  adapter input transforms outside the planner. See
+  [animations](../../specs/animations.md#pure-presentation-planning); these pure
+  frames are not yet consumed by the renderer.
 - Startup may fall back to safe defaults. Reload must prepare and validate the
   candidate config, bindings, and script host before replacing live state.
   Rejected reloads retain the last good configuration and behavior.
@@ -78,7 +87,9 @@ objects out of this module; return effects for the platform to execute.
 
 ## Verification
 
-Start with `cargo test --locked --test runtime --test titlebar_theme`, then the
+Start with `cargo test --locked --test runtime --test titlebar_theme`; animation
+changes also require `cargo test --locked --test animations --test presentation`,
+then the
 root workflow. Titlebar app-icon tests isolate XDG/HOME using a subprocess, not
 unsafe process-global environment mutation; they verify CPU resources, not GPU
 pixels or physical input. Cover

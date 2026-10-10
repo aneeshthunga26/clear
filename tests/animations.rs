@@ -495,3 +495,98 @@ fn tiny_positive_destination_dimensions_settle_exactly() {
         .unwrap();
     assert_eq!(engine.sample(1, seconds(2.0)).unwrap().pose, to);
 }
+
+#[test]
+fn capped_display_phase_preserves_spring_velocity_across_speed_rebase() {
+    let mut engine = engine();
+    start(&mut engine, 1, AnimationEffect::WindowMovement);
+    let displayed = engine.sample(1, seconds(0.05)).unwrap().pose;
+    let displayed_phase = engine.clock.sample(seconds(0.05));
+    let expected_velocity =
+        (engine.sample(1, seconds(0.050001)).unwrap().pose.rect.x - displayed.rect.x) / 0.000001;
+    let mut config = enabled();
+    config.speed = 2.0;
+    engine.apply_config(config, seconds(0.1)).unwrap();
+    engine
+        .retarget_presented(
+            1,
+            7,
+            AnimationEffect::WindowMovement,
+            displayed,
+            pose(-200.0, 100.0, 1.0),
+            seconds(0.11),
+            1.0,
+            displayed_phase,
+        )
+        .unwrap();
+    assert_eq!(engine.sample(1, seconds(0.11)).unwrap().pose, displayed);
+    let actual_velocity =
+        (engine.sample(1, seconds(0.1100005)).unwrap().pose.rect.x - displayed.rect.x) / 0.000001;
+    assert!(
+        (expected_velocity - actual_velocity).abs() < 0.3,
+        "expected {expected_velocity}, got {actual_velocity}"
+    );
+    for invalid_phase in [f64::NAN, -1.0, 99.0] {
+        assert!(
+            engine
+                .retarget_presented(
+                    1,
+                    7,
+                    AnimationEffect::WindowMovement,
+                    displayed,
+                    pose(200.0, 100.0, 1.0),
+                    seconds(0.11),
+                    1.0,
+                    invalid_phase
+                )
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn unsafe_inherited_overshoot_clamps_geometry_but_ordinary_motion_keeps_velocity() {
+    use clear::runtime::animation::MAX_POSE_COMPONENT;
+    let mut engine = engine();
+    let from = pose(MAX_POSE_COMPONENT - 1000.0, 100.0, 1.0);
+    let to = pose(MAX_POSE_COMPONENT - 10.0, 100.0, 1.0);
+    engine
+        .retarget(
+            1,
+            7,
+            AnimationEffect::WindowMovement,
+            from,
+            to,
+            seconds(0.0),
+            1.0,
+        )
+        .unwrap();
+    let shown = engine.sample(1, seconds(0.02)).unwrap().pose;
+    let mut config = enabled();
+    config.window_movement.kind = AnimationKind::Spring { stiffness: 1.0 };
+    engine.apply_config(config, seconds(0.02)).unwrap();
+    engine
+        .retarget_presented(
+            1,
+            7,
+            AnimationEffect::WindowMovement,
+            shown,
+            pose(MAX_POSE_COMPONENT - 2000.0, 100.0, 1.0),
+            seconds(0.02),
+            1.0,
+            0.02,
+        )
+        .unwrap();
+    let mut reached_bound = false;
+    for step in 1..=100 {
+        let sample = engine
+            .sample(1, seconds(0.02 + f64::from(step) * 0.01))
+            .unwrap()
+            .pose;
+        assert!(sample.rect.x <= MAX_POSE_COMPONENT);
+        if sample.rect.x == MAX_POSE_COMPONENT {
+            reached_bound = true;
+        }
+    }
+    assert!(reached_bound);
+}

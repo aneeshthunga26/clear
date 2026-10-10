@@ -93,7 +93,7 @@ impl AnimationPose {
             opacity: v[4].clamp(0.0, 1.0),
         }
     }
-    fn validate(self) -> Result<(), String> {
+    pub(crate) fn validate(self) -> Result<(), String> {
         if !self.values().iter().all(|v| v.is_finite())
             || self.values()[..4]
                 .iter()
@@ -118,6 +118,7 @@ pub struct AnimationSample {
 /// One captured geometry/opacity motion law and transition group timestamp.
 #[derive(Debug, Clone)]
 struct Track {
+    revision: u64,
     effect: AnimationEffect,
     group: u64,
     start_time: f64,
@@ -213,6 +214,12 @@ impl Track {
                 velocity[i] = 0.0;
             }
         }
+        for i in 0..4 {
+            if values[i].abs() > MAX_POSE_COMPONENT {
+                values[i] = values[i].clamp(-MAX_POSE_COMPONENT, MAX_POSE_COMPONENT);
+                velocity[i] = 0.0;
+            }
+        }
         if !(0.0..=1.0).contains(&values[4]) {
             values[4] = values[4].clamp(0.0, 1.0);
             velocity[4] = 0.0;
@@ -234,9 +241,19 @@ pub struct AnimationEngine {
     pub clock: AnimationClock,
     config: AnimationsConfig,
     tracks: BTreeMap<u64, Track>,
+    next_revision: u64,
 }
 
 impl AnimationEngine {
+    /// Current validated preferences, also used by the presentation planner.
+    pub fn config(&self) -> &AnimationsConfig {
+        &self.config
+    }
+
+    /// Whether an ID is already owned by any animation-engine caller.
+    pub fn contains(&self, id: u64) -> bool {
+        self.tracks.contains_key(&id)
+    }
     /// Construct a deterministic engine at an injected monotonic timestamp.
     pub fn new(config: AnimationsConfig, now: Duration) -> Result<Self, String> {
         config.validate()?;
@@ -244,6 +261,7 @@ impl AnimationEngine {
             clock: AnimationClock::new(now, config.speed)?,
             config,
             tracks: BTreeMap::new(),
+            next_revision: 0,
         })
     }
 
@@ -253,7 +271,14 @@ impl AnimationEngine {
         config.validate()?;
         self.clock.rebase(now, config.speed)?;
         for track in self.tracks.values_mut() {
-            if !config.enabled || config.reduced_motion || !config.effect(track.effect).enabled {
+            if (!config.enabled || config.reduced_motion || !config.effect(track.effect).enabled)
+                && !track.instant
+            {
+                self.next_revision = self
+                    .next_revision
+                    .checked_add(1)
+                    .expect("animation revision exhausted");
+                track.revision = self.next_revision;
                 track.instant = true;
             }
         }
@@ -273,6 +298,55 @@ impl AnimationEngine {
         now: Duration,
         physical_scale: f64,
     ) -> Result<(), String> {
+        self.retarget_inner(id, group, effect, from, to, now, physical_scale, None)
+    }
+
+    /// Restart from the last displayed pose while inheriting its analytic spring velocity.
+    /// Capture `presented_animation_time` alongside the displayed pose, so speed
+    /// rebasing cannot reinterpret a timestamp before the new clock epoch.
+    pub fn retarget_presented(
+        &mut self,
+        id: u64,
+        group: u64,
+        effect: AnimationEffect,
+        from: AnimationPose,
+        to: AnimationPose,
+        now: Duration,
+        physical_scale: f64,
+        presented_animation_time: f64,
+    ) -> Result<(), String> {
+        if !presented_animation_time.is_finite()
+            || presented_animation_time < 0.0
+            || presented_animation_time > self.clock.sample(now)
+        {
+            return Err(
+                "presented animation phase must be finite and between zero and current phase"
+                    .into(),
+            );
+        }
+        self.retarget_inner(
+            id,
+            group,
+            effect,
+            from,
+            to,
+            now,
+            physical_scale,
+            Some(presented_animation_time),
+        )
+    }
+
+    fn retarget_inner(
+        &mut self,
+        id: u64,
+        group: u64,
+        effect: AnimationEffect,
+        from: AnimationPose,
+        to: AnimationPose,
+        now: Duration,
+        physical_scale: f64,
+        presented_at: Option<f64>,
+    ) -> Result<(), String> {
         from.validate()?;
         to.validate()?;
         if !physical_scale.is_finite() || physical_scale <= 0.0 {
@@ -287,9 +361,13 @@ impl AnimationEngine {
             .tracks
             .get(&id)
             .map_or((from.values(), [0.0; 5]), |old| {
-                let (sample, velocity) = old.sample(time);
+                let (sample, velocity) = old.sample(presented_at.unwrap_or(time));
                 (
-                    sample.pose.values(),
+                    if presented_at.is_some() {
+                        from.values()
+                    } else {
+                        sample.pose.values()
+                    },
                     if matches!(old.kind, AnimationKind::Spring { .. })
                         && matches!(config.kind, AnimationKind::Spring { .. })
                     {
@@ -314,9 +392,14 @@ impl AnimationEngine {
                 }
             }
         }
+        self.next_revision = self
+            .next_revision
+            .checked_add(1)
+            .expect("animation revision exhausted");
         self.tracks.insert(
             id,
             Track {
+                revision: self.next_revision,
                 effect,
                 group,
                 start_time: time,
@@ -333,9 +416,20 @@ impl AnimationEngine {
 
     /// Sample without advancing a shared clock or deleting completed tracks.
     pub fn sample(&self, id: u64, now: Duration) -> Option<AnimationSample> {
-        self.tracks
-            .get(&id)
-            .map(|track| track.sample(self.clock.sample(now)).0)
+        self.sample_phase(id, self.clock.sample(now))
+    }
+
+    /// Sample a captured animation phase without reinterpreting an old real-time epoch.
+    pub fn sample_phase(&self, id: u64, phase: f64) -> Option<AnimationSample> {
+        if !phase.is_finite() || phase < 0.0 {
+            return None;
+        }
+        self.tracks.get(&id).map(|track| track.sample(phase).0)
+    }
+
+    /// Internal sample identity: retargeting or explicit settlement invalidates old acknowledgements.
+    pub(crate) fn revision(&self, id: u64) -> Option<u64> {
+        self.tracks.get(&id).map(|track| track.revision)
     }
 
     /// Return the caller-supplied transition group ID for an existing track.
@@ -345,7 +439,12 @@ impl AnimationEngine {
 
     /// Immediately expose the exact destination until the track is retired.
     pub fn settle(&mut self, id: u64) {
-        if let Some(t) = self.tracks.get_mut(&id) {
+        if let Some(t) = self.tracks.get_mut(&id).filter(|track| !track.instant) {
+            self.next_revision = self
+                .next_revision
+                .checked_add(1)
+                .expect("animation revision exhausted");
+            t.revision = self.next_revision;
             t.instant = true;
         }
     }

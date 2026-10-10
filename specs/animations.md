@@ -3,16 +3,21 @@
 ## Implemented scope
 
 Clear implements a backend-independent animation clock, bounded presentation pose
-tracks, and strict animation TOML preferences. The platform does not yet create
-these tracks or render any of the eight visual effects. Workspace switching,
-window creation/destruction, tiled reflow, minimize/restore, maximize/restore,
+tracks, a pure snapshot/transition planner, and strict animation TOML preferences.
+The planner produces geometry/opacity frames for workspace switching, opening,
+closing, reflow, minimize/restore, maximize/restore, and fullscreen/restore.
+The platform does not yet consume those frames or render any of the eight visual
+effects. Workspace switching, window creation/destruction, tiled reflow, minimize/restore, maximize/restore,
 overview, and fullscreen/restore therefore keep their current instant visual
 behavior, including when `animations.enabled = true`. Fullscreen desktop policy
 is a separate [desktop](desktop.md) contract.
 
 The [implementation plan](../docs/animations-design.md) describes subsequent
-GPU composition, input transforms, snapshots, effect triggers, and acceptance
-work. Those proposed behaviors and image budgets are not implemented guarantees.
+remaining scene integration, transformed hit discovery, lifecycle snapshot
+capture, effect triggers, and acceptance work. Shared GPU composition and inverse
+coordinate delivery are implemented foundations described by
+[rendering](rendering.md) and [input](input.md); animation frames do not yet drive
+them. Proposed visual behaviors and image budgets are not implemented guarantees.
 Animation defaults MUST remain off until the visual/input acceptance gates pass.
 
 ## Configuration
@@ -91,26 +96,32 @@ allocates no GPU images and does not own compositor surfaces or desktop state.
 A pose stores `f64` logical origin/dimensions and opacity. Supplied values MUST be
 finite, geometry components within magnitude 2147483648 (covering core's i32
 range without overflow in spring algebra), dimensions positive, and opacity in
-`0..=1`. Physical output scale MUST be
-finite and positive. Intermediate spring dimensions MUST remain positive and
-opacity MUST clamp to `0..=1`; unsafe overshoot velocity at a clamp is cleared.
+`0..=1`. Physical output scale MUST be finite and positive. Intermediate geometry MUST clamp to the same magnitude
+bound; nonpositive spring dimensions clamp to machine epsilon and opacity clamps
+to `0..=1`. The affected component's velocity MUST clear at these safety bounds;
+ordinary in-range spring motion retains its analytic velocity.
 Spring retargeting MUST reject a polynomial/derivative envelope that could
 overflow before its settling deadline, retaining the previous track. Tolerance
 checks divide their thresholds by physical scale to avoid overflow from extreme
 but finite positive scales. Positive endpoint dimensions below machine epsilon
-MUST be preserved exactly; only nonpositive intermediate dimensions are clamped.
+MUST be preserved exactly; only nonpositive intermediate dimensions use the
+minimum-dimension clamp.
 Final completion MUST return the exact supplied destination.
 
 Retargeting starts from the old track's analytic pose at the supplied timestamp;
 initial caller pose is used only for a new ID. A spring-to-spring retarget MUST
 preserve analytic velocity. Easing retargets preserve pose without promising
-velocity continuity. Future presentation integration must choose its retarget
-timestamp consistently with the pose last shown when capped/skipped frames matter.
+velocity continuity. `retarget_presented` instead starts from an explicitly
+acknowledged pose and inherits spring velocity at its captured animation phase.
+That phase MUST be finite, nonnegative, and no later than current phase. Capturing
+phase alongside the pose MUST preserve velocity across speed rebases even when
+the last displayed real timestamp predates the new epoch.
 
 The caller supplies a transition group ID and one common timestamp for related
 tracks. The engine exposes group membership; it does not infer causes, coordinate
 different parameter laws, or wait for client commits. Related tracks with the
-same law/timestamp MUST share progress.
+same timestamp MUST share animation phase. Their normalized progress additionally
+depends on captured endpoints, initial spring velocity, and completion tolerances.
 
 A spring completes when both rectangle corners are within 0.25 physical pixels
 and corner velocities within 1 physical pixel per animation second, with opacity
@@ -120,6 +131,101 @@ Timed easing MUST settle by its duration. Global disable, reduced motion, effect
 disable, or explicit `settle` MUST expose the exact final pose immediately.
 Completed tracks remain retained until `remove`; no resource retirement is implied
 by a pure sample.
+
+## Pure presentation planning
+
+`PresentationPlanner` consumes complete backend-neutral snapshots of normal
+windows, including hidden/minimized windows, live/mapped generations, state flags,
+home outputs/workspaces, desired visible placements/clips, and optional minimize
+anchors. Outputs provide full bounds, physical scale, and optional mapped-panel
+fallback bounds. Groups describe current workspace ownership; the planner MUST
+NOT change that ownership, focus, layout geometry, or any desktop state.
+
+Snapshots MUST have one record per window ID, unique mapped generation keys,
+unique output/group IDs, and unique presented workspace ownership across groups.
+Groups MUST cover connected outputs exactly once. All supplied rectangles MUST
+be nonempty and normalized without integer coordinate overflow. Mapped windows
+MUST be live; supplied visible placements MUST belong to mapped, live,
+non-minimized windows on their home output's presented workspace. Hidden records
+may retain other workspace ownership. Invalid snapshots/directions MUST fail
+before changing planner state.
+
+Reconciliation MUST classify disappearance/unmapping as closing, minimization as
+minimize, restoration as its reverse, state-flag changes as maximize/fullscreen,
+and other visible rectangle changes as movement. An ordinary hidden-workspace
+record MUST NOT produce a closing image. A workspace presentation change produces
+outgoing/incoming workspace slides; ambiguous operations MAY provide explicit
+per-window or per-group causes. A close hint alone MUST NOT remove a still-live
+visible window. Direct manipulation and an explicit settle/reset MUST suppress
+motion and expose final policy placements immediately.
+
+Opening starts transparent and scaled around its destination center by the
+configured open scale. Closing ends transparent and enlarged by close scale.
+Minimize moves toward an output-local icon rectangle when supplied, otherwise
+the mapped panel's center, otherwise the home output's bottom center. Targets
+preserve source aspect ratio, shrink without enlarging, and fade to zero. Anchors
+are intersected with full output bounds; stale off-output anchors fall back.
+The bottom-center fallback MUST use the exact logical center, including odd
+output widths, and its nominal 16-by-16 rectangle MUST shrink to fit tiny outputs.
+Restore reverses from an interrupted outgoing pose and captured spring velocity,
+or the anchor after the old minimize's terminal frame has been acknowledged.
+Reflow/maximize/fullscreen use captured unrounded rectangles and their
+corresponding configured laws.
+
+Workspace motion defaults to horizontal direction according to workspace ID
+ordering when no explicit direction is supplied. An explicit direction vector
+MUST be finite, nonzero, and within `-1..=1` on each axis; the pure API also accepts
+vertical vectors for future adapter/layout work. Distances come from the
+affected group's output union. Frames expose incoming/outgoing offsets and a
+progress descriptor for future wallpaper composition. Incoming and outgoing
+scene offsets use separate tracks with a shared timestamp and motion law. A
+reversal MUST reuse the matching workspace scene's last acknowledged offset and
+captured spring velocity, including across a speed rebase. Progress calculation
+MUST remain finite for subnormal nonzero direction vectors. Superseding a
+workspace slide releases previous outgoing records rather than chaining scenes;
+reappearing window tracks retain captured pose and spring velocity.
+Workspace ownership stays at its already reconciled policy value throughout.
+
+Frames MUST contain every final live policy placement, even when the shared
+engine's 256-track budget is exhausted. New failed/budget-limited tracks settle
+instantly. Existing tracks may retarget at the limit. Workspace motion MUST
+settle the whole effect when both group tracks cannot be allocated, including
+window tracks that otherwise could retarget at the limit. Outgoing records are
+bounded by that same engine budget and MUST never receive input; incoming
+workspace tracks defer input eligibility until they settle. Other live records
+retain eligibility for the adapter's transformed hit testing. Frozen source
+ownership is represented only by opaque retained IDs and mapping-generation keys.
+Retention requests MUST pin an already owned prior committed image; adapters
+MUST NOT access a destroyed/unmapped surface to fulfill them. GPU allocation,
+image budgets, decoration/client commit synchronization, popup ownership, actual
+stack composition, and overview card/wallpaper motion are subsequent adapter work.
+
+Sampling MUST be immutable, use one common timestamp/animation phase, and perform
+no commands, scripts, capture, IO, or resource releases. `mark_presented` records
+only visuals actually drawn by the adapter; callers MUST remove failed/unavailable
+draws from the acknowledged frame. It MUST reject unknown/stale/duplicate source
+identities, stale/duplicate groups, poses/offsets outside the engine's bounded
+geometry domain, and backwards common or per-window/group timestamp/phase
+values without changing state. Sampled frames carry opaque per-track revision
+and terminal-status metadata; callers MUST preserve it when filtering unavailable
+draws. Missing live draws MUST NOT acknowledge their track's completion. Whether
+a submitted frame was physically presented remains the adapter's timing-source limitation, not a planner guarantee.
+
+Interrupted tracks MUST restart from the last acknowledged pose and captured
+phase, preserving critical-spring velocity. Analytic completion alone MUST NOT
+discard the last drawn pose, workspace offsets, or spring track before the
+terminal pose/scene absence is acknowledged. Thus a reversal after a skipped or
+capped final frame still starts from the actual shown phase.
+`is_animating` MUST remain true while a terminal frame still needs acknowledgement.
+Retargeting or explicit/config settlement changes the track revision: an old
+mid-motion acknowledgement MUST NOT retroactively count as terminal after
+disable or reduced-motion reload. Once the current revision's terminal frame is
+acknowledged, retirement releases completed tracks, discards completed hidden
+poses so later restores start at the anchor, and returns retained IDs to the adapter;
+group identity repair, output loss, direct manipulation, and reset cancel stale
+records. Global/effect disable and reduced motion use exact engine settlement;
+re-enabling with an unchanged snapshot MUST NOT replay old operations. The
+planner avoids other callers' engine IDs and clears only its own tracks.
 
 ## Reload
 
@@ -137,8 +243,15 @@ reset engine phase or pose.
 - [Schema/defaults](../src/config/animations.rs), [config integration](../src/config/mod.rs).
 - [Pure clock and tracks](../src/runtime/animation.rs),
   [runtime time conversion and reload](../src/runtime/mod.rs).
+- [Presentation planner](../src/runtime/presentation.rs) and
+  [presentation tests](../tests/presentation.rs) cover snapshot validation,
+  effect classification, mapped generations, retained-source requests, interrupted
+  motion and velocity across speed rebases, workspace offset continuity, tiny
+  direction/output safety, whole-workspace budget fallback, and terminal
+  acknowledgement/cleanup including missed frames and configuration settlement.
 - [Animation tests](../tests/animations.rs) cover strict defaults/tags/ranges,
   skipped sampling, speed rebasing, captured parameters, spring interruption,
-  group progress, bounded completion/tracks, instant settlement, and atomic reload.
+  group progress, bounded completion/tracks, unsafe overshoot clamping, instant
+  settlement, and atomic reload.
   These are CPU contracts, not evidence of GPU effects, physical input, refresh-rate
   presentation, or double-buffer operation.

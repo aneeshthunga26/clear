@@ -8,6 +8,7 @@ use std::{
 
 pub mod animation;
 pub mod overview;
+pub mod presentation;
 pub use overview::{OverviewNavigation, OverviewSession, OverviewTarget};
 pub mod titlebar;
 pub mod wallpaper;
