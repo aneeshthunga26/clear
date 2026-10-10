@@ -905,6 +905,27 @@ Escape cancellation. These steps are a manual procedure, not an automated pass.
 The GPU smoke fixtures do not inject drag gestures or establish physical pointer
 delivery, motion timing or refresh synchronization.
 
+### Overview drag pointer tracking correction (2026-10-11)
+
+After removing pointer translation from the overview easing track, Cargo
+fmt/check/test/build passed (134 library tests) and Rust Analyzer had no
+error/warning-level diagnostics. The new drag test samples translation and
+direction reversal during pickup and proximity scaling while holding the animation
+timestamp fixed, checking that pointer following also works between capped samples.
+It establishes compositor geometry, not physical input latency. Pickup/scale,
+reduced-motion and synthetic seat/drop tests also passed.
+
+Ordinary `cards` and `rounded-asymmetric` GPU/protocol cases passed on private
+local virtual KWin, not a VM, in
+`target/overview-drag-latency/overview-regression/`. They check existing overview
+rendering, not dragging or physical pointer latency.
+
+For manual comparison, drag a window on the ordinary desktop, then drag its card
+in overview. Check rapid reversals both away from and near the desktop strip;
+the [drag contract](../specs/overview.md#layout-and-input) separates pointer
+translation from animated pickup/scale. Repeat with a manual animation sampling
+cap to check that pointer tracking continues at host redraw cadence.
+
 ### Live overview validation (2026-10-09)
 
 All seventeen overview GPU/protocol cases passed on a private local virtual

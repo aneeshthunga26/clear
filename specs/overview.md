@@ -131,11 +131,14 @@ original card body/caption MUST be replaced by one live drag image starting at
 the card's last submitted rectangle when the threshold is crossed, preserving
 the grabbed fraction even if overview entry moved the card after the press;
 it MUST NOT leave a stationary duplicate in the large canvas. The configured
-overview effect interpolates pickup and subsequent
-pointer/size retargets from the last successfully submitted ghost.
-Continuous pointer updates MUST allow the transition to advance between submitted
-frames rather than restarting at zero progress each refresh. Global speed,
-sampling caps and reduced-motion/effect-disable settings apply to this track.
+overview effect interpolates size and the one-time offset from the card's grab
+point to the pickup pointer position. Pointer translation MUST follow the latest
+input directly on every rendered frame, including frames between capped animation
+samples; pointer movement alone MUST NOT retarget the animation or add easing lag.
+Only size changes retarget from the last successfully submitted size/offset pose.
+Continuous pointer updates MUST allow pickup to advance between submitted frames
+rather than restarting at zero progress each refresh. Global speed, sampling caps
+and reduced-motion/effect-disable settings apply to the size/offset track.
 Reduced motion, disabled motion or exhausted track capacity uses the target
 immediately. The grabbed fractional point MUST determine the destination anchor,
 subject to keeping the full image inside the interactive output.
@@ -303,6 +306,9 @@ hot corners and touchpad progress remain future work.
   uses the same fitted miniature dimensions, moving away reverses sizing, output
   bounds/grab anchors hold, continuous pointer updates advance motion, entry-time
   pickup uses the latest shown card, and speed/reduced-motion changes preserve cleanup.
+  `pointer_translation_is_immediate_during_pickup_scaling_and_capped_samples`
+  checks immediate translation and reversal during pickup and scaling, including
+  redraws with an unchanged animation timestamp.
   These CPU checks do not establish GPU drag pixels or physical pointer behavior.
 - [Input routing and seat-path test](../src/platform/smithay/input.rs):
   `overview_keyboard_pairs_and_deferred_entry_without_shell_ipc` exercises

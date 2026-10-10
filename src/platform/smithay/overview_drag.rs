@@ -35,7 +35,9 @@ pub(super) struct DragMotion {
     track: Option<u64>,
     target: Option<Rect>,
     sampled: Option<Rect>,
-    presented: Option<Rect>,
+    sampled_pose: Option<AnimationPose>,
+    presented_pose: Option<AnimationPose>,
+    pickup_offset: Option<(f64, f64)>,
     presented_time: Option<Duration>,
     presented_phase: f64,
 }
@@ -111,25 +113,37 @@ impl OverviewDrag {
                 blend(normal.height, miniature.height),
             )
         });
-        let rx = ((self.origin.x - self.preview.x as f64) / self.preview.width.max(1) as f64)
-            .clamp(0.0, 1.0);
-        let ry = ((self.origin.y - self.preview.y as f64) / self.preview.height.max(1) as f64)
-            .clamp(0.0, 1.0);
+        self.anchored_rect(drag_pose(Rect::new(0, 0, width, height)))
+    }
+
+    fn anchored_rect(&self, pose: AnimationPose) -> Rect {
+        let rx = ((self.origin.x - f64::from(self.preview.x))
+            / f64::from(self.preview.width.max(1)))
+        .clamp(0.0, 1.0);
+        let ry = ((self.origin.y - f64::from(self.preview.y))
+            / f64::from(self.preview.height.max(1)))
+        .clamp(0.0, 1.0);
+        let width = pose.rect.width.round().max(1.0) as i32;
+        let height = pose.rect.height.round().max(1.0) as i32;
         Rect::new(
-            (self.position.x - rx * f64::from(width)).round() as i32,
-            (self.position.y - ry * f64::from(height)).round() as i32,
+            (self.position.x + pose.rect.x - rx * f64::from(width)).round() as i32,
+            (self.position.y + pose.rect.y - ry * f64::from(height)).round() as i32,
             width,
             height,
         )
-        .clamped_to(output)
+        .clamped_to(self.output_rect)
     }
 
     fn sample(&mut self, engine: &mut AnimationEngine, now: Duration, target: Rect) {
+        // Position follows input on every host frame, including frames between
+        // capped animation samples. Only scale and the one-time pickup offset ease.
+        let target = Rect::new(0, 0, target.width, target.height);
         let config = engine.config();
         if !config.enabled || config.reduced_motion || !config.overview.enabled {
             self.clear_track(engine);
             self.motion.target = Some(target);
-            self.motion.sampled = Some(target);
+            self.motion.sampled_pose = Some(drag_pose(target));
+            self.motion.sampled = Some(self.anchored_rect(drag_pose(target)));
             return;
         }
         if self.motion.target != Some(target) {
@@ -140,11 +154,20 @@ impl OverviewDrag {
                     .find(|id| !engine.contains(*id))
                     .expect("bounded engine has a free identity")
             });
-            let from = self.motion.presented.unwrap_or(self.preview);
+            let (dx, dy) = *self.motion.pickup_offset.get_or_insert((
+                self.origin.x - self.position.x,
+                self.origin.y - self.position.y,
+            ));
+            let from = self.motion.presented_pose.unwrap_or_else(|| {
+                let mut pose = drag_pose(self.preview);
+                pose.rect.x = dx;
+                pose.rect.y = dy;
+                pose
+            });
             // Start at the preceding submitted frame, so a target changing every
             // refresh still advances by this frame's elapsed time instead of freezing.
             let retarget_time = self.motion.presented_time.unwrap_or(now);
-            let shown_phase = if fresh && self.motion.presented.is_none() {
+            let shown_phase = if fresh && self.motion.presented_pose.is_none() {
                 engine.clock.sample(retarget_time)
             } else {
                 self.motion.presented_phase
@@ -154,7 +177,7 @@ impl OverviewDrag {
                     track,
                     track,
                     AnimationEffect::Overview,
-                    drag_pose(from),
+                    from,
                     drag_pose(target),
                     retarget_time,
                     1.0,
@@ -166,24 +189,17 @@ impl OverviewDrag {
             }
             self.motion.target = Some(target);
         }
-        self.motion.sampled = Some(
-            self.motion
-                .track
-                .and_then(|id| engine.sample(id, now))
-                .map_or(target, |sample| {
-                    Rect::new(
-                        sample.pose.rect.x.round() as i32,
-                        sample.pose.rect.y.round() as i32,
-                        sample.pose.rect.width.round().max(1.0) as i32,
-                        sample.pose.rect.height.round().max(1.0) as i32,
-                    )
-                })
-                .clamped_to(self.output_rect),
-        );
+        let pose = self
+            .motion
+            .track
+            .and_then(|id| engine.sample(id, now))
+            .map_or(drag_pose(target), |sample| sample.pose);
+        self.motion.sampled_pose = Some(pose);
+        self.motion.sampled = Some(self.anchored_rect(pose));
     }
 
     fn mark_presented(&mut self, engine: &AnimationEngine, now: Duration) {
-        self.motion.presented = self.motion.sampled;
+        self.motion.presented_pose = self.motion.sampled_pose;
         self.motion.presented_time = Some(now);
         self.motion.presented_phase = engine.clock.sample(now);
     }
@@ -316,19 +332,76 @@ mod tests {
         assert!(middle.width > target.width && middle.width < drag.preview.width);
         assert!(middle.x > drag.preview.x && middle.x < target.x);
         drag.mark_presented(&engine, middle_time);
-        drag.position.x -= 180.0;
-        let changed = drag.target(&layout(drag.output_rect), drag.preview, drag.output_rect);
+        drag.position.x += 40.0;
+        let changed = Rect::new(0, 0, 120, 90);
         drag.sample(&mut engine, middle_time, changed);
         assert_eq!(
             drag.ghost(drag.output_rect),
-            Some(middle),
-            "a new pointer target must not jump the shown image"
+            Some(Rect::new(
+                middle.x + 40,
+                middle.y,
+                middle.width,
+                middle.height
+            )),
+            "scale retargets preserve the shown shape while pointer motion is immediate"
         );
         drag.sample(&mut engine, Duration::from_millis(300), changed);
-        assert_eq!(drag.ghost(drag.output_rect), Some(changed));
+        assert_eq!(
+            drag.ghost(drag.output_rect),
+            Some(drag.anchored_rect(drag_pose(changed)))
+        );
         assert_eq!(engine.len(), 1);
         drag.clear_track(&mut engine);
         assert_eq!(engine.len(), 0);
+    }
+
+    #[test]
+    fn pointer_translation_is_immediate_during_pickup_scaling_and_capped_samples() {
+        let mut drag = drag();
+        drag.output_rect = Rect::new(0, 0, 2000, 1600);
+        let mut engine = engine();
+        let layout = layout(drag.output_rect);
+        let target = drag.target(&layout, drag.preview, layout.output);
+        drag.sample(&mut engine, Duration::ZERO, target);
+        drag.mark_presented(&engine, Duration::ZERO);
+        let pickup_time = Duration::from_millis(50);
+        drag.sample(&mut engine, pickup_time, target);
+        let mut previous = drag.ghost(layout.output).unwrap();
+        let pose = drag.motion.sampled_pose;
+        for dx in [40.0, -70.0, 100.0] {
+            drag.position.x += dx;
+            let target = drag.target(&layout, drag.preview, layout.output);
+            // Same animation timestamp models redraws between capped samples.
+            drag.sample(&mut engine, pickup_time, target);
+            let shown = drag.ghost(layout.output).unwrap();
+            assert_eq!(shown.x - previous.x, dx as i32);
+            assert_eq!(shown.y, previous.y);
+            assert_eq!(drag.motion.sampled_pose, pose);
+            previous = shown;
+        }
+        let settled_time = Duration::from_millis(200);
+        drag.sample(&mut engine, settled_time, target);
+        drag.mark_presented(&engine, settled_time);
+        let small = Rect::new(0, 0, 80, 60);
+        drag.sample(&mut engine, settled_time, small);
+        let scaling_time = Duration::from_millis(300);
+        drag.sample(&mut engine, scaling_time, small);
+        previous = drag.ghost(layout.output).unwrap();
+        assert!(previous.width > small.width && previous.width < target.width);
+        for dx in [60.0, -40.0] {
+            drag.position.x += dx;
+            drag.sample(&mut engine, scaling_time, small);
+            let shown = drag.ghost(layout.output).unwrap();
+            assert_eq!(shown.x - previous.x, dx as i32);
+            assert!(
+                (f64::from(shown.x) + 0.5 * f64::from(shown.width) - drag.position.x).abs() <= 0.5
+            );
+            assert!(
+                (f64::from(shown.y) + 0.5 * f64::from(shown.height) - drag.position.y).abs() <= 0.5
+            );
+            previous = shown;
+        }
+        assert_eq!(engine.len(), 1);
     }
 
     #[test]

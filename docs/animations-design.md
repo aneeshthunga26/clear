@@ -188,8 +188,9 @@ inside each built-in layout; script layouts get the same placement diff handling
   physical pixel/second of corner velocity, and at most 0.001 opacity error.
   Retargeting can inherit a velocity away from the new endpoint; clamp any unsafe
   opacity/size result and do not promise strictly monotonic reversal in that case.
-- Manual desktop pointer move/resize follows the pointer directly. Overview
-  pickup/proximity motion is presentation-only; see the [drag contract](../specs/overview.md#layout-and-input).
+- Manual desktop pointer move/resize and overview drag translation follow the
+  pointer directly. Overview pickup offset and proximity scaling are presentation
+  effects; see the [drag contract](../specs/overview.md#layout-and-input).
   Before starting a grab, settle that window's geometry track and re-evaluate its
   hit under the pointer. Animate any resulting neighbor reflow, not the dragged
   window's pointer tracking.

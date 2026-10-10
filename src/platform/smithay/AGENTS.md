@@ -36,7 +36,9 @@ only directory allowed to depend on Smithay and Wayland types.
   membership handling; synchronize preview output notifications after Space refresh
   and restore ordinary ownership on cleanup. Follow [overview](../../../specs/overview.md) bounds and cleanup.
 - `overview_drag.rs`: pointer-anchored pickup, miniature-proximity target geometry
-  and one shared overview-effect track. Sample at the backend's capped time;
+  and one shared overview-effect size/pickup-offset track. Derive translation from
+  the latest pointer, never ease pointer following or restart on position-only
+  updates. Sample scale/offset at the backend's capped time;
   acknowledge only submitted geometry. Use `take_overview_drag` on every drop,
   cancellation and teardown so engine tracks cannot outlive a gesture. Keep policy
   transfers and input ownership in input/runtime, and GPU ownership in overview.
