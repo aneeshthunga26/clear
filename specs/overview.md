@@ -126,7 +126,8 @@ transport is used.
 Visible cards, desktop miniatures and drag ghosts MUST remain live: clients
 continue receiving presentation opportunities while their previews are visible.
 They composite latest committed toplevel and subsurface trees on the
-GPU, cropping content to its committed XDG geometry and adding committed SSD
+GPU through the [shared committed image composer](rendering.md#committed-window-images),
+cropping content to its committed XDG geometry and adding committed SSD
 appearance with the current theme. Transparent content is composited over the
 wallpaper canvas (or an opaque theme background when no wallpaper is available).
 The compositor MUST first combine client content, SSD, desktop borders and the
@@ -186,10 +187,11 @@ represented in the bounded visible miniature list. Preview output tracking retai
 at most 61 window handles (12 cards, 48 miniature candidates and one ghost,
 deduplicated by window ID), released as those previews disappear. Labels retain at most 128 textures and
 4 MiB, each at most 1024×32 pixels. Label text is bounded to 256 characters and
-uses the titlebar's single-line sanitization. Two reusable RGBA8 source scratch
-buffers grow to at most 2048×2048 each
-(32 MiB combined), separate from the 64 MiB preview cache; clear the rendered
-source area before every composition and sample only that initialized area.
+uses the titlebar's single-line sanitization. Source preparation uses the shared
+scratch allocations bounded in [rendering](rendering.md#committed-window-images),
+separate from the 64 MiB preview cache; overview does not retain another scratch
+pool. Source composition, initialized-region clearing and full-texture sampling
+follow that shared image contract.
 Existing titlebar/client resources, prepared icons, driver overhead and outstanding
 render elements are additional to these retained texture bounds.
 
@@ -215,6 +217,9 @@ hot corners and touchpad progress remain future work.
   bounded miniature geometry, destination-driven texture dimensions, and source
   resolution/texture-limit clamps. [Wallpaper placement tests](../src/platform/smithay/wallpaper.rs)
   cover preservation of full-output crops and letterboxing in previews.
+  Shared source composition belongs to
+  [window_image.rs](../src/platform/smithay/window_image.rs); CPU geometry/cache
+  tests do not establish GPU alpha, mask, snapshot lifetime or crop correctness.
 - [Input routing and seat-path test](../src/platform/smithay/input.rs):
   `overview_keyboard_pairs_and_deferred_entry_without_shell_ipc` exercises
   synthetic keyboard/button pairs and implicit-grab deferral without a shell.

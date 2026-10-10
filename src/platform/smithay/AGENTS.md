@@ -36,6 +36,9 @@ only directory allowed to depend on Smithay and Wayland types.
   membership handling; synchronize preview output notifications after Space refresh
   and restore ordinary ownership on cleanup. Follow [overview](../../../specs/overview.md) bounds and cleanup.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
+- `window_image.rs`: shared committed GPU body/SSD/border/mask composition for
+  previews and owned snapshots. One backend composer owns scratch; callers own
+  bounded retained textures. Never reuse a texture still sampled by a snapshot.
 - `shell.rs`: optional socket initialization and dispatch; reconcile commands
   before acknowledging/publishing. Wire types and transport stay in `src/shell/`.
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,

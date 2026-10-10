@@ -50,6 +50,57 @@ bounded to the visible clip but currently occurs per frame. Shader ownership
 stays with the backend and reload updates theme data/uniforms. Coordinates assume
 the current scale-1 single framebuffer, including its height.
 
+## Committed window images
+
+The shared adapter image composer MUST gather the latest committed toplevel body
+and subsurfaces, crop to committed XDG geometry, and account for its nonzero
+geometry origin. Its frame includes the committed SSD inset when applicable.
+The original outer source rectangle, inner/outer fitted outlines, and frame MUST
+remain distinct metadata; a source image MUST NOT adopt a requested placement's
+size before the corresponding client content commits.
+
+It composites client content and SSD into transparent premultiplied RGBA, then
+adds the original border and corner mask once before scaling the complete image.
+Committed fullscreen sources use their decoration-free outline. Popups, layers,
+other windows, wallpaper, backdrop blur/glass and overview UI MUST NOT be baked
+into these images. [Overview](overview.md#rendering-and-resource-bounds) uses this
+composer with its existing independently bounded preview cache.
+
+The resulting owned GPU image retains no client surface or desktop object and
+can survive source destruction. Preparation elements are temporary live client
+references and MUST NOT be retained as destruction snapshots. Cache identity
+includes content/SSD render signatures and geometry/source/transform mappings,
+committed XDG geometry origin, border color, original frame/source,
+original corner/border geometry and committed fullscreen state. Appearance
+changes MUST invalidate images even without new client buffer damage.
+
+A presentation element samples the entire initialized image extent explicitly,
+scales the original complete silhouette, and crops to an output only afterward.
+Cropping MUST NOT generate new corners. Fractional destination origins remain
+fractional until the renderer's physical placement; destination dimensions are
+rounded to positive physical pixels at the current scale 1. Opacity MUST multiply
+premultiplied RGB and alpha together; the element reports no opaque regions.
+Zero opacity and invalid/nonfinite destination or opacity values emit no element.
+This API does not by itself implement transition triggers, input transforms,
+source replacement, or closing/minimization lifecycle policy.
+
+One shared composer reuses two RGBA8 source scratch textures, each growing to at
+most 2048×2048 pixels (32 MiB combined). Its consumers use these allocations;
+there is no second overview-only scratch pool. Sources
+larger than this bound MUST be aspect-fitted as whole images before masking and
+downscaling; they are not cropped to the bound. This sacrifices source resolution
+for oversized clients while preserving the original logical geometry metadata.
+Each owned result also has a maximum edge of 2048; retained-image count/byte budgets
+belong to the consumer's cache. Driver overhead, outstanding elements and transient
+replacement allocations are additional to retained storage.
+
+Every scratch/output render MUST clear its initialized region and sample only
+that region, keeping read/write textures separate. Imported-client sampling,
+scratch reuse and the final owned image use Smithay renderer synchronization.
+Reusing an output allocation requires that no retained snapshot or outstanding
+render element still samples it; callers may instead allocate a new owned result.
+The backend MUST restore its window target after offscreen work before swapping.
+
 ## Backdrop composition
 
 Blur is global for application windows, popup trees, and every layer-shell kind.
@@ -250,6 +301,9 @@ thumbnails and labels. Cards reuse committed buffers without client resizes.
 ## Implementation and evidence
 
 - [Theme](../src/decoration/mod.rs), [rounded renderer/hit shapes](../src/platform/smithay/rounded.rs),
+  [shared committed image composer](../src/platform/smithay/window_image.rs)
+  (`composition_keeps_the_whole_oversized_source_within_scratch_budget`,
+  `fractional_destination_and_opacity_are_validated_at_pixel_placement`),
   [blur renderer and inline tests](../src/platform/smithay/blur.rs),
   [scene assembly](../src/platform/smithay/scene.rs).
 - [Rounded schema/reload](../tests/rounded.rs) and [blur schema/reload](../tests/blur.rs)

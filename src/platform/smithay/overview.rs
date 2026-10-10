@@ -4,8 +4,9 @@ use super::{
     rounded::RoundedShaders,
     scene::{SceneElement, logical, premultiply},
     state::Compositor,
-    titlebar::{TitlebarCache, content_rect},
+    titlebar::TitlebarCache,
     wallpaper::WallpaperCache,
+    window_image::{PreparedWindowImage, WindowImage, WindowImageComposer, WindowImageIdentity},
 };
 use crate::{
     core::{OutputId, Rect, WindowId, WorkspaceId},
@@ -16,18 +17,12 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            Bind, Frame, ImportMem, Offscreen, Renderer,
-            element::{
-                Element, Id, Kind, RenderElement,
-                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
-                texture::TextureRenderElement,
-                utils::CropRenderElement,
-            },
+            ImportMem, Renderer,
+            element::{Id, Kind, texture::TextureRenderElement},
             gles::{GlesError, GlesRenderer, GlesTexture},
-            utils::CommitCounter,
         },
     },
-    utils::{Logical, Physical, Point, Rectangle, Transform},
+    utils::{Logical, Point, Transform},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -319,25 +314,15 @@ impl PreviewSizes {
 
 #[derive(Debug, Clone, PartialEq)]
 struct ThumbnailAppearance {
-    signature: Vec<(Id, CommitCounter)>,
-    color: [f32; 4],
-    source: Rect,
+    image: WindowImageIdentity,
     size: (i32, i32),
-    // Fullscreen changes the committed mask even without a new client buffer.
-    committed_fullscreen: bool,
 }
 
 struct Thumbnail {
-    texture: GlesTexture,
+    image: WindowImage,
     appearance: ThumbnailAppearance,
     last_use: u64,
     bytes: usize,
-}
-
-struct SourceBuffers {
-    size: (i32, i32),
-    body: GlesTexture,
-    rounded: GlesTexture,
 }
 
 struct CachedLabel {
@@ -349,7 +334,6 @@ struct CachedLabel {
 #[derive(Default)]
 pub(super) struct OverviewCache {
     thumbnails: BTreeMap<WindowId, Thumbnail>,
-    source_buffers: Option<SourceBuffers>,
     labels: BTreeMap<(String, i32, Option<usize>), CachedLabel>,
     generation: u64,
     theme: Option<Theme>,
@@ -359,7 +343,6 @@ pub(super) struct OverviewCache {
 impl OverviewCache {
     pub fn clear(&mut self) {
         self.thumbnails.clear();
-        self.source_buffers = None;
         self.labels.clear();
         self.theme = None;
         self.output = None;
@@ -435,102 +418,26 @@ impl OverviewCache {
         dest: Rect,
         sizes: &PreviewSizes,
         shaders: &RoundedShaders,
+        composer: &mut WindowImageComposer,
+        output_clip: Rect,
     ) -> Result<Vec<SceneElement>, GlesError> {
-        let Some(entry) = state.windows.get(&id).filter(|e| e.mapped) else {
-            return Ok(Vec::new());
-        };
-        let Some(top) = entry.window.toplevel() else {
-            return Ok(Vec::new());
-        };
-        let Some(window) = state.runtime.desktop.window(id) else {
+        let Some(prepared) = PreparedWindowImage::prepare(
+            state,
+            renderer,
+            titlebars,
+            id,
+            state.runtime.desktop.focused_window() == Some(id),
+        )?
+        else {
             return Ok(Vec::new());
         };
         let theme = &state.runtime.config.theme;
-        let geometry = entry.window.geometry();
-        let frame = Rect::new(
-            0,
-            0,
-            geometry.size.w.max(1),
-            geometry.size.h.max(1).saturating_add(if entry.uses_ssd() {
-                theme.titlebar.height
-            } else {
-                0
-            }),
-        );
-        let outline = entry.outline(frame, theme);
-        let source = outline.outer.rect;
-        // Main cards sample at their display resolution. Smaller strip tiles and
-        // ghosts share that texture without reducing its resolution first.
+        let source = prepared.identity.source;
+        // Main cards and miniatures share a cache planned for the largest destination.
         let size = sizes.texture_size(id, source);
-        let content = content_rect(frame, entry.uses_ssd(), theme.titlebar.height);
-        let location: Point<i32, Physical> =
-            (content.x - geometry.loc.x, content.y - geometry.loc.y).into();
-        let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
-            render_elements_from_surface_tree(
-                renderer,
-                top.wl_surface(),
-                location,
-                1.0,
-                1.0,
-                Kind::Unspecified,
-            );
-        if surfaces.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut parts: Vec<SceneElement> = Vec::new();
-        if entry.uses_ssd() {
-            parts.extend(
-                titlebars
-                    .elements(
-                        renderer,
-                        id,
-                        &window.title,
-                        frame,
-                        state.runtime.desktop.focused_window() == Some(id),
-                        window.maximized,
-                        frame,
-                        &theme.titlebar,
-                        &state.runtime.titlebar_assets,
-                        &window.app_id,
-                    )?
-                    .into_iter()
-                    .filter_map(|bar| {
-                        CropRenderElement::from_element(
-                            bar,
-                            1.0,
-                            logical(frame).to_physical_precise_round(1.0),
-                        )
-                    })
-                    .map(SceneElement::Titlebar),
-            );
-        }
-        parts.extend(
-            surfaces
-                .into_iter()
-                .filter_map(|s| {
-                    CropRenderElement::from_element(
-                        s,
-                        1.0,
-                        logical(content).to_physical_precise_round(1.0),
-                    )
-                })
-                .map(SceneElement::Surface),
-        );
-        let signature: Vec<_> = parts
-            .iter()
-            .map(|s| (s.id().clone(), s.current_commit()))
-            .collect();
-        let color = if state.runtime.desktop.focused_window() == Some(id) {
-            theme.active_border
-        } else {
-            theme.inactive_border
-        };
         let appearance = ThumbnailAppearance {
-            signature,
-            color,
-            source,
+            image: prepared.identity.clone(),
             size,
-            committed_fullscreen: entry.committed_fullscreen,
         };
         let changed = self
             .thumbnails
@@ -541,8 +448,8 @@ impl OverviewCache {
             let reusable = self
                 .thumbnails
                 .remove(&id)
-                .filter(|old| old.appearance.size == size)
-                .map(|old| old.texture);
+                .filter(|old| old.image.size() == size)
+                .map(|old| old.image.texture);
             while self.thumbnails.len() >= MAX_ENTRIES
                 || self.thumbnails.values().map(|t| t.bytes).sum::<usize>() + bytes > MAX_BYTES
             {
@@ -556,130 +463,12 @@ impl OverviewCache {
                 };
                 self.thumbnails.remove(&oldest);
             }
-            let mut texture: GlesTexture = match reusable {
-                Some(texture) => texture,
-                None => renderer.create_buffer(Fourcc::Abgr8888, size.into())?,
-            };
-            let native = fit(source, Rect::new(0, 0, MAX_TEXTURE_EDGE, MAX_TEXTURE_EDGE));
-            let native_size = (native.width, native.height);
-            if self
-                .source_buffers
-                .as_ref()
-                .is_none_or(|b| b.size.0 < native_size.0 || b.size.1 < native_size.1)
-            {
-                let capacity = self.source_buffers.as_ref().map_or(native_size, |b| {
-                    (b.size.0.max(native_size.0), b.size.1.max(native_size.1))
-                });
-                self.source_buffers = Some(SourceBuffers {
-                    size: capacity,
-                    body: renderer.create_buffer(Fourcc::Abgr8888, capacity.into())?,
-                    rounded: renderer.create_buffer(Fourcc::Abgr8888, capacity.into())?,
-                });
-            }
-            let buffers = self
-                .source_buffers
-                .as_mut()
-                .expect("prepared source buffers");
-            let sx = native_size.0 as f64 / source.width as f64;
-            let sy = native_size.1 as f64 / source.height as f64;
-            let sync = {
-                let mut target = renderer.bind(&mut buffers.body)?;
-                let mut frame =
-                    renderer.render(&mut target, native_size.into(), Transform::Normal)?;
-                frame.clear([0.0; 4].into(), &[Rectangle::from_size(native_size.into())])?;
-                for part in parts.iter().rev() {
-                    let geometry = part.geometry(1.0.into());
-                    let left = ((geometry.loc.x - source.x) as f64 * sx).round() as i32;
-                    let top = ((geometry.loc.y - source.y) as f64 * sy).round() as i32;
-                    let right =
-                        ((geometry.loc.x + geometry.size.w - source.x) as f64 * sx).round() as i32;
-                    let bottom =
-                        ((geometry.loc.y + geometry.size.h - source.y) as f64 * sy).round() as i32;
-                    let destination = Rectangle::new(
-                        (left, top).into(),
-                        ((right - left).max(1), (bottom - top).max(1)).into(),
-                    );
-                    part.draw(
-                        &mut frame,
-                        part.src(),
-                        destination,
-                        &[Rectangle::from_size(destination.size)],
-                        &[],
-                        None,
-                    )?;
-                }
-                frame.finish()?
-            };
-            renderer.wait(&sync)?;
-            let source_element = TextureRenderElement::from_static_texture(
-                Id::new(),
-                renderer.context_id(),
-                (0.0, 0.0),
-                buffers.body.clone(),
-                1,
-                Transform::Normal,
-                None,
-                Some(Rectangle::from_size(
-                    (native_size.0 as f64, native_size.1 as f64).into(),
-                )),
-                Some(native_size.into()),
-                None,
-                Kind::Unspecified,
-            );
-            let rounded = shaders.mask_texture(
-                source_element,
-                outline
-                    .scaled(Rect::new(0, 0, native_size.0, native_size.1))
-                    .offscreen(native_size.1),
-                color,
-                native_size.1,
-            );
-            let sync = {
-                let mut target = renderer.bind(&mut buffers.rounded)?;
-                let mut frame =
-                    renderer.render(&mut target, native_size.into(), Transform::Normal)?;
-                let area = Rectangle::from_size(native_size.into());
-                frame.clear([0.0; 4].into(), &[area])?;
-                rounded.draw(&mut frame, rounded.src(), area, &[area], &[], None)?;
-                frame.finish()?
-            };
-            renderer.wait(&sync)?;
-            let rounded = TextureRenderElement::from_static_texture(
-                Id::new(),
-                renderer.context_id(),
-                (0.0, 0.0),
-                buffers.rounded.clone(),
-                1,
-                Transform::Normal,
-                None,
-                Some(Rectangle::from_size(
-                    (native_size.0 as f64, native_size.1 as f64).into(),
-                )),
-                Some(native_size.into()),
-                None,
-                Kind::Unspecified,
-            );
-            let sync = {
-                let mut target = renderer.bind(&mut texture)?;
-                let mut frame = renderer.render(&mut target, size.into(), Transform::Normal)?;
-                let area = Rectangle::from_size(size.into());
-                frame.clear([0.0; 4].into(), &[area])?;
-                RenderElement::<GlesRenderer>::draw(
-                    &rounded,
-                    &mut frame,
-                    rounded.src(),
-                    area,
-                    &[area],
-                    &[],
-                    None,
-                )?;
-                frame.finish()?
-            };
-            renderer.wait(&sync)?;
+            let image = composer.compose(renderer, shaders, &prepared, size, reusable)?;
+            let bytes = image.bytes();
             self.thumbnails.insert(
                 id,
                 Thumbnail {
-                    texture,
+                    image,
                     appearance,
                     last_use: self.generation,
                     bytes,
@@ -688,23 +477,13 @@ impl OverviewCache {
         }
         let thumbnail = self.thumbnails.get_mut(&id).expect("prepared thumbnail");
         thumbnail.last_use = self.generation;
-        let dest = fit(source, dest);
-        // Smithay's default source follows the destination size. Specify the
-        // texture extent so small cards/miniatures scale rather than crop it.
+        let dest = fit(thumbnail.image.source, dest);
+        let outline = thumbnail.image.outline;
         let body = || {
-            TextureRenderElement::from_static_texture(
-                Id::new(),
-                renderer.context_id(),
-                (dest.x as f64, dest.y as f64),
-                thumbnail.texture.clone(),
-                1,
-                Transform::Normal,
-                None,
-                Some(Rectangle::from_size((size.0 as f64, size.1 as f64).into())),
-                Some((dest.width, dest.height).into()),
-                None,
-                Kind::Unspecified,
-            )
+            thumbnail
+                .image
+                .texture_element(logical(dest).to_f64(), 1.0)
+                .expect("positive fitted preview destination")
         };
         let selected = state
             .runtime
@@ -724,7 +503,12 @@ impl OverviewCache {
                 state.host_size.h,
             )));
         }
-        elements.push(SceneElement::Wallpaper(body()));
+        if let Some(body) = thumbnail
+            .image
+            .element(logical(dest).to_f64(), 1.0, output_clip)
+        {
+            elements.push(SceneElement::Titlebar(body));
+        }
         Ok(elements)
     }
 
@@ -736,6 +520,7 @@ impl OverviewCache {
         titlebars: &mut TitlebarCache,
         shaders: &RoundedShaders,
         wallpapers: &mut WallpaperCache,
+        composer: &mut WindowImageComposer,
     ) -> Result<Vec<SceneElement>, GlesError> {
         let Some(session) = &state.runtime.overview else {
             self.clear();
@@ -765,7 +550,7 @@ impl OverviewCache {
                     0
                 });
                 let frame = Rect::new(0, 0, size.w.max(1), height);
-                cached.appearance.source
+                cached.appearance.image.source
                     == entry.outline(frame, &state.runtime.config.theme).outer.rect
             })
         });
@@ -825,6 +610,8 @@ impl OverviewCache {
                 rect,
                 &sizes,
                 shaders,
+                composer,
+                layout.output,
             ) {
                 Ok(preview) => elements.extend(preview),
                 Err(error) => tracing_fallback(error),
@@ -849,7 +636,15 @@ impl OverviewCache {
                         for (window, dest) in state.overview_miniatures(id, preview, layout.output)
                         {
                             match self.thumbnail(
-                                state, renderer, titlebars, window, dest, &sizes, shaders,
+                                state,
+                                renderer,
+                                titlebars,
+                                window,
+                                dest,
+                                &sizes,
+                                shaders,
+                                composer,
+                                layout.output,
                             ) {
                                 Ok(preview) => elements.extend(preview),
                                 Err(error) => {
@@ -889,9 +684,17 @@ impl OverviewCache {
                 OverviewTarget::Window(id) => {
                     if let Some(preview) = item.preview {
                         let start = elements.len();
-                        match self
-                            .thumbnail(state, renderer, titlebars, id, preview, &sizes, shaders)
-                        {
+                        match self.thumbnail(
+                            state,
+                            renderer,
+                            titlebars,
+                            id,
+                            preview,
+                            &sizes,
+                            shaders,
+                            composer,
+                            layout.output,
+                        ) {
                             Ok(preview) => elements.extend(preview),
                             Err(error) => {
                                 self.thumbnails.remove(&id);
@@ -1190,6 +993,7 @@ mod tests {
         core::{Desktop, OutputId},
         runtime::OverviewNavigation,
     };
+    use smithay::backend::renderer::utils::CommitCounter;
 
     fn session(windows: usize) -> (Desktop, OverviewSession) {
         let mut d = Desktop::new();
@@ -1390,20 +1194,26 @@ mod tests {
     #[test]
     fn fullscreen_root_commit_invalidates_preview_without_buffer_damage() {
         let ordinary = ThumbnailAppearance {
-            signature: vec![(Id::new(), CommitCounter::default())],
-            color: [0.2, 0.3, 0.4, 1.0],
-            source: Rect::new(0, 0, 640, 480),
+            image: WindowImageIdentity {
+                signature: vec![(Id::new(), CommitCounter::default())],
+                mappings: Vec::new(),
+                geometry_origin: (0, 0),
+                border_color: [0.2, 0.3, 0.4, 1.0],
+                source: Rect::new(0, 0, 640, 480),
+                frame: Rect::new(0, 0, 640, 480),
+                outlines: [(Rect::new(0, 0, 640, 480), [0.0; 4]); 2],
+                committed_fullscreen: false,
+            },
             size: (320, 240),
-            committed_fullscreen: false,
         };
         let mut fullscreen = ordinary.clone();
-        fullscreen.committed_fullscreen = true;
+        fullscreen.image.committed_fullscreen = true;
         // A CSD root can accept fullscreen while keeping its current buffer.
         // With zero border width, source/texture geometry and damage are unchanged.
-        assert_eq!(ordinary.signature, fullscreen.signature);
-        assert_eq!(ordinary.source, fullscreen.source);
+        assert_eq!(ordinary.image.signature, fullscreen.image.signature);
+        assert_eq!(ordinary.image.source, fullscreen.image.source);
         assert_ne!(ordinary, fullscreen);
-        fullscreen.committed_fullscreen = false;
+        fullscreen.image.committed_fullscreen = false;
         assert_eq!(ordinary, fullscreen);
     }
 }

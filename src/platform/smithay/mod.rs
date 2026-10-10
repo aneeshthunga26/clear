@@ -14,6 +14,7 @@ mod shell;
 mod state;
 mod titlebar;
 mod wallpaper;
+mod window_image;
 
 use crate::runtime::{Options, Runtime};
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};

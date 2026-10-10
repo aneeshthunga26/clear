@@ -8,6 +8,7 @@ use super::{
     state::{Compositor, OutputRegion},
     titlebar::TitlebarCache,
     wallpaper::WallpaperCache,
+    window_image::WindowImageComposer,
 };
 use crate::core::{OutputId, Rect};
 use smithay::{
@@ -84,6 +85,7 @@ pub(super) fn init(
     let mut wallpapers = WallpaperCache::default();
     let mut titlebars = TitlebarCache::default();
     let mut overview = OverviewCache::default();
+    let mut window_images = WindowImageComposer::default();
     let mut rounded = None;
     let mut blur = None;
     if scheduler.request_redraw() {
@@ -130,6 +132,9 @@ pub(super) fn init(
                     return;
                 }
                 state.reconcile();
+                if state.runtime.overview.is_none() && !state.runtime.config.animations.enabled {
+                    window_images.clear();
+                }
                 let result = (|| -> Result<(), String> {
                     let (renderer, mut framebuffer) = backend
                         .bind()
@@ -159,7 +164,14 @@ pub(super) fn init(
                     let background = premultiply(state.runtime.config.theme.background);
                     let mut final_elements = if let Some(shaders) = rounded.as_ref() {
                         overview
-                            .elements(state, renderer, &mut titlebars, shaders, &mut wallpapers)
+                            .elements(
+                                state,
+                                renderer,
+                                &mut titlebars,
+                                shaders,
+                                &mut wallpapers,
+                                &mut window_images,
+                            )
                             .map_err(|e| format!("compose overview: {e}"))?
                     } else {
                         overview.clear();
