@@ -96,10 +96,52 @@ The next foundation slice passed Cargo fmt/check/test/build and editor warning
 diagnostics, plus the final targeted suite of 17 engine and 24 presentation-planner
 tests. These CPU cases cover workspace reversal offsets/velocity, speed reload,
 missed terminal frames, forced settlement acknowledgements, filtered draws, bounded
-tracks, direct cancellation and tiny-output minimize anchors. The planner remains
-disconnected from rendering; these results do not establish visible effects or
+tracks, direct cancellation and tiny-output minimize anchors. At that slice the planner remained
+disconnected from rendering; those results do not establish visible effects or
 cadence. Shared image GPU and real panel-hint validation are recorded in the
 overview and shell sections below.
+
+### Visible animation validation
+
+After building, run the bounded real-client animation fixture on the private
+virtual KWin host:
+
+```sh
+python3 -B scripts/vm-animation-smoke.py --binary target/debug/clear --artifacts target/vm-animation-smoke
+```
+
+Select individual scenarios with repeated `--case` options. The twelve scenarios
+cover open, destroyed close, fading backdrop coverage (`close-blur`), minimize,
+restore, layout movement, maximize, fullscreen, a held fullscreen SSD commit,
+workspace switching, and overview entry/exit with wallpaper scaling. Each Clear
+instance exits after 8, 15 or 19 seconds. Slow linear transitions make the capture
+fall between endpoints; the held-commit capture occurs after geometry completion.
+Final policy/configures and intermediate GPU geometry/opacity are checked
+independently. A generated wallpaper stripe checks preservation of source
+coordinates during overview canvas scaling. A transparent closing frame over
+checks verifies that geometric backdrop coverage fades with the image.
+
+On 2026-10-11, Cargo fmt/check/test/build and editor warning diagnostics passed.
+All twelve scenarios passed on private **local virtual KWin**, not a VM. The ten
+window/workspace/backdrop/held-commit results are under
+`target/animation-visible/final/`; the final two overview results are under
+`target/animation-visible/final-overview/`. Earlier probes exposed a zero-opacity
+thumbnail panic and an overview exit oracle sampling beneath the desktop strip;
+the implementation and oracle were corrected before those final passes.
+Synthetic tests cover workspace paired releases and inverse body/SSD coordinates,
+while pure transition tests cover interrupted overview activation without a jump
+and retained fullscreen priority independent of buffered decoration commits.
+
+Existing regressions also passed: ordinary and Rhai foot smokes in
+`target/animation-visible/{ordinary-smoke,rhai-smoke}/`; overview
+`rounded-asymmetric`, `live-cards`, and `cancelled` in
+`target/animation-visible/overview-regression/`; fullscreen `ssd-held` and
+`state-interleavings` in `target/animation-visible/fullscreen-regression/`; and
+Kawase radius 2/passes 3 `rounded-ssd` in
+`target/animation-visible/blur-regression/`. These selected regressions are not a
+rerun of every legacy GPU case. No physical keys, clicks, drags, delivered refresh
+cadence, or physical presentation synchronization were tested. CPU scheduling
+assertions establish the configured sampling/no-divisor-fallback rules.
 
 ## Wallpapers
 

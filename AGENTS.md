@@ -136,6 +136,10 @@ Prefer an isolated VM for compositor integration tests:
   real XDG/IPC/GPU checks for panel-independent full bounds, overlay priority,
   pre-map/fullscreen output targets, maximize/minimize restore, ACKed but held SSD
   commits, and launcher refusal. No physical input or animation timing is tested.
+- `python3 -B scripts/vm-animation-smoke.py --binary target/debug/clear`: bounded
+  real-client policy/configure and intermediate GPU checks for all eight effects,
+  restore, overview exit/wallpaper scaling, fading blur coverage and held fullscreen
+  buffers. No physical input or delivered presentation cadence is measured.
 - `python3 -B scripts/vm-rounded-smoke.py --binary target/debug/clear`: GPU checks
   for configurable rounded outlines, transparency, subsurfaces, geometry offsets,
   and unchanged layer/popup shapes.
