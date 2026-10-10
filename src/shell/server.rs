@@ -10,6 +10,7 @@ use std::{
     io::{self, Read, Write},
     os::unix::{
         fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
+        io::AsRawFd,
         net::{UnixListener, UnixStream},
     },
     path::{Component, Path, PathBuf},
@@ -28,7 +29,63 @@ const WRITE_BYTES_PER_POLL: usize = 256 * 1024;
 
 /// An opaque connection identity, never reused during a server's lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ClientId(u64);
+pub struct ClientId(pub(crate) u64);
+
+/// Kernel-reported process identity captured when the Unix connection is accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerCredentials {
+    pub pid: u32,
+    pub uid: u32,
+}
+
+#[cfg(target_os = "linux")]
+fn peer_credentials(stream: &UnixStream) -> Option<PeerCredentials> {
+    #[repr(C)]
+    struct Credentials {
+        pid: i32,
+        uid: u32,
+        gid: u32,
+    }
+    unsafe extern "C" {
+        fn getsockopt(
+            fd: i32,
+            level: i32,
+            option: i32,
+            value: *mut std::ffi::c_void,
+            len: *mut u32,
+        ) -> i32;
+    }
+    let mut credentials = Credentials {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<Credentials>() as u32;
+    // Linux SO_PEERCRED returns credentials of the process that connected this
+    // socket. Neither request fields nor environment variables supply identity.
+    let result = unsafe {
+        getsockopt(
+            stream.as_raw_fd(),
+            1,
+            17,
+            (&mut credentials as *mut Credentials).cast(),
+            &mut len,
+        )
+    };
+    if result != 0 || len as usize != std::mem::size_of::<Credentials>() {
+        return None;
+    }
+    let pid: u32 = credentials.pid.try_into().ok()?;
+    (pid != 0).then_some(PeerCredentials {
+        pid,
+        uid: credentials.uid,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn peer_credentials(_stream: &UnixStream) -> Option<PeerCredentials> {
+    None
+}
 
 /// A single-threaded shell transport with bounded work and storage per connection.
 pub struct Server {
@@ -173,6 +230,19 @@ impl Server {
             .retain_mut(|client| !client.subscribed || client.enqueue(&frame));
     }
 
+    /// Credentials of a currently connected peer; unavailable credentials never authorize hints.
+    pub fn peer_credentials(&self, id: ClientId) -> Option<PeerCredentials> {
+        self.clients
+            .iter()
+            .find(|client| client.id == id)
+            .and_then(|client| client.credentials)
+    }
+
+    /// Whether a connection still exists, including a peer receiving its final replies.
+    pub fn is_connected(&self, id: ClientId) -> bool {
+        self.clients.iter().any(|client| client.id == id)
+    }
+
     /// Whether a connected peer has requested state publications.
     pub fn has_subscribers(&self) -> bool {
         self.clients.iter().any(|client| client.subscribed)
@@ -182,6 +252,7 @@ impl Server {
 struct Client {
     id: ClientId,
     stream: UnixStream,
+    credentials: Option<PeerCredentials>,
     incoming: Vec<u8>,
     scanned: usize,
     outgoing: VecDeque<u8>,
@@ -193,6 +264,7 @@ impl Client {
     fn new(id: ClientId, stream: UnixStream) -> Self {
         Self {
             id,
+            credentials: peer_credentials(&stream),
             stream,
             incoming: Vec::new(),
             scanned: 0,
@@ -450,6 +522,22 @@ mod tests {
             }
         }
         panic!("test read budget exceeded");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn kernel_peer_credentials_belong_to_live_connection_and_disappear_at_disconnect() {
+        let temp = TempDir::new();
+        let mut server = Server::bind(&temp.0, "credentials").unwrap();
+        let (stream, id) = connect(&mut server);
+        let peer = server.peer_credentials(id).unwrap();
+        assert_eq!(peer.pid, std::process::id());
+        assert_eq!(peer.uid, fs::metadata(&temp.0).unwrap().uid());
+        assert!(server.is_connected(id));
+        drop(stream);
+        server.poll();
+        assert!(!server.is_connected(id));
+        assert_eq!(server.peer_credentials(id), None);
     }
 
     #[test]

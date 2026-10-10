@@ -3,7 +3,9 @@
 //! The transport owns newline framing, connection limits, subscriptions, and backend
 //! reconciliation. This module neither performs IO nor exposes process/script actions.
 
+pub mod animation_targets;
 pub mod server;
+pub use animation_targets::{AnimationTarget, PanelSnapshot, TargetRect};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +38,13 @@ pub enum RequestKind {
     Subscribe,
     #[serde(deserialize_with = "empty_request")]
     ToggleOverview,
+    #[serde(deserialize_with = "empty_request")]
+    AnimationPanels,
+    SetAnimationTargets {
+        panel: String,
+        output: String,
+        targets: Vec<AnimationTarget>,
+    },
     FocusOutput {
         output: String,
     },
@@ -86,6 +95,8 @@ fn empty_request<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<()
 /// A complete, owned view of desktop policy and pending switch selection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Snapshot {
+    /// Additive optional capabilities understood by the compositor adapter.
+    pub capabilities: Vec<String>,
     pub outputs: Vec<OutputSnapshot>,
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub groups: Vec<GroupSnapshot>,
@@ -164,6 +175,7 @@ pub struct WindowSnapshot {
 pub fn snapshot(runtime: &Runtime) -> Snapshot {
     let desktop = &runtime.desktop;
     Snapshot {
+        capabilities: vec!["animation_targets_v1".into()],
         outputs: desktop
             .outputs()
             .map(|output| {
@@ -284,6 +296,9 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
     validate_version(request.version)?;
     match &request.request {
         RequestKind::Snapshot | RequestKind::Subscribe => {}
+        RequestKind::AnimationPanels | RequestKind::SetAnimationTargets { .. } => {
+            return Err("animation targets require compositor panel ownership validation".into());
+        }
         RequestKind::ToggleOverview => {
             runtime.overview_requested = !runtime.overview_requested;
         }
@@ -380,10 +395,24 @@ struct Response<'a> {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message<'a> {
-    Snapshot { id: u32, state: &'a Snapshot },
-    State { state: &'a Snapshot },
-    Ok { id: u32 },
-    Error { id: Option<u32>, message: &'a str },
+    Snapshot {
+        id: u32,
+        state: &'a Snapshot,
+    },
+    AnimationPanels {
+        id: u32,
+        panels: &'a [PanelSnapshot],
+    },
+    State {
+        state: &'a Snapshot,
+    },
+    Ok {
+        id: u32,
+    },
+    Error {
+        id: Option<u32>,
+        message: &'a str,
+    },
 }
 
 fn encode(message: Message<'_>) -> Vec<u8> {
@@ -415,4 +444,9 @@ pub fn encode_ok(id: u32) -> Vec<u8> {
 /// Encode an error; an unavailable request ID is represented as JSON null.
 pub fn encode_error(id: Option<u32>, message: &str) -> Vec<u8> {
     encode(Message::Error { id, message })
+}
+
+/// Encode mapped panel discovery for one authenticated IPC peer.
+pub fn encode_animation_panels(id: u32, panels: &[PanelSnapshot]) -> Vec<u8> {
+    encode(Message::AnimationPanels { id, panels })
 }

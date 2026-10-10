@@ -83,6 +83,7 @@ impl WlrLayerShellHandler for Compositor {
             .iter()
             .position(|entry| entry.surface.layer_surface() == &surface)
         {
+            self.invalidate_animation_panel(surface.wl_surface());
             let entry = self.layers.remove(index);
             layer_map_for_output(&entry.output).unmap_layer(&entry.surface);
         }
@@ -92,6 +93,11 @@ impl WlrLayerShellHandler for Compositor {
 
 impl Compositor {
     pub fn layer_commit(&mut self, surface: &WlSurface) {
+        let has_buffer =
+            with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
+        if !has_buffer {
+            self.invalidate_animation_panel(surface);
+        }
         let Some(entry) = self
             .layers
             .iter_mut()
@@ -106,8 +112,6 @@ impl Compositor {
                 .get::<LayerSurfaceData>()
                 .is_some_and(|data| data.lock().unwrap().initial_configure_sent)
         });
-        let has_buffer =
-            with_renderer_surface_state(surface, |state| state.buffer().is_some()).unwrap_or(false);
         let mut map = layer_map_for_output(&entry.output);
         if entry.mapped && !has_buffer {
             // Smithay resets the role before this callback. Do not consume the

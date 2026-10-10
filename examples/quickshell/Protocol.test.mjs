@@ -141,3 +141,31 @@ test("mode icons and launcher search have bounded, predictable mapping", () => {
     assert.equal(protocol.matchesApp(entry, "writ"), true);
     assert.equal(protocol.matchesApp(entry, " notes "), true);
 });
+
+test("animation targets negotiate capability and require unambiguous committed panel dimensions", () => {
+    assert.equal(protocol.supportsAnimationTargets(state), false);
+    assert.equal(protocol.supportsAnimationTargets({...state, capabilities: ["animation_targets_v1"]}), true);
+    const output = {id: "1"};
+    const panels = [{panel: "18446744073709551615", output: "1", namespace: "panel", width: 640, height: 32}];
+    assert.equal(protocol.animationPanelFor(panels, output, "panel", 640, 32).panel, panels[0].panel);
+    assert.equal(protocol.animationPanelFor(panels, output, "panel", 600, 32), null);
+    assert.equal(protocol.animationPanelFor([...panels, {...panels[0], panel: "2"}], output, "panel", 640, 32), null);
+    const response = protocol.decodeMessage(JSON.stringify({version: 1, type: "animation_panels", id: 1, panels}));
+    assert.equal(response.panels[0].panel, "18446744073709551615");
+});
+
+test("animation icon reports use actual panel-local bounds, exclude clipping and foreign app groups", () => {
+    const model = {...state, windows: [{id: "1", app_id: "editor", role: "normal", output: "1"}]};
+    const viewport = {x: 10, y: 0, width: 100, height: 32};
+    const icons = [
+        {app_id: "editor", x: 10.5, y: 6, width: 20, height: 20},
+        {app_id: "editor", x: 50, y: 6, width: 20, height: 20},
+        {app_id: "unmapped-pin", x: 50, y: 6, width: 20, height: 20},
+    ];
+    const targets = JSON.parse(JSON.stringify(protocol.animationAppTargets(model, {id: "1"}, icons, viewport, 640, 32)));
+    assert.deepEqual(targets, [{app_id: "editor", rect: {x: 10, y: 6, width: 21, height: 20}}]);
+    for (const x of [-10, 100, Infinity, NaN]) {
+        assert.equal(protocol.animationAppTargets(model, {id: "1"}, [{...icons[0], x}], viewport, 640, 32).length, 0);
+    }
+    assert.equal(protocol.animationAppTargets(model, {id: "2"}, icons, viewport, 640, 32).length, 0);
+});

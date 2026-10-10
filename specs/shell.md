@@ -57,6 +57,8 @@ Each line is a separate request. The complete allowlist is:
 | `clear_mode` | `output` | Clear that workspace/output override |
 | `stretch` | `output` | Focus output and stretch across all outputs |
 | `split` | `output` | Focus output and split its group |
+| `animation_panels` | None | Discover eligible mapped panels owned by this peer's Wayland process |
+| `set_animation_targets` | `panel`, `output`, `targets` | Atomically replace this connection's advisory icon rectangles for one live panel |
 
 Modes use [core mode parsing](layouts.md#layout-inputs-and-names) with canonical
 names in responses, including `script:NAME`. Mode strings are limited to 256
@@ -76,6 +78,7 @@ reload, close-window, script-action, or raw core-command requests.
 | Unsolicited change | `{"version":1,"type":"state","state":{...}}` |
 | Accepted command | `{"version":1,"type":"ok","id":2}` |
 | Error | `{"version":1,"type":"error","id":2,"message":"..."}` |
+| Panel discovery | `{"version":1,"type":"animation_panels","id":3,"panels":[...]}` |
 
 Malformed envelopes, unsupported versions, and parse errors use `id: null`.
 Errors after envelope validation retain its ID. Invalid JSON does not itself
@@ -103,6 +106,7 @@ All identity fields below are decimal strings, including identities inside array
 | `focused_output`, `focused_window` | ID or null |
 | `overview_open` | Boolean; active compositor-owned overview, excluding a deferred request |
 | `switcher` | null or `{output,windows,selected}` during the compositor's Alt-held gesture |
+| `capabilities` | String array; currently includes `animation_targets_v1` for the implemented adapter hint protocol |
 
 Window `output` is its saved home or null, not a visibility test. `role` is
 `normal` or `launcher`. `floating` is the saved exception flag, not the effective
@@ -114,6 +118,86 @@ Snapshots report desktop focus, not keyboard ownership held by a layer. Group
 presentation determines workspace visibility; clients MUST NOT infer it from a
 window's home alone. Switcher candidates include minimized normal windows; focus
 changes only upon acceptance, as specified in [input](input.md#alt-tab).
+
+## Advisory panel icon targets
+
+The additive `animation_targets_v1` capability supports optional shell-provided
+minimize destinations. Reports and resolver/fallback helpers are implemented;
+the renderer does **not yet consume them for minimize motion**. Their absence,
+rejection or expiry MUST NOT affect minimize policy, focus, client configuration,
+or compositor operation. These requests do not run desktop reconciliation or
+publish changed policy snapshots. Backend-independent `execute` refuses them;
+only the adapter can validate live Wayland ownership and handle them.
+
+`animation_panels` returns `{panel,output,namespace,width,height}` entries only
+for mapped panels whose Wayland client PID and UID match the requesting Unix
+stream's kernel credentials. Another process receives an empty list even if
+it runs as the same user. Credentials are not accepted from clients. If kernel
+credentials cannot be obtained, the request fails. This narrower association is
+an identity check for this advisory capability, not same-user security isolation.
+
+Eligible panels are on a connected output, in the effective top or bottom layer,
+and either match a configured panel namespace or reserve a positive exclusive
+zone at an output edge. Overlay/background surfaces and whole-output bodies are
+excluded. The committed root surface view MUST begin at local `(0,0)`; panels
+with a shifted root body are omitted because this narrow discovery format has
+no body-local offset field. At most 32 mappings are discovered, in layer
+registration order.
+`panel` is a canonical decimal opaque mapping identity, not a client-supplied
+namespace or output rectangle. It rotates after unmap/remap, output migration,
+committed geometry/origin changes, or ownership changes. Old registrations and
+identities are discarded immediately on unmap/destruction and during lifecycle
+refresh. ID exhaustion omits new mappings rather than reusing an identity.
+
+The `output` field in `set_animation_targets` MUST exactly match the discovered
+live output ID. `targets` is an array whose entries have exactly one selector:
+
+```json
+{"window":"7","rect":{"x":120,"y":8,"width":20,"height":20}}
+{"app_id":"foot","rect":{"x":120,"y":8,"width":20,"height":20}}
+```
+
+Rectangles use **panel-surface-local integer logical coordinates**. The adapter
+derives their global origin from the actual committed surface and arranged
+output, never from shell-supplied global coordinates. Extents MUST be positive
+and at most 16384 each. Local origins MUST be nonnegative, arithmetic MUST not
+overflow, and the entire translated rectangle MUST fit both the committed panel
+dimensions and visible body clipped to full output bounds. Partially clipped
+icons are refused rather than truncated. Unknown fields, mixed selectors,
+duplicate selectors and noninteger geometry fail.
+
+Window selectors MUST name live normal windows whose saved home is the panel's
+output. App selectors use exact nonempty app IDs of at most 256 UTF-8 bytes,
+without NUL; a matching live normal window on that home output MUST exist.
+Hidden and minimized normal windows remain eligible. Launchers and foreign
+home-output windows are refused. Resolution prefers exact-window selectors,
+then exact app IDs, using the lowest live mapping identity for deterministic
+selection within each selector type.
+
+One live IPC connection owns a panel registration; another connection cannot
+replace it until release, expiry or disconnect, including another connection
+from the same process. An accepted complete replacement renews a five-second
+monotonic lease; an empty replacement removes the registration. Validation is
+atomic: a failed replacement retains the previous records and lease. Records
+are discarded on lease expiry, disconnect, panel lifecycle/geometry changes,
+output removal, target destruction/reclassification, or home-output migration.
+Limits are 128 entries per panel, 512 entries total, and eight connections with
+nonempty registrations, in addition to the transport limits below.
+
+The prepared fallback helper uses the window's home full-output bounds. It
+chooses an eligible panel body's center, preferring reserved panels and then
+mapping identity, or the output's bottom center if no eligible panel exists.
+The target is at most 24×24 logical pixels and fits the selected body/output.
+Overlay launchers do not become fallback panels. This helper is also not wired
+to a visible animation yet.
+
+The Quickshell example discovers its own panels after subscription and once per
+second. It matches output, namespace and committed dimensions unambiguously,
+then reports the actual 20×20 app-icon item rectangles after layout and dock
+scrolling and renews them once per second. Entirely visible icons with matching
+live normal home-output windows are included; pinned-only and clipped icons are
+omitted. It sends empty replacements when its dock becomes hidden and never
+replays reports across disconnection. No shell process is required for fallback.
 
 ## Transport bounds
 
@@ -186,6 +270,16 @@ another shell.
 - [Model, validation, serialization](../src/shell/mod.rs),
   [transport and inline tests](../src/shell/server.rs),
   [adapter polling/reconciliation](../src/platform/smithay/shell.rs).
+- [Hint store and inline tests](../src/shell/animation_targets.rs): strict
+  selectors, connection/process ownership, atomic rejection, local/global clips,
+  exact-window precedence, expiry, lifecycle pruning and provider limits.
+- [Adapter inline tests](../src/platform/smithay/shell.rs): panel fallback
+  priority, full bounds with nonzero origins, short-body/tiny-output fitting,
+  and exclusion of shifted-body/whole-output panel geometry.
+- [Real Quickshell hint fixture](../scripts/vm-shell-hints-smoke.py): accepted
+  nonempty icon reports, same-process discovery, foreign-process refusal,
+  unchanged desktop policy, and fresh identities after panel restart. It does
+  not establish scroll gesture, GPU pixel, physical input or animation behavior.
 - [Optional panel status controls](../examples/quickshell/SystemStatus.qml) and
   [StatusNotifierItem tray](../examples/quickshell/Tray.qml).
 - [IPC tests](../tests/shell_ipc.rs): strict shapes, large IDs, hidden windows,

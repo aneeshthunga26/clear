@@ -663,3 +663,37 @@ fn response_envelopes_escape_metadata_and_preserve_exact_shapes() {
         );
     }
 }
+
+#[test]
+fn animation_target_messages_are_strict_and_model_cannot_bypass_adapter_validation() {
+    let good = json!({"version":1,"id":1,"request":{"type":"set_animation_targets","panel":"1","output":"11",
+        "targets":[{"window":"1","rect":{"x":1,"y":1,"width":20,"height":20}},
+            {"app_id":"editor","rect":{"x":21,"y":1,"width":20,"height":20}}]}});
+    let request = parse_request(&serde_json::to_vec(&good).unwrap()).unwrap();
+    let mut r = runtime();
+    let before = snapshot(&r);
+    assert!(execute(&mut r, &request).is_err());
+    assert_eq!(snapshot(&r), before);
+    let mut conflicting = good.clone();
+    conflicting["request"]["targets"][0]["app_id"] = json!("editor");
+    assert!(parse_request(&serde_json::to_vec(&conflicting).unwrap()).is_err());
+    for value in [json!(1.5), json!("1"), json!(null)] {
+        let mut wrong = good.clone();
+        wrong["request"]["targets"][0]["rect"]["x"] = value;
+        assert!(parse_request(&serde_json::to_vec(&wrong).unwrap()).is_err());
+    }
+    let mut extra = good.clone();
+    extra["request"]["targets"][0]["rect"]["extra"] = json!(1);
+    assert!(parse_request(&serde_json::to_vec(&extra).unwrap()).is_err());
+    let query = br#"{"version":1,"id":1,"request":{"type":"animation_panels"}}"#;
+    assert!(parse_request(query).is_ok());
+    assert!(
+        parse_request(br#"{"version":1,"id":1,"request":{"type":"animation_panels","extra":0}}"#)
+            .is_err()
+    );
+    assert!(
+        snapshot(&r)
+            .capabilities
+            .contains(&"animation_targets_v1".into())
+    );
+}

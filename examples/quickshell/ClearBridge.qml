@@ -12,6 +12,7 @@ Scope {
         : lastError !== "" ? lastError
         : online ? "Connected" : socket.connected ? "Waiting for Clear state" : "Offline: retrying Clear IPC"
     property var state: null
+    property var animationPanels: []
     property string lastError: ""
     // QML int is signed; double represents every u32 request ID exactly.
     property double nextId: 1
@@ -38,11 +39,17 @@ Scope {
             if (message.type === "snapshot" || message.type === "state") {
                 if (state === null)
                     console.info("Clear shell: subscribed to protocol v1");
+                var first = state === null;
                 state = message.state;
-            } else if (message.type === "error")
+                if (first && Protocol.supportsAnimationTargets(state))
+                    send({type: "animation_panels"});
+            } else if (message.type === "animation_panels")
+                animationPanels = message.panels;
+            else if (message.type === "error")
                 lastError = "Clear: " + message.message;
         } catch (error) {
             state = null;
+            animationPanels = [];
             lastError = "Offline: " + error.message;
             socket.connected = false;
         }
@@ -60,14 +67,23 @@ Scope {
         }
         onConnectedChanged: {
             bridge.state = null;
+            bridge.animationPanels = [];
             if (connected)
                 bridge.send({type: "subscribe"});
         }
         onError: {
             bridge.state = null;
+            bridge.animationPanels = [];
             bridge.lastError = "Offline: Clear IPC unavailable; retrying";
             connected = false;
         }
+    }
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: bridge.online && Protocol.supportsAnimationTargets(bridge.state)
+        onTriggered: bridge.send({type: "animation_panels"})
     }
 
     Timer {

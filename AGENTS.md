@@ -172,6 +172,9 @@ Prefer an isolated VM for compositor integration tests:
   IPC integration; add `--quickshell quickshell` for the optional real panel.
 - Add `--exercise-overlays` to the Quickshell smoke to test launcher, notification
   center, and app preview lifecycles with a real Alacritty desktop entry.
+- `python3 -B scripts/vm-shell-hints-smoke.py --binary target/debug/clear`: bounded
+  real Quickshell icon reports, same-process authorization, foreign-process refusal,
+  and panel unmap/restart identities. No pixel oracle, motion or physical input.
 - `node --test examples/quickshell/Protocol.test.mjs`: optional example's pure
   message/model tests, without launching a shell.
 

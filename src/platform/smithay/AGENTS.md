@@ -44,6 +44,11 @@ only directory allowed to depend on Smithay and Wayland types.
   bounded retained textures. Never reuse a texture still sampled by a snapshot.
 - `shell.rs`: optional socket initialization and dispatch; reconcile commands
   before acknowledging/publishing. Wire types and transport stay in `src/shell/`.
+  Validate advisory icon reports against mapped committed panel geometry and
+  matching Wayland/Unix peer process credentials. Rotate opaque identities on
+  mapping/geometry changes and prune registrations on disconnect/unmap/expiry.
+  Hint requests do not reconcile desktop policy; minimize motion is not wired
+  to the prepared target/fallback helpers yet. See [shell](../../../specs/shell.md#advisory-panel-icon-targets).
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,
   shared visibility clips, and frame callbacks.
 - `wallpaper.rs`: renderer-owned immutable texture cache, per-output image
@@ -234,6 +239,11 @@ pre-map maximize), restore, configure state/size, focus, IPC, and capture visibi
 overlay/top priority, output targets, pre-map state, held SSD commits, restoration
 and launcher refusal. Synthetic gesture refusal is covered by adapter unit tests;
 neither establishes physical input.
+`scripts/vm-shell-hints-smoke.py --quickshell quickshell` copies the real optional
+example and checks accepted nonempty icon reports, foreign-process discovery and
+registration refusal, unchanged desktop policy, and mapping identities after
+panel restart. It does not verify physical scrolling, GPU pixels or minimize
+animation; use the ordinary shell smoke for final panel pixels/reservations.
 `scripts/vm-rounded-smoke.py` checks fitted/asymmetric radii, body/border alpha,
 subsurface composition, geometry offsets, cut-outs, and unchanged layers/popups.
 `scripts/vm-decoration-smoke.py` checks real XDG/KDE negotiation, held ACKs/commits,

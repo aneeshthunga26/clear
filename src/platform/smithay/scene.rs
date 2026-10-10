@@ -269,6 +269,7 @@ impl Compositor {
             self.space.raise_element(window, false);
         }
         self.placements = placements;
+        self.refresh_animation_targets();
         let focus = layer_focus
             .or_else(|| {
                 self.runtime

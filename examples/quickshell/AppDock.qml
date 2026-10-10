@@ -10,6 +10,60 @@ Item {
     required property var currentOutput
     required property var panelWindow
     required property var pinStore
+    property string panelNamespace: ""
+    property var viewport: null
+
+    function scheduleTargets() { Qt.callLater(reportTargets); }
+    function reportTargets() {
+        if (!shellBridge || !shellBridge.online || !viewport
+                || !Protocol.supportsAnimationTargets(shellBridge.state)) return;
+        var panel = Protocol.animationPanelFor(shellBridge.animationPanels, currentOutput,
+            panelNamespace, panelWindow.width, panelWindow.height);
+        if (!panel) return;
+        var icons = [];
+        for (var i = 0; i < appRepeater.count; i++) {
+            var button = appRepeater.itemAt(i);
+            if (!visible || !viewport.visible || !button || !button.visible) continue;
+            var point = panelWindow.mapFromItem(button.iconItem, 0, 0);
+            icons.push({app_id: button.modelData.id, x: point.x, y: point.y,
+                width: button.iconItem.width, height: button.iconItem.height});
+        }
+        var origin = panelWindow.mapFromItem(viewport, 0, 0);
+        var targets = Protocol.animationAppTargets(shellBridge.state, currentOutput, icons,
+            {x: origin.x, y: origin.y, width: viewport.width, height: viewport.height},
+            panelWindow.width, panelWindow.height);
+        shellBridge.command({type: "set_animation_targets", panel: panel.panel,
+            output: currentOutput.id, targets: targets});
+    }
+    onGroupsChanged: scheduleTargets()
+    onXChanged: scheduleTargets()
+    onYChanged: scheduleTargets()
+    onVisibleChanged: scheduleTargets()
+    onCurrentOutputChanged: scheduleTargets()
+    Component.onCompleted: scheduleTargets()
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: dock.shellBridge && dock.shellBridge.online
+            && Protocol.supportsAnimationTargets(dock.shellBridge.state)
+        onTriggered: dock.reportTargets()
+    }
+    Connections {
+        target: dock.viewport
+        function onContentXChanged() { dock.scheduleTargets(); }
+        function onContentYChanged() { dock.scheduleTargets(); }
+        function onWidthChanged() { dock.scheduleTargets(); }
+        function onHeightChanged() { dock.scheduleTargets(); }
+        function onXChanged() { dock.scheduleTargets(); }
+        function onYChanged() { dock.scheduleTargets(); }
+    }
+    Connections {
+        target: dock.panelWindow
+        function onWidthChanged() { dock.scheduleTargets(); }
+        function onHeightChanged() { dock.scheduleTargets(); }
+    }
+
 
     property string hoveredApp: ""
     property int previewX: 0
@@ -40,10 +94,14 @@ Item {
         id: appRow
         spacing: 3
         Repeater {
+            id: appRepeater
+            onItemAdded: dock.scheduleTargets()
+            onItemRemoved: dock.scheduleTargets()
             model: dock.groups
             delegate: Rectangle {
                 id: appButton
                 required property var modelData
+                readonly property var iconItem: appIcon
                 readonly property var entry: DesktopEntries.heuristicLookup(modelData.id)
                 width: 38
                 height: 29
@@ -52,6 +110,7 @@ Item {
                     : modelData.windows.some(function(window) { return window.focused; }) ? dock.appearance.selectedColor : dock.appearance.controlColor
 
                 Image {
+                    id: appIcon
                     anchors.centerIn: parent
                     width: 20
                     height: 20

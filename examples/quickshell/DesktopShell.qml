@@ -21,6 +21,7 @@ Scope {
             readonly property bool active: bridge.online && output !== null
             readonly property bool switcherHere: !!(bridge.state && bridge.state.switcher
                 && output && bridge.state.switcher.output === output.id)
+            readonly property string animationNamespace: root.appearance.glass ? "clear-glass-pill-panel" : "clear-example-panel"
             property bool switcherLoaded: false
             onSwitcherHereChanged: if (switcherHere) switcherLoaded = true
 
@@ -45,7 +46,7 @@ Scope {
             exclusiveZone: root.appearance.panelHeight
             color: "transparent"
             mask: Region { item: panelBackground; radius: panelBackground.radius }
-            WlrLayershell.namespace: root.appearance.glass ? "clear-glass-pill-panel" : "clear-example-panel"
+            WlrLayershell.namespace: panel.animationNamespace
             WlrLayershell.layer: WlrLayer.Top
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
 
@@ -95,6 +96,7 @@ Scope {
                 Rectangle { width: 1; height: 22; color: "#475569" }
 
                 Flickable {
+                    id: dockViewport
                     Layout.fillWidth: true
                     Layout.minimumWidth: 48
                     Layout.preferredHeight: 30
@@ -109,6 +111,8 @@ Scope {
                         shellBridge: bridge
                         currentOutput: panel.output
                         panelWindow: panel
+                        panelNamespace: panel.animationNamespace
+                        viewport: dockViewport
                         pinStore: pins
                     }
                 }

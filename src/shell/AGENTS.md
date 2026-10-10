@@ -11,6 +11,10 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
 - `server.rs` owns nonblocking newline framing, connection/message/work budgets,
   subscriptions, socket ownership/permissions, backpressure, and identity-checked
   cleanup. Never unlink arbitrary stale paths or grow buffers without limits.
+- `animation_targets.rs` owns bounded connection-owned advisory icon records,
+  strict panel-local geometry/selector validation, expiry and pure resolution.
+  Live mapped panel descriptors and Wayland ownership stay in the adapter; never
+  trust client-provided output coordinates or mutate core state from hints.
 - The Smithay adapter owns backend reconciliation. It reconciles successful
   mutations before acknowledging/publishing; model snapshot reads remain pure.
 - Preserve optional operation: no shell process is required, and no arbitrary
@@ -48,6 +52,11 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
 - Snapshot/subscribe execution is a no-op; the transport supplies their responses.
   Snapshot responses carry an ID and `state`; unsolicited `state` responses omit
   the ID. Error responses carry `message` and an ID or JSON null.
+- `animation_panels` and `set_animation_targets` require live adapter ownership
+  validation; pure `execute` rejects them. The transport supplies kernel peer
+  credentials without exposing them on the wire. Panel registrations must expire
+  and be removed on disconnect/unmap/geometry changes. Accepted reports do not
+  alter focus, configures or desktop policy; minimize motion is not connected yet.
 - Use Serde for all JSON encoding, including untrusted client metadata. Every
   encoded response is exactly one newline-terminated JSON message.
 
@@ -59,7 +68,12 @@ launcher roles, usable areas, groups, workspace-specific overrides, mode roundtr
 read-only requests, error atomicity, and equivalence to core command behavior.
 Model tests do not verify sockets or rendering. Run
 `cargo test --locked --lib shell::server` for real Unix stream tests covering
-permissions, framing, fairness, partial writes, limits, and cleanup. Use
+permissions, kernel credentials, framing, fairness, partial writes, limits, and cleanup.
+Run `cargo test --locked --lib shell::animation_targets` for advisory store
+ownership, bounds, atomicity, lifecycle and expiry. Use
 `scripts/vm-shell-smoke.py` for compositor integration and optionally add
 `--quickshell quickshell` for real panels. Physical clicks/keys are not automated.
+`scripts/vm-shell-hints-smoke.py --quickshell quickshell` checks real nonempty
+example reports, foreign-process refusal and mapping identities after restart;
+it does not verify visible minimize motion or physical scrolling.
 When working in parallel, format only owned files.
