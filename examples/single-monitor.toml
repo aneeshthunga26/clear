@@ -196,3 +196,13 @@ amount = 300
 [[bindings]]
 key = "leader+Shift+r"
 action = "reload"
+
+# Enable compositor presentation effects; see specs/animations.md for controls.
+[animations]
+enabled = true
+frame_rate = "refresh-rate"
+speed = 1.0
+
+[[bindings]]
+key = "Ctrl+Alt+Shift+f"
+action = "toggle_fullscreen"

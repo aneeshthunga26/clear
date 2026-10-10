@@ -62,18 +62,19 @@ See [maximize and minimize](../specs/desktop.md#maximize-and-minimize) for polic
 [XDG lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures) for mapping,
 pre-map requests, configures, and committed state.
 
-## Animation foundation
+## Animation presentation
 
-Runtime owns the pure animation clock, pose tracks and presentation planner.
-The planner accepts backend-independent snapshots and explicit causes; it returns
-sampled poses and retention requests. The adapter's shared window-image composer
-now supplies overview images, and its pointer focus wrapper supports inverse
-scaling. Optional shell hints supply panel/icon geometry. The nested backend selects
-frame sampling opportunities and synchronized swaps, while desktop policy remains
-instant. Scene integration and effect triggers remain pending in the
-[implementation plan](animations-design.md); [animation](../specs/animations.md)
-and [platform timing](../specs/platform.md#nested-frame-timing) define implemented
-foundations and their limits.
+Runtime owns the pure animation clock, pose tracks and snapshot planner. Desktop
+commands apply final policy once; the adapter's `animations.rs` captures committed
+window images and consumes sampled frames without rerunning layout or scripts.
+`scene.rs` renders those images and resolves input through the last submitted
+transform. Destroyed and outgoing workspace windows retain owned GPU images.
+`overview_animation.rs` owns the transient card/wallpaper interpolation and closing
+handoff. Optional shell hints provide minimize destinations. The nested backend
+samples at configured opportunities and acknowledges visual retirement only after
+a successful synchronized submission. See [animations](../specs/animations.md),
+[platform timing](../specs/platform.md#nested-frame-timing), and the remaining
+acceptance work in the [implementation plan](animations-design.md).
 
 ## Interactive resizing
 

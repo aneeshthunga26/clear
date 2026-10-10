@@ -20,11 +20,16 @@ Wayland client such as `foot`. On Arch Linux, the usual build prerequisites are
 cargo run -- --command foot
 ```
 
-With VM-friendly shortcuts and a mixed-mode workspace:
+With VM-friendly shortcuts, mixed-mode workspaces, and animations enabled:
 
 ```sh
 cargo run -- --config examples/single-monitor.toml --command foot
 ```
+
+In this example, Ctrl+Alt+W toggles overview, Ctrl+Alt+1/2/3 switches
+workspaces, Ctrl+Alt+Up maximizes, Ctrl+Alt+Down minimizes, and
+Ctrl+Alt+Shift+F toggles fullscreen. See [animation controls](specs/animations.md#configuration)
+for speed, sampling rate, and per-effect settings.
 
 For a bounded run and framebuffer capture:
 
@@ -62,14 +67,14 @@ requested by clients, shell IPC, or a custom `toggle_fullscreen` binding.
 
 ### VM demo
 
-`examples/vm.toml` provides Ctrl+Alt bindings and a mixed-mode workspace. Follow
+`examples/single-monitor.toml` provides Ctrl+Alt bindings and a mixed-mode workspace. Follow
 the [interactive demo](docs/vm-testing.md#interactive-run) for the stretch/split,
 per-output mode, resize, and restore sequence.
 
 ## Configuration and Rhai
 
 Start from [examples/config.toml](examples/config.toml) or
-[examples/vm.toml](examples/vm.toml). The
+[examples/single-monitor.toml](examples/single-monitor.toml). The
 [configuration specification](specs/configuration.md) defines paths, schema,
 defaults, validation, startup fallback, and reload behavior.
 
@@ -196,7 +201,7 @@ for navigation and supported behavior. It works without a shell client or IPC.
 With Quickshell installed separately:
 
 ```sh
-cargo run --locked -- --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
+cargo run --locked -- --config examples/single-monitor.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
 See the [shell integration guide](docs/shell-integration.md) for setup and private

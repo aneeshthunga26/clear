@@ -15,8 +15,8 @@ leader = "Super" # Also accepts modifier combinations, e.g. "Ctrl+Alt".
 # Clicking a desktop activates it; enable this only for hover-driven previews.
 preview_workspace_on_hover = false
 
-# Engine preferences are accepted; visual effects are not yet connected.
-# See specs/animations.md. Motion remains off by default pending visual/input checks.
+# Optional compositor animation effects.
+# See specs/animations.md. Motion remains off by default pending physical timing/input acceptance.
 # [animations]
 # enabled = false
 # reduced_motion = false

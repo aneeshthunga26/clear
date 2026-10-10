@@ -1,8 +1,8 @@
 # Compositor-rendered overview — design proposal
 
 **Status:** selection, configurable workspace hover and window-to-workspace drops
-are implemented; animation, search and
-gesture progress remain proposed. The [overview specification](../specs/overview.md)
+and card/wallpaper transitions are implemented; search and gesture progress
+remain proposed. The [overview specification](../specs/overview.md)
 owns implemented behavior. The remainder records the design direction, including
 future slices, rather than adding contracts. The user-facing
 reference is [Plasma's overview](https://github.com/KDE/kwin/tree/master/src/plugins/overview),
@@ -10,10 +10,10 @@ with [Niri's overview](https://niri-wm.github.io/niri/Overview.html) as a refere
 for workspace navigation. Clear should implement its own UI rather than copy
 either compositor's workspace model.
 
-The [animation implementation plan](animations-design.md) details the proposed
+The [animation implementation plan](animations-design.md) records the design for
 card and wallpaper transitions, opening/closing input ownership, refresh-aware
 scheduling, shared GPU sources and delivery dependencies. Its overview section
-extends this design; it does not change the current instant-transition contract.
+extends this design; the overview specification owns their implemented contract.
 
 ## Decision and scope
 

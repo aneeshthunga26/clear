@@ -1,14 +1,13 @@
 # Compositor animations — implementation plan
 
-**Status: foundations implemented; visual effects remain proposed.** The
-[animation specification](../specs/animations.md) covers the strict settings,
-clock, bounded analytic pose engine and pure presentation planner; [platform timing](../specs/platform.md#nested-frame-timing)
-covers nested sampling and interval-1 swaps. Instant [fullscreen](../specs/desktop.md#fullscreen)
-policy and XDG integration are implemented. Shared GPU window images, inverse
-pointer delivery and optional panel-icon hints are available as foundations.
-Scene effect triggers, retained-image lifecycle integration and animated overview
-remain pending. The settings stay
-off by default, and enabling them does not yet produce visual motion.
+**Status: the eight visible effects are integrated; release acceptance remains.**
+The [animation specification](../specs/animations.md) owns implemented settings,
+clock, planner, window/workspace motion and retained images; [overview](../specs/overview.md)
+owns card/wallpaper transitions. [Platform timing](../specs/platform.md#nested-frame-timing)
+describes nested sampling and interval-1 swaps. Animations remain off globally
+pending physical timing/input and performance acceptance; interactive examples
+opt in explicitly. The sections below retain the original target architecture,
+including future native timing and idle scheduling work.
 
 The [roadmap](../ROADMAP.md) tracks this work; the [specifications](../specs/README.md)
 describe current behavior. This plan retains the full target architecture and
@@ -58,21 +57,16 @@ Foundation progress and remaining gaps:
 - The clock, bounded tracks, strict configuration and atomic reload are implemented.
   The pure presentation planner handles window transitions, retained-source IDs and
   workspace direction/offset metadata, without mutating desktop policy. The adapter
-  does not yet supply snapshots/causes or submit its frames to rendering.
+  supplies snapshots/causes and submits those frames to rendering.
 - `dirty` controls reconciliation, not all rendering damage. Continuous repaint
   remains in place; explicit damage/idle wakeups and capture deadlines are pending.
-- `SurfaceHit` carries a per-axis scale; pointer and drag-and-drop delivery can
-  inverse-map local coordinates while retaining surface identity. Current hits use
-  identity scale. Connecting displayed geometry to hit discovery remains pending.
-- Overview uses the shared committed window-image composer, including SSD, alpha,
-  borders and original masks. Owned GPU images provide snapshot storage, but live
-  animation sources, lifecycle capture and a retained-image budget are not wired.
-- Optional panel discovery and leased icon hints are implemented, including real
-  Quickshell icon reports. The adapter validates the reporting Wayland process and
-  panel lifecycle; hints do not yet drive motion. See [shell IPC](../specs/shell.md).
-- Instant fullscreen now has core policy, separate full output bounds, XDG states,
-  pre-map/output requests, committed decoration handling and configurable actions.
-  Its animated transition remains pending.
+- Submitted window transforms drive inverse pointer discovery and delivery.
+- The shared committed image composer supplies live animated bodies and owned
+  destruction/workspace snapshots under bounded adapter caches.
+- Validated optional panel-icon hints drive minimize destinations; absent hints
+  use the panel fallback. See [shell IPC](../specs/shell.md).
+- Fullscreen policy and its geometry transition preserve root commit timing for
+  decoration appearance.
 
 The pinned backend reference is
 [Smithay winit source](https://github.com/Smithay/smithay/blob/e1fb2496c9d7ec4d994cc50fe61b7439686ba8b9/src/backend/winit/mod.rs).
@@ -127,7 +121,7 @@ Prefer small modules with explicit inputs:
 | --- | --- |
 | `src/config/animations.rs` | Strict TOML settings, defaults, validation; no renderer types |
 | `src/runtime/animation.rs` | Pure clock mapping, easing/critical-spring sampling, rectangle interpolation and bounded tracks (implemented) |
-| `src/runtime/presentation.rs` | Backend-independent snapshots, transition causes, retained-source IDs and immutable presentation frames (implemented; not connected to the scene) |
+| `src/runtime/presentation.rs` | Backend-independent snapshots, transition causes, retained-source IDs and immutable presentation frames (implemented; consumed by the adapter) |
 | `src/platform/smithay/animations.rs` | Future bridge: reconcile snapshots/causes, own retained GPU images, connect lifecycle and frame submission, and release resources |
 | `src/platform/smithay/frame_scheduler.rs` | Host/native timing interface, deadlines, pending-frame state, animation sample eligibility |
 | `src/platform/smithay/window_image.rs` | Reusable GPU composition of committed content, SSD, borders and original masks; owned snapshots and live sources |
@@ -676,10 +670,9 @@ in the current nested path.
 
 ## Configuration example
 
-The schema below is accepted by the implemented foundation. Visual effect
-triggers remain pending; use the [animation specification](../specs/animations.md#configuration)
-for current defaults and validation. This example opts the pure engine into motion
-and does not yet animate the compositor scene:
+The schema below enables visible effects. Use the
+[animation specification](../specs/animations.md#configuration) for current
+defaults and validation:
 
 ```toml
 [animations]
@@ -783,13 +776,12 @@ Each slice updates its owning specification with implemented behavior and tests.
 The [animation specification](../specs/animations.md) now owns engine/configuration
 contracts; existing component specs own desktop policy, protocol, input, overview
 and IPC behavior. Slice 2's foundation and slice 8's instant policy are implemented.
-Slice 3 now has a pure planner, shared GPU image composition and inverse pointer
-delivery; connecting lifecycle, scene geometry and transformed hits remains work.
-Slice 6's optional icon-hint protocol and Quickshell reporting are implemented.
-Slice 1 has synchronized swaps and sampling, but idle invalidation/deadline timers
-and physical timing verification remain pending. Other effects and acceptance
-gates remain work below. The sequence describes the complete target scope, not
-claims that partial foundations satisfy those gates.
+Slices 3–8 connect retained images, transformed input, workspace slides,
+window lifecycle/geometry motion, icon targets and overview transitions.
+Physical timing/input acceptance and combined-effect performance work remain.
+Slice 1 retains continuous host redraws: idle invalidation/deadline timers remain
+future work. The gates below retain the full acceptance scope; implemented effects
+do not establish that every gate has been physically verified.
 
 1. **Timing and synchronization groundwork.** Implement the scheduler/timing-source
    seam, explicit synchronized initialization, separated render/reconcile dirtiness,
