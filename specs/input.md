@@ -131,3 +131,15 @@ Super gestures take precedence over those controls.
   [adapter input tests](../src/platform/smithay/input.rs) verifies synthetic
   fullscreen gesture refusal and restoration. It does not exercise physical input
   or XDG client grab serial authorization.
+
+## Presentation-coordinate delivery foundation
+
+Pointer focus wraps the same Wayland surface identity with an inverse per-axis
+scale. Seat enter/motion and relative vectors, plus drag-and-drop local positions,
+MUST apply that inverse after subtracting the displayed surface origin. Scale
+changes alone MUST NOT create synthetic leave/enter pairs or change client grab
+serial ownership. Buttons, axes, gestures and popup focus continue through the
+underlying surface protocol implementation. All current scene hits supply identity
+scale; animated scene transforms are not yet connected. The foundation is in
+[presentation input](../src/platform/smithay/presentation_input.rs), whose CPU test
+checks independent-axis inverse coordinates and fractional offsets.

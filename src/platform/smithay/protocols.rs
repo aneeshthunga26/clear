@@ -175,7 +175,7 @@ impl OutputHandler for Compositor {}
 
 impl SeatHandler for Compositor {
     type KeyboardFocus = WlSurface;
-    type PointerFocus = WlSurface;
+    type PointerFocus = super::presentation_input::PointerFocus;
     type TouchFocus = WlSurface;
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state

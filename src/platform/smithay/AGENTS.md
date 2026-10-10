@@ -36,6 +36,9 @@ only directory allowed to depend on Smithay and Wayland types.
   membership handling; synchronize preview output notifications after Space refresh
   and restore ordinary ownership on cleanup. Follow [overview](../../../specs/overview.md) bounds and cleanup.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
+- `presentation_input.rs`: surface-local inverse pointer/DnD coordinates while
+  preserving Wayland surface identity, popup focus and client grab ownership.
+  Current hits use identity scale until scene motion is connected.
 - `window_image.rs`: shared committed GPU body/SSD/border/mask composition for
   previews and owned snapshots. One backend composer owns scratch; callers own
   bounded retained textures. Never reuse a texture still sampled by a snapshot.

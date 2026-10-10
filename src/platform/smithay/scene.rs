@@ -99,6 +99,7 @@ pub(super) struct SurfaceHit {
     pub surface: WlSurface,
     pub origin: Point<f64, Logical>,
     pub owner: HitOwner,
+    pub scale: Point<f64, Logical>,
 }
 
 impl Compositor {
@@ -324,6 +325,7 @@ impl Compositor {
                             surface,
                             origin: (origin + geometry.loc + offset).to_f64(),
                             owner: HitOwner::Layer(layer.wl_surface().clone()),
+                            scale: (1.0, 1.0).into(),
                         });
                     }
                 }
@@ -335,9 +337,12 @@ impl Compositor {
     pub fn surface_under(
         &self,
         point: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    ) -> Option<(super::presentation_input::PointerFocus, Point<f64, Logical>)> {
         self.hit_test(point).and_then(|hit| {
-            (!matches!(hit.owner, HitOwner::Decoration(..))).then_some((hit.surface, hit.origin))
+            (!matches!(hit.owner, HitOwner::Decoration(..))).then_some((
+                super::presentation_input::PointerFocus::new(hit.surface, hit.scale),
+                hit.origin,
+            ))
         })
     }
 
@@ -426,6 +431,7 @@ impl Compositor {
                     surface,
                     origin: (surface_origin + offset).to_f64(),
                     owner: HitOwner::Window(p.window),
+                    scale: (1.0, 1.0).into(),
                 });
             }
             if ssd
@@ -440,6 +446,7 @@ impl Compositor {
                     surface: top.wl_surface().clone(),
                     origin: origin.to_f64(),
                     owner: HitOwner::Decoration(p.window, part),
+                    scale: (1.0, 1.0).into(),
                 });
             }
         }
