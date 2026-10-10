@@ -320,6 +320,7 @@ impl Compositor {
     }
     /// Renderer/topology/host teardown releases the one engine track and retained geometry.
     pub fn clear_overview_animation(&mut self) {
+        self.take_overview_drag();
         let was_present = self.overview_animation.session.is_some();
         if let Some(track) = self.overview_animation.track {
             self.runtime.animations.remove(track);

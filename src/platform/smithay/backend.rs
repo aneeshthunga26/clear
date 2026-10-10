@@ -113,7 +113,7 @@ pub(super) fn init(
                     state.titlebar_press = None;
                     state.titlebar_drag = None;
                     state.overview_press = None;
-                    state.overview_drag = None;
+                    state.take_overview_drag();
                     state.runtime.cancel_overview();
                     state.clear_overview_animation();
                     state.window_animations.reset();
@@ -140,6 +140,7 @@ pub(super) fn init(
                 }
                 state.reconcile();
                 state.sample_overview_animation();
+                state.sample_overview_drag();
                 if !state.overview_present() && !state.runtime.config.animations.enabled {
                     window_images.clear();
                 }
@@ -278,6 +279,7 @@ pub(super) fn init(
                 }
                 state.acknowledge_window_animations();
                 state.mark_overview_presented();
+                state.mark_overview_drag_presented();
                 state.refresh_pointer_animation_focus();
                 state.frame_callbacks();
                 // Client/layer callbacks and content still use continuous host

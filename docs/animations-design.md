@@ -188,7 +188,8 @@ inside each built-in layout; script layouts get the same placement diff handling
   physical pixel/second of corner velocity, and at most 0.001 opacity error.
   Retargeting can inherit a velocity away from the new endpoint; clamp any unsafe
   opacity/size result and do not promise strictly monotonic reversal in that case.
-- Manual pointer move/resize and overview drag ghosts follow the pointer directly.
+- Manual desktop pointer move/resize follows the pointer directly. Overview
+  pickup/proximity motion is presentation-only; see the [drag contract](../specs/overview.md#layout-and-input).
   Before starting a grab, settle that window's geometry track and re-evaluate its
   hit under the pointer. Animate any resulting neighbor reflow, not the dragged
   window's pointer tracking.
@@ -613,7 +614,7 @@ Fade unavailable card targets out rather than leaving stale surface references.
 
 During overview, workspace preview, pagination and window drops animate the card
 layout itself. New cards fade in; removed cards fade out only from bounded owned
-images. Drag ghosts follow the pointer directly. A new toggle reverses the current
+images. Drag pickup and proximity sizing follow the [overview contract](../specs/overview.md#layout-and-input). A new toggle reverses the current
 progress without a snap; after activation has committed, reopening previews the
 new desktop state and does not roll that command back. Changing interactive output
 settles/transfers presentation safely and rebuilds output-local geometry.

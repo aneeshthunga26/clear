@@ -126,9 +126,33 @@ Left press on a window card arms a transfer drag. Movement of at least 8 logical
 pixels starts it; smaller movement retains ordinary click activation. During the
 gesture, workspace/card hover and wheel navigation MUST NOT change the source
 preview. Active drags also consume keyboard navigation/activation; Escape or the
-overview toggle cancels the gesture and closes overview. A bounded live ghost
-(at most 240×160 pixels, fitted within the interactive output) follows the pointer
-and the eligible workspace tile is outlined. A drop on another workspace tile
+overview toggle cancels the gesture and closes overview. During pickup, the
+original card body/caption MUST be replaced by one live drag image starting at
+the card's last submitted rectangle when the threshold is crossed, preserving
+the grabbed fraction even if overview entry moved the card after the press;
+it MUST NOT leave a stationary duplicate in the large canvas. The configured
+overview effect interpolates pickup and subsequent
+pointer/size retargets from the last successfully submitted ghost.
+Continuous pointer updates MUST allow the transition to advance between submitted
+frames rather than restarting at zero progress each refresh. Global speed,
+sampling caps and reduced-motion/effect-disable settings apply to this track.
+Reduced motion, disabled motion or exhausted track capacity uses the target
+immediately. The grabbed fractional point MUST determine the destination anchor,
+subject to keeping the full image inside the interactive output.
+
+Away from the desktop strip, the target fits within 240×160 pixels without
+upscaling the source card. Pickup may temporarily retain the larger card size.
+Within an approach band around the nearest visible workspace tile, the target
+smoothly shrinks toward the fitted dimensions of that window's remembered frame
+in the miniature. Distance uses the tile's complete hit box (including its label);
+the band is twice its preview height, clamped to 64–160 logical pixels, with
+smoothstep interpolation. Inside the tile the target uses miniature dimensions,
+without enlarging the ordinary drag size; moving away reverses the scaling.
+Mapping uses the source window's home output and the same frame hints/cropping as
+ordinary desktop miniatures, never a hidden layout computation. An unavailable
+or entirely off-output hint falls back to fitting the image within the tile.
+The eligible workspace tile remains outlined independently of ghost motion.
+A drop on another workspace tile
 moves that specific window through `MoveWindowToWorkspace`, without focusing,
 revealing, restoring or detaching it first. The transfer preserves saved floating
 geometry and floating/maximized/minimized flags. Overview stays open on the source
@@ -143,7 +167,9 @@ Release outside a workspace tile or on the source tile cancels the transfer and
 MUST NOT activate anything. Source disappearance, launcher reclassification,
 external workspace transfer, changed interactive output identity/geometry, host
 focus loss and overview exit cancel the gesture. Matching releases remain
-suppressed after cancellation. Pressed workspace tiles also freeze pointer-hover
+suppressed after cancellation. Every drop/cancellation MUST release the one
+optional drag animation track; failed submission MUST NOT update its shown pose.
+Pressed workspace tiles also freeze pointer-hover
 preview until release, preserving same-target click activation.
 
 Rendering and hits MUST consume the same deterministic layout, with half-open
@@ -272,6 +298,12 @@ hot corners and touchpad progress remain future work.
   terminal-frame/current-revision retirement.
   These CPU tests do not establish frame cadence, compositor input handoff or
   GPU intermediate pixels.
+- [Drag presentation and unit tests](../src/platform/smithay/overview_drag.rs):
+  pickup starts at the card, retargets start at submitted geometry, proximity
+  uses the same fitted miniature dimensions, moving away reverses sizing, output
+  bounds/grab anchors hold, continuous pointer updates advance motion, entry-time
+  pickup uses the latest shown card, and speed/reduced-motion changes preserve cleanup.
+  These CPU checks do not establish GPU drag pixels or physical pointer behavior.
 - [Input routing and seat-path test](../src/platform/smithay/input.rs):
   `overview_keyboard_pairs_and_deferred_entry_without_shell_ipc` exercises
   synthetic keyboard/button pairs and implicit-grab deferral without a shell.

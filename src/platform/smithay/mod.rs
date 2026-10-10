@@ -9,6 +9,7 @@ mod input;
 mod layers;
 mod overview;
 mod overview_animation;
+mod overview_drag;
 mod presentation_input;
 mod protocols;
 mod rounded;

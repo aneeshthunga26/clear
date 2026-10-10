@@ -531,6 +531,46 @@ mod tests {
             drag.ghost(state.overview_layout().unwrap().output)
                 .is_some()
         );
+        // Exercise the backend's capped sample/submission hooks on a real gesture.
+        let initial_preview = drag.preview;
+        let original_animations = state.runtime.animations.config().clone();
+        let mut animations = original_animations.clone();
+        animations.enabled = true;
+        animations.overview.kind = crate::config::AnimationKind::Easing {
+            duration_ms: 200,
+            curve: crate::config::AnimationCurve::Linear,
+        };
+        let base = state.start.elapsed();
+        let now = state.runtime.animation_time_at(state.start + base);
+        state
+            .runtime
+            .animations
+            .apply_config(animations, now)
+            .unwrap();
+        let previous_tracks = state.runtime.animations.len();
+        state.animation_sample_time = base;
+        state.sample_overview_drag();
+        assert_eq!(
+            state
+                .overview_drag
+                .as_ref()
+                .unwrap()
+                .ghost(Rect::new(0, 0, 800, 600)),
+            Some(initial_preview)
+        );
+        assert_eq!(state.runtime.animations.len(), previous_tracks + 1);
+        state.mark_overview_drag_presented();
+        state.animation_sample_time = base + std::time::Duration::from_millis(100);
+        state.sample_overview_drag();
+        assert_ne!(
+            state
+                .overview_drag
+                .as_ref()
+                .unwrap()
+                .ghost(Rect::new(0, 0, 800, 600)),
+            Some(initial_preview)
+        );
+        state.mark_overview_drag_presented();
         assert_eq!(
             state.runtime.overview.as_ref().unwrap().workspace,
             WorkspaceId(1)
@@ -547,6 +587,19 @@ mod tests {
         );
         state.pointer_button(0x110, ButtonState::Released, 13);
         assert!(state.overview_drag.is_none());
+        assert_eq!(
+            state.runtime.animations.len(),
+            previous_tracks,
+            "drop releases the pickup track"
+        );
+        let now = state
+            .runtime
+            .animation_time_at(state.start + state.animation_sample_time);
+        state
+            .runtime
+            .animations
+            .apply_config(original_animations, now)
+            .unwrap();
         assert!(state.suppressed_buttons.is_empty());
         assert_eq!(
             state.runtime.overview.as_ref().unwrap().workspace,
@@ -825,7 +878,7 @@ impl Compositor {
                         }
                         overview_changed = true;
                         state.overview_press = None;
-                        state.overview_drag = None;
+                        state.take_overview_drag();
                         return FilterResult::Intercept(None);
                     }
                     // Keys pressed before entry (leader modifiers) still update
@@ -929,7 +982,7 @@ impl Compositor {
                         .overview_layout()
                         .and_then(|l| l.hit(position.x, position.y));
                     self.overview_press = target;
-                    self.overview_drag = None;
+                    self.take_overview_drag();
                     if let Some(OverviewTarget::Window(window)) = target
                         && let Some(session) = &self.runtime.overview
                         && let Some(preview) = self.overview_layout().and_then(|l| {
@@ -949,6 +1002,7 @@ impl Compositor {
                             preview,
                             active: false,
                             destination: None,
+                            motion: Default::default(),
                         });
                     }
                     if let Some(session) = &mut self.runtime.overview {
@@ -972,7 +1026,7 @@ impl Compositor {
                     let target = self
                         .overview_layout()
                         .and_then(|l| l.hit(position.x, position.y));
-                    if let Some(drag) = self.overview_drag.take().filter(|d| d.active) {
+                    if let Some(drag) = self.take_overview_drag().filter(|d| d.active) {
                         self.overview_press = None;
                         if let Some(OverviewTarget::Workspace(destination)) = target
                             && let Some(session) = &mut self.runtime.overview
@@ -1233,7 +1287,7 @@ impl Compositor {
         if self.overview_present() || !blocked {
             self.runtime.toggle_overview();
             self.overview_press = None;
-            self.overview_drag = None;
+            self.take_overview_drag();
             self.dirty = true;
         }
     }
@@ -1276,13 +1330,25 @@ impl Compositor {
                 .clamp(0.0, f64::from((self.host_size.h - 1).max(0))),
         ));
         if self.overview_present() {
-            let target = self
-                .overview_layout()
-                .and_then(|l| l.hit(position.x, position.y));
+            let layout = self.overview_layout();
+            let target = layout.as_ref().and_then(|l| l.hit(position.x, position.y));
             if let Some(drag) = &mut self.overview_drag {
                 drag.position = position;
-                drag.active |=
-                    (position.x - drag.origin.x).hypot(position.y - drag.origin.y) >= 8.0;
+                if !drag.active
+                    && (position.x - drag.origin.x).hypot(position.y - drag.origin.y) >= 8.0
+                {
+                    let preview = layout
+                        .as_ref()
+                        .and_then(|layout| {
+                            layout
+                                .items
+                                .iter()
+                                .find(|item| item.target == OverviewTarget::Window(drag.window))
+                                .and_then(|item| item.preview)
+                        })
+                        .unwrap_or(drag.preview);
+                    drag.begin_pickup(preview);
+                }
                 drag.destination = if drag.active {
                     match target {
                         Some(OverviewTarget::Workspace(id)) if id != drag.workspace => Some(id),

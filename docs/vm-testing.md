@@ -880,6 +880,31 @@ establish physical pointer delivery. Ghost geometry has a bounded/aspect-ratio
 unit test; its moving GPU appearance and physical drag delivery were not
 automated in this round.
 
+### Animated overview pickup (2026-10-11)
+
+The [drag contract](../specs/overview.md#layout-and-input) defines pickup,
+proximity sizing and cancellation. Cargo fmt/check/test/build passed; the library
+suite has 133 tests. Six drag-motion unit tests cover submitted-card pickup,
+continuous pointer retargeting, entry-time geometry changes, miniature sizing
+and retreat, output bounds, speed reload and reduced motion. The synthetic seat
+test `overview_hover_click_and_drag_without_shell_ipc` also samples pickup through
+the compositor and checks track removal on drop.
+
+Rust Analyzer reported no error/warning-level diagnostics. Ordinary `cards` and
+`rounded-asymmetric` GPU/protocol regressions passed on private local virtual
+KWin, not a VM, under `target/overview-drag/overview-regression/`. Animated overview
+entry/exit GPU checks also passed under
+`target/overview-drag/animation-regression/`. These captures establish existing
+card rendering and entry/exit behavior; they do not exercise the new drag motion.
+
+For manual review, launch an animated example with several windows, open overview
+and drag a large card. Check pickup both after entry settles and while it opens;
+keep moving continuously, approach the desktop strip, pause over a tile to compare
+the settled preview size, then retreat. Drop on another desktop and repeat with
+Escape cancellation. These steps are a manual procedure, not an automated pass.
+The GPU smoke fixtures do not inject drag gestures or establish physical pointer
+delivery, motion timing or refresh synchronization.
+
 ### Live overview validation (2026-10-09)
 
 All seventeen overview GPU/protocol cases passed on a private local virtual

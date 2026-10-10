@@ -24,8 +24,8 @@ only directory allowed to depend on Smithay and Wayland types.
   No UI toolkit or shell dependency.
 - `layers.rs`: layer-shell lifecycle, namespace policy, and keyboard ownership.
 - `overview.rs`: shared canvas/desktop-strip layout and hits, GPU thumbnails and
-  compact metadata-label caches, plus the transient pointer drag/ghost description.
-  Input arms/drops it; reconciliation cancels invalid sources. Reuse one bounded texture across card/miniature
+  compact metadata-label caches and single-instance card/ghost rendering.
+  Input arms/drops gestures; reconciliation cancels invalid sources. Reuse one bounded texture across card/miniature
   destinations, plan its resolution from the largest visible destination before
   rendering any tile, and explicitly sample its full source when scaling. Apply
   desktop corner masks to the composited content/SSD source before resizing the
@@ -35,6 +35,11 @@ only directory allowed to depend on Smithay and Wayland types.
   configures. Share visible preview candidates with callback/suspension and output
   membership handling; synchronize preview output notifications after Space refresh
   and restore ordinary ownership on cleanup. Follow [overview](../../../specs/overview.md) bounds and cleanup.
+- `overview_drag.rs`: pointer-anchored pickup, miniature-proximity target geometry
+  and one shared overview-effect track. Sample at the backend's capped time;
+  acknowledge only submitted geometry. Use `take_overview_drag` on every drop,
+  cancellation and teardown so engine tracks cannot outlive a gesture. Keep policy
+  transfers and input ownership in input/runtime, and GPU ownership in overview.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
 - `presentation_input.rs`: surface-local inverse pointer/DnD coordinates while
   preserving Wayland surface identity, popup focus and client grab ownership.

@@ -9,7 +9,7 @@ use super::{
     window_image::{PreparedWindowImage, WindowImage, WindowImageComposer, WindowImageIdentity},
 };
 use crate::{
-    core::{OutputId, Rect, WindowId, WorkspaceId},
+    core::{Rect, WindowId, WorkspaceId},
     decoration::Theme,
     runtime::{OverviewSession, OverviewTarget},
 };
@@ -22,7 +22,7 @@ use smithay::{
             gles::{GlesError, GlesRenderer, GlesTexture},
         },
     },
-    utils::{Logical, Point, Transform},
+    utils::Transform,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,45 +35,7 @@ const MAX_TEXTURE_EDGE: i32 = 2048;
 const MAX_LABEL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LABELS: usize = 128;
 
-/// A compositor-owned pointer gesture; policy changes only on a valid drop.
-pub(super) struct OverviewDrag {
-    pub window: WindowId,
-    pub workspace: WorkspaceId,
-    pub output: OutputId,
-    pub output_rect: Rect,
-    pub origin: Point<f64, Logical>,
-    pub position: Point<f64, Logical>,
-    pub preview: Rect,
-    pub active: bool,
-    pub destination: Option<WorkspaceId>,
-}
-
-impl OverviewDrag {
-    pub fn ghost(&self, output: Rect) -> Option<Rect> {
-        if !self.active {
-            return None;
-        }
-        if output.is_empty() {
-            return None;
-        }
-        let size = fit(
-            self.preview,
-            Rect::new(0, 0, output.width.min(240), output.height.min(160)),
-        );
-        let rx = ((self.origin.x - self.preview.x as f64) / self.preview.width.max(1) as f64)
-            .clamp(0.0, 1.0);
-        let ry = ((self.origin.y - self.preview.y as f64) / self.preview.height.max(1) as f64)
-            .clamp(0.0, 1.0);
-        Rect::new(
-            (self.position.x - rx * size.width as f64).round() as i32,
-            (self.position.y - ry * size.height as f64).round() as i32,
-            size.width,
-            size.height,
-        )
-        .clamped_to(output)
-        .into()
-    }
-}
+pub(super) use super::overview_drag::OverviewDrag;
 
 #[derive(Debug, Clone)]
 pub(super) struct OverviewItem {
@@ -271,7 +233,7 @@ impl OverviewLayout {
     }
 }
 
-fn fit(source: Rect, dest: Rect) -> Rect {
+pub(super) fn fit(source: Rect, dest: Rect) -> Rect {
     let scale = (dest.width as f64 / source.width.max(1) as f64)
         .min(dest.height as f64 / source.height.max(1) as f64)
         .min(1.0);
@@ -562,7 +524,15 @@ impl OverviewCache {
         for item in &layout.items {
             if let Some(preview) = item.preview {
                 match item.target {
-                    OverviewTarget::Window(id) => sizes.include(id, preview),
+                    OverviewTarget::Window(id) => {
+                        if !state
+                            .overview_drag
+                            .as_ref()
+                            .is_some_and(|drag| drag.active && drag.window == id)
+                        {
+                            sizes.include(id, preview);
+                        }
+                    }
                     OverviewTarget::Workspace(id) => {
                         for (window, dest) in state.overview_miniatures(id, preview, layout.output)
                         {
@@ -616,7 +586,7 @@ impl OverviewCache {
                 shaders,
                 composer,
                 layout.output,
-                state.overview_progress() as f32,
+                state.overview_window_opacity(drag.window),
             ) {
                 Ok(preview) => elements.extend(preview),
                 Err(error) => tracing_fallback(error),
@@ -633,6 +603,11 @@ impl OverviewCache {
             }
         }
         for item in &layout.items {
+            if state.overview_drag.as_ref().is_some_and(|drag| {
+                drag.active && item.target == OverviewTarget::Window(drag.window)
+            }) {
+                continue;
+            }
             let label = match item.target {
                 OverviewTarget::Workspace(id) => {
                     if let Some(preview) = item.preview {
@@ -861,7 +836,7 @@ fn tracing_fallback(error: GlesError) {
     eprintln!("clear: overview thumbnail unavailable: {error}");
 }
 
-fn miniature_frame(frame: Rect, output: Rect, preview: Rect) -> Option<Rect> {
+pub(super) fn miniature_frame(frame: Rect, output: Rect, preview: Rect) -> Option<Rect> {
     let frame = frame.intersection(output)?;
     let sx = preview.width as f64 / output.width.max(1) as f64;
     let sy = preview.height as f64 / output.height.max(1) as f64;
@@ -1134,31 +1109,6 @@ mod tests {
             assert_eq!(dest.intersection(preview), Some(dest));
         }
         assert!(miniature_frame(Rect::new(-1000, -1000, 20, 20), output, preview).is_none());
-    }
-
-    #[test]
-    fn drag_ghost_is_bounded_and_preserves_aspect_at_output_edges() {
-        let output = Rect::new(319, 11, 641, 481);
-        let mut drag = OverviewDrag {
-            window: WindowId(1),
-            workspace: WorkspaceId(1),
-            output: OutputId(1),
-            output_rect: output,
-            origin: (510.0, 270.0).into(),
-            position: (510.0, 270.0).into(),
-            preview: Rect::new(350, 150, 320, 240),
-            active: false,
-            destination: None,
-        };
-        assert!(drag.ghost(output).is_none());
-        drag.active = true;
-        for position in [(319.0, 11.0), (950.0, 490.0), (500.0, 240.0)] {
-            drag.position = position.into();
-            let ghost = drag.ghost(output).unwrap();
-            assert_eq!(ghost.intersection(output), Some(ghost));
-            assert!(ghost.width <= 240 && ghost.height <= 160);
-            assert!((ghost.width * 3 - ghost.height * 4).abs() <= 1);
-        }
     }
 
     #[test]

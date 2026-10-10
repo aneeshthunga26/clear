@@ -177,7 +177,7 @@ impl Compositor {
                 .find(|o| o.id == drag.output)
                 .is_none_or(|o| o.rect != drag.output_rect)
         }) {
-            self.overview_drag = None;
+            self.take_overview_drag();
             self.overview_press = None;
         }
         self.refresh_layers();
