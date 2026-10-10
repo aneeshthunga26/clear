@@ -35,10 +35,10 @@ asynchronous configure contract at that boundary.
 | `src/management/` | Pure built-in geometry policies | [Layouts](../specs/layouts.md) |
 | `src/input/` | Shortcut parsing and typed actions | [Input](../specs/input.md) |
 | `src/config/` | TOML schema and defaults | [Configuration](../specs/configuration.md) |
-| `src/runtime/` | Config/reload, script routing, transient overview selection, analytic animation tracks, prepared CPU resources | [Configuration](../specs/configuration.md), [animations](../specs/animations.md), [wallpaper](../specs/wallpaper.md), [decorations](../specs/decorations.md) |
+| `src/runtime/` | Config/reload, script routing, transient overview selection, analytic animation tracks and presentation planner, prepared CPU resources | [Configuration](../specs/configuration.md), [animations](../specs/animations.md), [wallpaper](../specs/wallpaper.md), [decorations](../specs/decorations.md) |
 | `src/scripting/` | Bounded Rhai host and validation | [Rhai](../specs/scripting.md) |
 | `src/decoration/` | Backend-independent theme descriptions | [Rendering](../specs/rendering.md), [decorations](../specs/decorations.md) |
-| `src/shell/` | Toolkit-independent snapshots, commands, Unix transport | [Shell IPC](../specs/shell.md) |
+| `src/shell/` | Toolkit-independent snapshots, commands, optional animation-target store, Unix transport | [Shell IPC](../specs/shell.md) |
 | `src/platform/smithay/` | Protocols, input translation, scene, GPU resources, nested backend | [Platform](../specs/platform.md), [rendering](../specs/rendering.md) |
 | `src/main.rs` | CLI parsing only | [CLI](../specs/platform.md#supported-backend-and-cli) |
 
@@ -64,9 +64,13 @@ pre-map requests, configures, and committed state.
 
 ## Animation foundation
 
-Runtime owns the pure animation clock and pose tracks. The nested backend selects
+Runtime owns the pure animation clock, pose tracks and presentation planner.
+The planner accepts backend-independent snapshots and explicit causes; it returns
+sampled poses and retention requests. The adapter's shared window-image composer
+now supplies overview images, and its pointer focus wrapper supports inverse
+scaling. Optional shell hints supply panel/icon geometry. The nested backend selects
 frame sampling opportunities and synchronized swaps, while desktop policy remains
-instant. Visual transforms and effect triggers remain pending in the
+instant. Scene integration and effect triggers remain pending in the
 [implementation plan](animations-design.md); [animation](../specs/animations.md)
 and [platform timing](../specs/platform.md#nested-frame-timing) define implemented
 foundations and their limits.

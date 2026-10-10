@@ -92,6 +92,15 @@ runs exercised interval-1 EGL initialization, but did not measure physical
 presentation synchronization/cadence, animate a visual track, or inject physical
 input. The scheduler's no-divisor-fallback assertions are CPU tests.
 
+The next foundation slice passed Cargo fmt/check/test/build and editor warning
+diagnostics, plus the final targeted suite of 17 engine and 24 presentation-planner
+tests. These CPU cases cover workspace reversal offsets/velocity, speed reload,
+missed terminal frames, forced settlement acknowledgements, filtered draws, bounded
+tracks, direct cancellation and tiny-output minimize anchors. The planner remains
+disconnected from rendering; these results do not establish visible effects or
+cadence. Shared image GPU and real panel-hint validation are recorded in the
+overview and shell sections below.
+
 ## Wallpapers
 
 Contract: [wallpaper selection, placement, and resources](../specs/wallpaper.md).
@@ -457,6 +466,7 @@ python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --artifacts tar
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --artifacts target/vm-quickshell
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --exercise-overlays --artifacts target/vm-overlays
 python3 -B scripts/vm-shell-smoke.py --binary target/debug/clear --quickshell quickshell --quickshell-style glass --exercise-overlays --artifacts target/vm-glass-shell
+python3 -B scripts/vm-shell-hints-smoke.py --binary target/debug/clear --quickshell quickshell --artifacts target/vm-shell-hints
 ```
 
 Each run uses a bounded compositor (25 seconds), a real foot client, a private
@@ -475,6 +485,23 @@ Alacritty through its desktop entry, simulates switcher snapshot state, and
 verifies that closing the launcher, notification view, app preview, and switcher
 does not disconnect the panels. It still
 does not synthesize pointer or keyboard input.
+
+The separate hint fixture copies the real Quickshell example into its artifacts
+and records discovery/report responses. It checks nonempty 20×20 icon reports
+accepted from the panel's Wayland process, empty discovery and registration refusal
+for a foreign process, unchanged desktop policy, stale IDs after unmap, and fresh
+IDs/reports after shell restart. Clear is bounded to 25 seconds; allow 60 seconds
+overall. It has no pixel oracle and tests no physical input or minimize motion.
+Dependencies are the shell fixture's base dependencies plus Quickshell.
+
+Animation-target foundation validation: the rebuilt hint fixture passed on a
+private local virtual KWin host, without a VM, in
+`target/animation-foundations/shell-hints-final/`. The existing optional Quickshell
+shell smoke also passed in `target/animation-foundations/shell-with-hints/`,
+including panel pixels, reservations, subscriptions, reconnect, disable and
+cleanup. Targeted shell Rust tests, all 14 Node model tests and QML lint passed.
+These results establish hint reporting/authorization and ordinary shell behavior;
+they do not establish animated minimize, scrolling input or physical interaction.
 
 The compositor's CLI child is used to verify environment propagation. Quickshell
 is launched separately by the runner using those exported values so the test
@@ -703,6 +730,14 @@ python3 -B scripts/vm-overview-smoke.py --binary target/debug/clear --artifacts 
 cargo test --locked --test overview
 cargo test --locked --lib platform::smithay::input::tests::overview
 ```
+
+Shared window-image extraction validation: `sharp-preview`, `rounded-previews`,
+`rounded-asymmetric`, `alpha-subsurface`, `ssd`, and `odd-outputs` passed on a
+private local virtual KWin host, without a VM, in
+`target/animation-slice2/overview/`. These captures cover existing committed-image
+appearance, alpha/subsurfaces, decorations, sharpness and output clipping after
+moving composition into the shared window-image module. They do not test retained
+images after destruction, animated opacity, moving-window input or frame cadence.
 
 The [overview contract](../specs/overview.md) owns behavior. The fixture reuses
 real SHM XDG/layer clients under a private virtual KWin host. It has twenty cases:
