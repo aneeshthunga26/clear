@@ -38,7 +38,8 @@ only directory allowed to depend on Smithay and Wayland types.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
 - `presentation_input.rs`: surface-local inverse pointer/DnD coordinates while
   preserving Wayland surface identity, popup focus and client grab ownership.
-  Current hits use identity scale until scene motion is connected.
+  Resolve through last submitted animation geometry; inverse-map body, SSD,
+  popup and DnD coordinates before client input-region checks.
 - `window_image.rs`: shared committed GPU body/SSD/border/mask composition for
   previews and owned snapshots. One backend composer owns scratch; callers own
   bounded retained textures. Never reuse a texture still sampled by a snapshot.
@@ -47,8 +48,13 @@ only directory allowed to depend on Smithay and Wayland types.
   Validate advisory icon reports against mapped committed panel geometry and
   matching Wayland/Unix peer process credentials. Rotate opaque identities on
   mapping/geometry changes and prune registrations on disconnect/unmap/expiry.
-  Hint requests do not reconcile desktop policy; minimize motion is not wired
-  to the prepared target/fallback helpers yet. See [shell](../../../specs/shell.md#advisory-panel-icon-targets).
+  Hint requests do not reconcile desktop policy; animation snapshots consume
+  live target/fallback helpers for minimize motion. See [shell](../../../specs/shell.md#advisory-panel-icon-targets).
+- `animations.rs`: bridge complete normal-window snapshots to the runtime planner;
+  capture committed images before lifecycle loss, enforce image ownership/bounds,
+  and retire only sources acknowledged by successful submission.
+- `overview_animation.rs`: bounded card/wallpaper interpolation and retained closing
+  input/render ownership; last submitted layout drives hits.
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,
   shared visibility clips, and frame callbacks.
 - `wallpaper.rs`: renderer-owned immutable texture cache, per-output image
@@ -116,7 +122,9 @@ only directory allowed to depend on Smithay and Wayland types.
   Include separate layer popup trees as well as parent surfaces.
 - Use the same output-group clips for rendering and hit-testing. Floats may span
   their group's outputs, not independent workspaces or gaps between monitors.
-  Tile bodies also respect requested bounds while clients resize asynchronously.
+  With motion disabled, tile bodies respect requested bounds during asynchronous
+  resize. With motion enabled, fit committed images to sampled frames and use the
+  same inverse transform for input/popups until final client commits catch up.
 - Rounded outlines derive from the original placement, never from each output
   crop. Body hit-testing and shader coverage intersect all applicable corner arcs;
   popups and layer-shell trees bypass rounding. Zero radius keeps the square path.
@@ -244,6 +252,10 @@ example and checks accepted nonempty icon reports, foreign-process discovery and
 registration refusal, unchanged desktop policy, and mapping identities after
 panel restart. It does not verify physical scrolling, GPU pixels or minimize
 animation; use the ordinary shell smoke for final panel pixels/reservations.
+`scripts/vm-animation-smoke.py` uses slow linear effects and real SHM clients to
+check final policy/configures and intermediate GPU geometry/opacity for all eight
+effects, including retained destruction, restore and closing overview. It does
+not establish physical input or actual presentation cadence.
 `scripts/vm-rounded-smoke.py` checks fitted/asymmetric radii, body/border alpha,
 subsurface composition, geometry offsets, cut-outs, and unchanged layers/popups.
 `scripts/vm-decoration-smoke.py` checks real XDG/KDE negotiation, held ACKs/commits,

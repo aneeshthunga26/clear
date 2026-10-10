@@ -387,6 +387,44 @@ mod tests {
     }
 
     #[test]
+    fn workspace_motion_suppresses_press_and_release_after_motion_finishes() {
+        const CHILD: &str = "CLEAR_WORKSPACE_INPUT_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("clear-workspace-input-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "platform::smithay::input::tests::workspace_motion_suppresses_press_and_release_after_motion_finishes", "--nocapture"])
+                .env(CHILD, "1").env("XDG_RUNTIME_DIR", &directory).status().unwrap();
+            std::fs::remove_dir_all(directory).unwrap();
+            assert!(status.success());
+            return;
+        }
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut state = overview_input_fixture(&event_loop);
+        let output = crate::core::OutputId(1);
+        let pointer = state.seat.get_pointer().unwrap();
+        state.motion((200.0, 200.0).into(), 0);
+        let focus = state.runtime.desktop.focused_window();
+        state.window_animations.test_workspace_motion(output, true);
+        state.pointer_button(0x110, ButtonState::Pressed, 1);
+        assert!(state.suppressed_buttons.contains(&0x110));
+        assert!(!pointer.is_grabbed());
+        assert!(state.drag.is_none());
+        assert_eq!(state.runtime.desktop.focused_window(), focus);
+        // Completing motion cannot leak the intercepted press's release to clients.
+        state.window_animations.test_workspace_motion(output, false);
+        state.pointer_button(0x110, ButtonState::Released, 2);
+        assert!(state.suppressed_buttons.is_empty());
+        assert!(!pointer.is_grabbed());
+        // A new ordinary press after completion restores the seat's normal path.
+        state.pointer_button(0x110, ButtonState::Pressed, 3);
+        assert!(pointer.is_grabbed());
+        state.pointer_button(0x110, ButtonState::Released, 4);
+        assert!(!pointer.is_grabbed());
+    }
+
+    #[test]
     fn overview_hover_click_and_drag_without_shell_ipc() {
         const CHILD: &str = "CLEAR_OVERVIEW_DRAG_TEST";
         if std::env::var_os(CHILD).is_none() {
@@ -753,7 +791,7 @@ impl Compositor {
                 if pressed && state.suppressed_keys.contains(&code.raw()) {
                     return FilterResult::Intercept(None);
                 }
-                if state.runtime.overview.is_some() {
+                if state.overview_present() {
                     if pressed {
                         state.suppressed_keys.insert(code.raw());
                         let symbols = key.raw_syms();
@@ -767,7 +805,9 @@ impl Compositor {
                             binding_action(&state.runtime.bindings, modifiers, symbols.clone()),
                             Some(Action::ToggleOverview)
                         );
-                        if toggle || symbols.contains(&Keysym::Escape) {
+                        if toggle && state.runtime.overview.is_none() {
+                            state.runtime.toggle_overview();
+                        } else if toggle || symbols.contains(&Keysym::Escape) {
                             state.runtime.cancel_overview();
                         } else if state.overview_drag.as_ref().is_some_and(|d| d.active) {
                             return FilterResult::Intercept(None);
@@ -871,7 +911,17 @@ impl Compositor {
         let pressed = button_state == ButtonState::Pressed;
         let pointer = self.seat.get_pointer().expect("pointer initialized");
         let position = pointer.current_location();
-        if self.runtime.overview.is_some() {
+        if self.overview_present() && self.runtime.overview.is_none() {
+            if pressed {
+                self.suppressed_buttons.insert(button);
+            } else {
+                self.suppressed_buttons.remove(&button);
+            }
+            self.dirty = true;
+            self.reconcile();
+            return;
+        }
+        if self.overview_present() {
             if pressed {
                 self.suppressed_buttons.insert(button);
                 if button == 0x110 {
@@ -966,6 +1016,22 @@ impl Compositor {
             }
             self.dirty = true;
             self.reconcile();
+            return;
+        }
+        // A moving application canvas never forwards a press without its matching release.
+        // Static shell layers retain their normal ownership during workspace motion.
+        if pressed
+            && !pointer.is_grabbed()
+            && self.outputs.iter().any(|output| {
+                logical(output.rect).contains(position.to_i32_floor())
+                    && self.window_animations.workspace_input_blocked(output.id)
+            })
+            && !matches!(
+                self.hit_test(position).map(|hit| hit.owner),
+                Some(HitOwner::Layer(_))
+            )
+        {
+            self.suppressed_buttons.insert(button);
             return;
         }
         if pressed && self.drag.is_none() && !pointer.is_grabbed() {
@@ -1077,7 +1143,7 @@ impl Compositor {
                 self.pointer_button(event.button_code(), event.state(), event.time_msec());
             }
             InputEvent::PointerAxis { event, .. } => {
-                if self.runtime.overview.is_some() {
+                if self.overview_present() {
                     if self.overview_press.is_some() || self.overview_drag.is_some() {
                         return;
                     }
@@ -1164,7 +1230,7 @@ impl Compositor {
             || self.forwarded_keys.values().any(|modifier| !modifier)
             || !self.suppressed_buttons.is_empty()
             || !self.host_focused;
-        if self.runtime.overview.is_some() || !blocked {
+        if self.overview_present() || !blocked {
             self.runtime.toggle_overview();
             self.overview_press = None;
             self.overview_drag = None;
@@ -1209,7 +1275,7 @@ impl Compositor {
                 .y
                 .clamp(0.0, f64::from((self.host_size.h - 1).max(0))),
         ));
-        if self.runtime.overview.is_some() {
+        if self.overview_present() {
             let target = self
                 .overview_layout()
                 .and_then(|l| l.hit(position.x, position.y));
@@ -1304,13 +1370,21 @@ impl Compositor {
         edges: u32,
         button: u32,
     ) {
-        if self.runtime.overview.is_some()
+        if self.overview_present()
             || self.runtime.overview_requested
             || self.drag.is_some()
+            || self.outputs.iter().any(|output| {
+                logical(output.rect).contains(position.to_i32_floor())
+                    && self.window_animations.workspace_input_blocked(output.id)
+            })
             || edges & !15 != 0
             || self.runtime.desktop.window(id).is_none_or(|w| {
                 w.role == WindowRole::Launcher || w.maximized || w.fullscreen || w.minimized
             })
+            || self
+                .window_animations
+                .presented_visual(id)
+                .is_some_and(|visual| !visual.sampled.input_eligible)
         {
             return;
         }
@@ -1319,6 +1393,7 @@ impl Compositor {
         };
         self.runtime.desktop.command(Command::Focus(id));
         let resize = if edges == 0 {
+            self.settle_window_animation(id);
             if placement.tiled {
                 self.runtime.desktop.command(Command::ToggleFloating);
             }
@@ -1330,6 +1405,7 @@ impl Compositor {
             let Some(session) = self.runtime.desktop.begin_resize(id, resize_edges(edges)) else {
                 return;
             };
+            self.settle_window_animation(id);
             Some(session)
         };
         if resize.is_some() {

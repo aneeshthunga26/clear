@@ -82,6 +82,10 @@ impl CompositorHandler for Compositor {
                         });
                 }
                 if has_buffer && !entry.mapped {
+                    entry.mapping_generation = entry
+                        .mapping_generation
+                        .checked_add(1)
+                        .expect("window mapping generation exhausted");
                     entry.mapped = true;
                     let (title, app_id) = metadata(&root);
                     self.runtime.desktop.add_window(id, title, app_id.clone());
@@ -229,6 +233,7 @@ impl XdgShellHandler for Compositor {
             ManagedWindow {
                 window: Window::new_wayland_window(surface),
                 mapped: false,
+                mapping_generation: 0,
                 initial_maximized: false,
                 initial_fullscreen: false,
                 initial_fullscreen_output: None,

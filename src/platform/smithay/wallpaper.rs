@@ -37,6 +37,57 @@ pub(super) struct WallpaperCache {
 }
 
 impl WallpaperCache {
+    /// Keep a source wallpaper's crop while sliding through another output in its group.
+    pub fn workspace_elements_for_clip(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        wallpapers: &Wallpapers,
+        output: &str,
+        bounds: Rect,
+        clip: Rect,
+        incoming: (f64, f64),
+        outgoing: (f64, f64),
+    ) -> Vec<TextureRenderElement<GlesTexture>> {
+        if self.element(renderer, wallpapers, output, bounds).is_none() {
+            return Vec::new();
+        }
+        let Some(prepared) = wallpapers.for_output(output) else {
+            return Vec::new();
+        };
+        let Some(texture) = self
+            .images
+            .iter()
+            .find(|cached| Arc::ptr_eq(&cached.image, &prepared.image))
+            .and_then(|cached| cached.texture.as_ref())
+        else {
+            return Vec::new();
+        };
+        [incoming, outgoing]
+            .into_iter()
+            .filter_map(|offset| {
+                let (source, dest) = workspace_placement(
+                    prepared.image.size(),
+                    bounds,
+                    prepared.mode,
+                    offset,
+                    clip,
+                )?;
+                Some(TextureRenderElement::from_static_texture(
+                    Id::new(),
+                    renderer.context_id(),
+                    (f64::from(dest.x), f64::from(dest.y)),
+                    texture.clone(),
+                    1,
+                    Transform::Normal,
+                    None,
+                    Some(source),
+                    Some((dest.width, dest.height).into()),
+                    None,
+                    Kind::Unspecified,
+                ))
+            })
+            .collect()
+    }
     pub fn retain(&mut self, wallpapers: &Wallpapers) {
         self.images.retain(|cached| {
             wallpapers
@@ -90,6 +141,7 @@ impl WallpaperCache {
         output: &str,
         source_output: Rect,
         preview: Rect,
+        opacity: f32,
     ) -> Option<TextureRenderElement<GlesTexture>> {
         if preview.is_empty() || source_output.is_empty() {
             return None;
@@ -110,13 +162,40 @@ impl WallpaperCache {
             texture.clone(),
             1,
             Transform::Normal,
-            None,
+            Some(opacity),
             Some(source),
             Some((destination.width, destination.height).into()),
             None,
             Kind::Unspecified,
         ))
     }
+}
+
+fn workspace_placement(
+    image: (u32, u32),
+    output: Rect,
+    mode: WallpaperMode,
+    offset: (f64, f64),
+    clip: Rect,
+) -> Option<(Rectangle<f64, Logical>, Rect)> {
+    if output.is_empty() || !offset.0.is_finite() || !offset.1.is_finite() {
+        return None;
+    }
+    let (mut source, dest) = placement(image, output, mode);
+    let translated = Rect::new(
+        dest.x.checked_add(offset.0.round() as i32)?,
+        dest.y.checked_add(offset.1.round() as i32)?,
+        dest.width,
+        dest.height,
+    );
+    let clipped = translated.intersection(clip)?;
+    let sx = source.size.w / f64::from(dest.width);
+    let sy = source.size.h / f64::from(dest.height);
+    source.loc.x += f64::from(clipped.x - translated.x) * sx;
+    source.loc.y += f64::from(clipped.y - translated.y) * sy;
+    source.size.w = f64::from(clipped.width) * sx;
+    source.size.h = f64::from(clipped.height) * sy;
+    Some((source, clipped))
 }
 
 fn preview_placement(
@@ -193,6 +272,81 @@ fn placement(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_slides_preserve_full_crop_and_clip_horizontal_and_vertical_motion() {
+        let output = Rect::new(319, 11, 800, 600);
+        for mode in [
+            WallpaperMode::Fill,
+            WallpaperMode::Fit,
+            WallpaperMode::Stretch,
+            WallpaperMode::Center,
+        ] {
+            let (source, dest) = placement((400, 200), output, mode);
+            assert_eq!(
+                workspace_placement((400, 200), output, mode, (0.0, 0.0), output),
+                Some((source, dest))
+            );
+            for offset in [(400.0, 0.0), (-400.0, 0.0), (0.0, 300.0), (0.0, -300.0)] {
+                if let Some((crop, clipped)) =
+                    workspace_placement((400, 200), output, mode, offset, output)
+                {
+                    assert_eq!(clipped.intersection(output), Some(clipped));
+                    assert!(crop.loc.x >= source.loc.x && crop.loc.y >= source.loc.y);
+                    assert!(crop.loc.x + crop.size.w <= source.loc.x + source.size.w);
+                    assert!(crop.loc.y + crop.size.h <= source.loc.y + source.size.h);
+                }
+            }
+        }
+        assert_eq!(
+            workspace_placement(
+                (400, 200),
+                output,
+                WallpaperMode::Fill,
+                (800.0, 0.0),
+                output
+            ),
+            None
+        );
+        assert_eq!(
+            workspace_placement(
+                (400, 200),
+                output,
+                WallpaperMode::Fill,
+                (f64::NAN, 0.0),
+                output
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stretched_wallpaper_can_cross_output_boundary_without_changing_source_crop() {
+        let source_output = Rect::new(0, 0, 640, 480);
+        let destination_output = Rect::new(640, 0, 640, 480);
+        let (source, _) = placement((1600, 900), source_output, WallpaperMode::Fill);
+        assert_eq!(
+            workspace_placement(
+                (1600, 900),
+                source_output,
+                WallpaperMode::Fill,
+                (640.0, 0.0),
+                destination_output
+            ),
+            Some((source, destination_output))
+        );
+        let (crop, dest) = workspace_placement(
+            (1600, 900),
+            source_output,
+            WallpaperMode::Fill,
+            (320.0, 0.0),
+            destination_output,
+        )
+        .unwrap();
+        assert_eq!(dest, Rect::new(640, 0, 320, 480));
+        assert_eq!(crop.size.w, source.size.w / 2.0);
+        assert_eq!(crop.loc.x, source.loc.x + source.size.w / 2.0);
+    }
 
     #[test]
     fn preview_scales_full_output_placement_without_recropping_center_or_fit() {

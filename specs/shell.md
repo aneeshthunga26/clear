@@ -122,8 +122,8 @@ changes only upon acceptance, as specified in [input](input.md#alt-tab).
 ## Advisory panel icon targets
 
 The additive `animation_targets_v1` capability supports optional shell-provided
-minimize destinations. Reports and resolver/fallback helpers are implemented;
-the renderer does **not yet consume them for minimize motion**. Their absence,
+minimize destinations. The animation adapter consumes accepted live reports
+for enabled minimize motion and uses a panel/output fallback otherwise. Their absence,
 rejection or expiry MUST NOT affect minimize policy, focus, client configuration,
 or compositor operation. These requests do not run desktop reconciliation or
 publish changed policy snapshots. Backend-independent `execute` refuses them;
@@ -188,8 +188,8 @@ The prepared fallback helper uses the window's home full-output bounds. It
 chooses an eligible panel body's center, preferring reserved panels and then
 mapping identity, or the output's bottom center if no eligible panel exists.
 The target is at most 24×24 logical pixels and fits the selected body/output.
-Overlay launchers do not become fallback panels. This helper is also not wired
-to a visible animation yet.
+Overlay launchers do not become fallback panels. Visible motion and retained
+images follow the [animation presentation](animations.md) contract.
 
 The Quickshell example discovers its own panels after subscription and once per
 second. It matches output, namespace and committed dimensions unambiguously,

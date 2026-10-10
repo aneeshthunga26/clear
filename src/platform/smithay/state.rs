@@ -43,6 +43,7 @@ use std::{
 pub(super) struct ManagedWindow {
     pub window: Window,
     pub mapped: bool,
+    pub mapping_generation: u64,
     // XDG permits maximize requests before the first buffer enters desktop policy.
     pub initial_maximized: bool,
     pub initial_fullscreen: bool,
@@ -86,6 +87,8 @@ pub(super) struct Compositor {
     pub shell_server: Option<crate::shell::server::Server>,
     pub shell_snapshot: Option<crate::shell::Snapshot>,
     pub animation_targets: super::shell::AnimationTargets,
+    pub window_animations: super::animations::WindowAnimations,
+    pub overview_animation: super::overview_animation::OverviewAnimation,
     pub shell_dirty: bool,
     pub host_size: Size<i32, Logical>,
     pub dirty: bool,
@@ -186,6 +189,8 @@ impl Compositor {
             shell_server: None,
             shell_snapshot: None,
             animation_targets: Default::default(),
+            window_animations: Default::default(),
+            overview_animation: Default::default(),
             shell_dirty: true,
             host_size: (1, 1).into(),
             dirty: true,

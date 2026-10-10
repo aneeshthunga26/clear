@@ -17,19 +17,34 @@ use smithay::{
             },
         },
     },
-    utils::{Buffer, Physical, Rectangle, Size, Transform},
+    utils::{Buffer, Logical, Physical, Rectangle, Size, Transform},
 };
 
 #[derive(Clone, Copy)]
 pub(super) enum BlurMask {
     /// Independent geometric coverage, not the already-masked client alpha.
     Window(RoundedShape),
+    /// Geometric coverage fades with the independently premultiplied window image.
+    AnimatedWindow {
+        source: RoundedShape,
+        destination: Rectangle<f64, Logical>,
+        alpha: f32,
+    },
     /// Square floating trees may extend beyond the requested frame while resizing.
     SquareWindow(RoundedShape),
     /// No protocol blur region: weight blur by tree alpha, preserving transparent holes.
     ClientAlpha(crate::core::Rect),
     /// Glass layer uses its namespace outline as independent geometric coverage.
     GlassLayer(RoundedShape),
+}
+
+fn rect_uniform(rect: crate::core::Rect) -> [f32; 4] {
+    [
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+    ]
 }
 
 /// Four framebuffer-sized textures, reused across trees and frames; resize replaces them.
@@ -100,6 +115,10 @@ impl BackdropBlur {
                 UniformName::new("backdrop", UniformType::_1i),
                 UniformName::new("original", UniformType::_1i),
                 UniformName::new("client_shape", UniformType::_1f),
+                UniformName::new("coverage_alpha", UniformType::_1f),
+                UniformName::new("coverage_source", UniformType::_4f),
+                UniformName::new("coverage_radii", UniformType::_4f),
+                UniformName::new("coverage_destination", UniformType::_4f),
                 UniformName::new("outline", UniformType::_4f),
                 UniformName::new("radii", UniformType::_4f),
                 UniformName::new("target_height", UniformType::_1f),
@@ -257,6 +276,23 @@ impl BackdropBlur {
                 BlurMask::Window(shape)
                 | BlurMask::SquareWindow(shape)
                 | BlurMask::GlassLayer(shape) => shape,
+                BlurMask::AnimatedWindow {
+                    source,
+                    destination,
+                    ..
+                } => {
+                    super::rounded::WindowOutline {
+                        outer: source,
+                        inner: source,
+                    }
+                    .scaled(crate::core::Rect::new(
+                        destination.loc.x.round() as i32,
+                        destination.loc.y.round() as i32,
+                        destination.size.w.round().max(1.0) as i32,
+                        destination.size.h.round().max(1.0) as i32,
+                    ))
+                    .outer
+                }
                 BlurMask::ClientAlpha(rect) => RoundedShape {
                     rect,
                     radii: [0.0; 4],
@@ -266,6 +302,39 @@ impl BackdropBlur {
             uniforms.extend([
                 Uniform::new("backdrop", 1_i32),
                 Uniform::new("original", 2_i32),
+                Uniform::new(
+                    "coverage_alpha",
+                    match mask {
+                        BlurMask::AnimatedWindow { alpha, .. } => alpha.clamp(0.0, 1.0),
+                        _ => 1.0_f32,
+                    },
+                ),
+                Uniform::new(
+                    "coverage_source",
+                    match mask {
+                        BlurMask::AnimatedWindow { source, .. } => rect_uniform(source.rect),
+                        _ => rect_uniform(shape.rect),
+                    },
+                ),
+                Uniform::new(
+                    "coverage_radii",
+                    match mask {
+                        BlurMask::AnimatedWindow { source, .. } => source.radii,
+                        _ => shape.radii,
+                    },
+                ),
+                Uniform::new(
+                    "coverage_destination",
+                    match mask {
+                        BlurMask::AnimatedWindow { destination, .. } => [
+                            destination.loc.x as f32,
+                            destination.loc.y as f32,
+                            destination.size.w as f32,
+                            destination.size.h as f32,
+                        ],
+                        _ => rect_uniform(shape.rect),
+                    },
+                ),
                 Uniform::new("glass_enabled", if glass.enabled { 1.0_f32 } else { 0.0 }),
                 Uniform::new("glass_texel", [1.0 / size.w as f32, 1.0 / size.h as f32]),
                 Uniform::new("glass_bounds", sample_bounds(clip, size)),
@@ -284,6 +353,7 @@ impl BackdropBlur {
                     "client_shape",
                     match mask {
                         BlurMask::Window(_) => 0.0_f32,
+                        BlurMask::AnimatedWindow { .. } => 4.0_f32,
                         BlurMask::ClientAlpha(_) => 1.0,
                         BlurMask::GlassLayer(_) => 3.0,
                         BlurMask::SquareWindow(_) => 2.0,
@@ -841,13 +911,23 @@ const LIQUID_GLASS: &str = include_str!("liquid_glass.frag");
 const COMPOSITE: &str = r#"
 uniform sampler2D original;
 uniform float client_shape;
+uniform float coverage_alpha;
+uniform vec4 coverage_source;
+uniform vec4 coverage_radii;
+uniform vec4 coverage_destination;
 void main() {
     vec4 foreground = texture2D(tex, v_coords);
     float a = foreground.a;
     // Without an explicit blur region, alpha is the only available shape signal.
     // Continuous A*(1-A) blur weight avoids frosting holes or hard shadow edges.
     float tree_coverage = a + a * (1.0 - a);
-    float c = coverage(desktop_point(), outline, radii);
+    float c = coverage(desktop_point(), outline, radii) * coverage_alpha;
+    if (client_shape > 3.5) {
+        vec2 original_point = coverage_source.xy
+            + (desktop_point() - coverage_destination.xy)
+            * coverage_source.zw / coverage_destination.zw;
+        c = coverage(original_point, coverage_source, coverage_radii) * coverage_alpha;
+    }
     // Square clients retain their existing overflow clipping; outside the frame,
     // use their alpha shape rather than inventing a larger frosted rectangle.
     if (client_shape > 1.5 && client_shape < 2.5) c = max(c, tree_coverage);

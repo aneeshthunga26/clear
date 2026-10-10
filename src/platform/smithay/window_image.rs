@@ -190,10 +190,6 @@ impl PreparedWindowImage {
 pub(super) struct WindowImage {
     pub texture: GlesTexture,
     pub source: Rect,
-    #[expect(
-        dead_code,
-        reason = "Original inner frame is retained for forthcoming presentation-frame transforms."
-    )]
     pub frame: Rect,
     pub outline: WindowOutline,
     context_id: ContextId<GlesTexture>,

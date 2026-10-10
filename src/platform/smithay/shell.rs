@@ -151,10 +151,6 @@ const MAX_DISCOVERED_PANELS: usize = 32;
 struct LivePanel {
     surface: WlSurface,
     descriptor: PanelDescriptor,
-    #[expect(
-        dead_code,
-        reason = "panel fallback is prepared for the minimize motion integration"
-    )]
     priority: u8,
 }
 
@@ -323,10 +319,6 @@ impl Compositor {
     }
 
     /// Resolve a live exact-window or matching-app target, in global logical coordinates.
-    #[expect(
-        dead_code,
-        reason = "minimize motion does not consume hint targets yet"
-    )]
     pub fn minimize_target(&self, window: WindowId) -> Option<Rect> {
         self.animation_targets
             .store
@@ -334,10 +326,6 @@ impl Compositor {
     }
 
     /// Stable eligible panel center, else full-output bottom center; never usable-area guesses.
-    #[expect(
-        dead_code,
-        reason = "minimize motion does not consume panel fallback targets yet"
-    )]
     pub fn minimize_fallback(&self, window: WindowId) -> Option<Rect> {
         let window = self.runtime.desktop.window(window)?;
         let output = self.runtime.desktop.output(window.output?)?;

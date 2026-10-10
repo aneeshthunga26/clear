@@ -132,14 +132,43 @@ Super gestures take precedence over those controls.
   fullscreen gesture refusal and restoration. It does not exercise physical input
   or XDG client grab serial authorization.
 
-## Presentation-coordinate delivery foundation
+## Animation input coordinates
+
+For an input-eligible animated window, hits MUST use its last successfully
+submitted image pose, original committed frame/content geometry, SSD style and
+rounded outline. A predicted sample or requested configure MUST NOT move hits
+before submission. The inverse independent-axis transform runs before original
+rounded/body/SSD checks and Wayland input-region traversal. Live popup trees use
+the same parent transform and captured content origin; their current committed
+input regions and subsurface offsets remain Wayland-owned. Images retained after
+unmap/destruction, minimizing sources, and outgoing workspace images MUST NOT
+own input. A remapped generation MUST NOT inherit a prior generation's hit pose.
 
 Pointer focus wraps the same Wayland surface identity with an inverse per-axis
 scale. Seat enter/motion and relative vectors, plus drag-and-drop local positions,
 MUST apply that inverse after subtracting the displayed surface origin. Scale
 changes alone MUST NOT create synthetic leave/enter pairs or change client grab
 serial ownership. Buttons, axes, gestures and popup focus continue through the
-underlying surface protocol implementation. All current scene hits supply identity
-scale; animated scene transforms are not yet connected. The foundation is in
-[presentation input](../src/platform/smithay/presentation_input.rs), whose CPU test
-checks independent-axis inverse coordinates and fractional offsets.
+underlying surface protocol implementation. After a successful scene submission,
+the adapter MUST reevaluate a stationary ungrabbed pointer against submitted
+geometry; physical pointer motion is not required to update focus.
+
+Workspace motion MUST suppress application hits from the policy switch through
+its terminal submitted frame, including the interval before its first redraw.
+Static layer-shell surfaces retain ordinary ownership. An intercepted application
+press MUST suppress its paired release even when motion completes between them.
+Authorized active pointer/compositor grabs take precedence and settle workspace
+motion. Direct move/resize gestures settle their window track before taking
+geometry ownership, preserving existing client grab/serial authorization and
+resize-session refusal rules. Repeated drag positions do not start interpolation
+tracks. [Overview](overview.md) owns input through its retained closing scene.
+
+The [scene tests](../src/platform/smithay/scene.rs)
+`animated_hits_inverse_map_original_rounding_ssd_and_surface_offsets` check source
+rounding, SSD control boxes, fractional origins and independent-axis scaling.
+[presentation input tests](../src/platform/smithay/presentation_input.rs) check
+inverse coordinate vectors. The synthetic adapter regression
+`workspace_motion_suppresses_press_and_release_after_motion_finishes` in
+[input tests](../src/platform/smithay/input.rs) verifies pending-motion suppression,
+paired release cleanup and restored ordinary seat grabs. These tests do not
+establish physical input or GPU presentation cadence.

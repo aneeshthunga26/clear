@@ -14,8 +14,53 @@ client key, intercepted pointer button, or mapped exclusive top/overlay layer
 owns input, or the nested host is unfocused. A second toggle cancels a pending
 entry. Escape cancels a pending entry as well as an open overview. Acknowledging
 an IPC toggle accepts the request; it does not guarantee immediate entry.
-On-demand layer focus does not block entry. Opening/closing is instant, providing
-the initial reduced-motion path; animated transitions are not implemented.
+On-demand layer focus does not block entry. Opening/closing uses the configured
+[overview animation](animations.md) when global/effect motion is enabled.
+Disabled or reduced-motion preferences retain the instant path.
+
+## Presentation transitions
+
+Entry interpolates live visible window frames from their last submitted desktop
+poses into the fitted overview card positions. Without an active desktop pose,
+the adapter uses the reconciled frame origin and committed body dimensions.
+Hidden/minimized candidates fade into their card positions without synthesizing
+hidden-workspace layouts. The wallpaper canvas smoothly scales from full output
+bounds into its overview inset while retaining the full-output crop/letterboxing;
+labels, miniature previews, selection accents and outer dimming fade with the
+same sampled progress. No per-frame scripts, policy placements or client
+configures drive these transitions.
+
+Exit retains an ID-only session and bounded layout after runtime selection has
+closed or activated. Cards returning to visible desktop placements move/scale
+toward their reconciled origins with committed body dimensions; remaining hidden
+or minimized cards fade away. Wallpaper returns to full output bounds. Cancelling
+during entry reverses from the last submitted progress, retaining the shared
+effect's analytic spring velocity. Changing animation speed rebases the same
+clock rather than restarting the scene. Ordinary pagination/navigation changes
+are not separate animated layout transitions.
+
+The adapter samples the shared capped animation timestamp before rendering;
+prediction does not advance pointer hits. Rendering consumes the sampled layout,
+and hit discovery consumes the last successfully submitted layout. Duplicate
+ordinary window visuals are suppressed while overview presents; the GPU preview
+remains the live representation. Overview continues owning input, callbacks,
+preview output membership and temporary unsuspension through its closing
+terminal frame, even though the optional shell snapshot already reports runtime
+`overview_open = false`. Closing consumes further input until handoff; the
+overview toggle can reopen from the submitted progress. Only a
+successfully submitted current terminal frame retires this presentation session;
+failed rendering/submission cannot restore client input over a still-visible
+overview. Host focus loss clears the transition immediately. Output topology
+changes refresh the bounded output-local geometry and existing cache cleanup;
+loss or resizing of a closing scene's output clears that transition immediately.
+
+One shared engine track captures the effect law, using the ordinary animation
+speed/reduced-motion policy. Transition bookkeeping retains at most twelve
+desktop frame endpoints and opacity values, and four bounded layouts (target,
+transition source, sampled and submitted), each with at most 24 items, plus the
+existing ID-only runtime session. Texture/label bounds below continue applying throughout entry
+and closing; no separate overview screenshot or retained GPU texture pool is
+added.
 
 ## Preview and activation
 
@@ -220,6 +265,13 @@ hot corners and touchpad progress remain future work.
   Shared source composition belongs to
   [window_image.rs](../src/platform/smithay/window_image.rs); CPU geometry/cache
   tests do not establish GPU alpha, mask, snapshot lifetime or crop correctness.
+- [Presentation transition and pure tests](../src/platform/smithay/overview_animation.rs):
+  full-output/card endpoints and midpoint geometry, reversal from a submitted
+  phase across speed reload, interrupted activation rebased to new desktop
+  endpoints without a first-frame jump, outer-border endpoint geometry, and
+  terminal-frame/current-revision retirement.
+  These CPU tests do not establish frame cadence, compositor input handoff or
+  GPU intermediate pixels.
 - [Input routing and seat-path test](../src/platform/smithay/input.rs):
   `overview_keyboard_pairs_and_deferred_entry_without_shell_ipc` exercises
   synthetic keyboard/button pairs and implicit-grab deferral without a shell.

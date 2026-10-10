@@ -114,6 +114,17 @@ at a buffered root commit; an ACK alone MUST NOT change it. Unmap clears committ
 fullscreen and pre-map intent. Delayed client commits do not block other clients;
 policy placement and scene priority may change before client content catches up.
 
+When [animations](animations.md) are enabled, configures MUST still request the
+final placement once. Rendering fits the latest committed body/SSD image to the
+sampled frame, including while the client holds a resize/fullscreen commit.
+The final fitted image MUST remain until committed dimensions and fullscreen
+appearance match; reaching the animation endpoint MUST NOT snap back to old
+content bounds. SSD/fullscreen appearance still changes only at a buffered root
+commit. Popup placement and inverse pointer coordinates MUST follow the same
+submitted transform. With motion disabled the ordinary requested/committed clips
+remain in effect. Launchers and layer-shell clients are outside window animation
+ownership.
+
 XDG popups are tracked separately from workspace-owned toplevels, configured and
 repositioned using their parent origin and output constraints. Layer popups can
 extend outside their panel's body. Decoration mode, geometry offsets, and popup

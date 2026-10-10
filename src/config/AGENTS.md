@@ -17,7 +17,7 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   These declarations describe placement, not autostart or process toggles.
 - `animations.rs`: strict global/per-effect preferences and kind-specific validation;
   [animations](../../specs/animations.md) owns defaults, accepted ranges, and the
-  distinction between accepted engine settings and unconnected visual effects.
+  visible effects and retained-resource behavior.
 
 ## Invariants
 

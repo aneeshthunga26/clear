@@ -16,7 +16,8 @@ objects out of this module; return effects for the platform to execute.
   and bounded track storage. Keep policy, surfaces, and GPU resources outside it.
   Convert adapter timestamps through the runtime's absolute monotonic origin.
   Reload preparation must finish before clock rebasing/settlement; see
-  [animations](../../specs/animations.md). Visible effects are not yet connected.
+  [animations](../../specs/animations.md). The Smithay adapter consumes sampled
+  poses for visible effects.
 - `presentation.rs` owns pure validated snapshot diffs, retained-image request IDs,
   workspace/window transition tracks, and immutable sampled frames. Policy and
   GPU ownership stay with core and the adapter. Only acknowledge actual submitted
@@ -25,7 +26,7 @@ objects out of this module; return effects for the platform to execute.
   `is_animating` includes a pending final redraw. Keep overview composition and
   adapter input transforms outside the planner. See
   [animations](../../specs/animations.md#pure-presentation-planning); these pure
-  frames are not yet consumed by the renderer.
+  frames are consumed by the Smithay adapter after final policy reconciliation.
 - Startup may fall back to safe defaults. Reload must prepare and validate the
   candidate config, bindings, and script host before replacing live state.
   Rejected reloads retain the last good configuration and behavior.

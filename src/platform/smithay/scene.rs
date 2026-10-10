@@ -1,4 +1,5 @@
 use super::{
+    animations::AnimatedWindow,
     blur::BlurMask,
     rounded::{RoundedShaders, RoundedShape, RoundedSurface, WindowOutline},
     state::Compositor,
@@ -6,6 +7,7 @@ use super::{
     wallpaper::WallpaperCache,
 };
 use crate::core::{Desktop, OutputId, Placement, Rect, WindowId, WindowRole};
+use crate::runtime::presentation::{PresentationSource, WindowKey};
 use smithay::{
     backend::renderer::{
         element::{
@@ -13,14 +15,14 @@ use smithay::{
             solid::{SolidColorBuffer, SolidColorRenderElement},
             surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
             texture::TextureRenderElement,
-            utils::CropRenderElement,
+            utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
         },
         gles::{GlesError, GlesRenderer, GlesTexture},
     },
     desktop::{
         PopupManager, WindowSurfaceType, layer_map_for_output,
         space::SpaceElement,
-        utils::{output_update, send_frames_surface_tree},
+        utils::{output_update, send_frames_surface_tree, under_from_surface_tree},
     },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -38,6 +40,7 @@ smithay::backend::renderer::element::render_elements! {
     Titlebar=CropRenderElement<TextureRenderElement<GlesTexture>>,
     RoundedSurface=RoundedSurface,
     Wallpaper=TextureRenderElement<GlesTexture>,
+    AnimatedPopup=CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
 }
 
 /// Elements and logical trees are both front-to-back. A tree is blurred only once.
@@ -87,6 +90,56 @@ fn physical(rect: Rect) -> Rectangle<i32, Physical> {
 }
 fn contains(rect: Rect, point: Point<f64, Logical>) -> bool {
     logical(rect).contains(point.to_i32_floor())
+}
+
+#[derive(Clone, Copy)]
+struct WindowTransform {
+    source: Rect,
+    destination: crate::runtime::animation::AnimationRect,
+    scale: Point<f64, Logical>,
+}
+
+impl WindowTransform {
+    fn new(source: Rect, destination: crate::runtime::animation::AnimationRect) -> Self {
+        Self {
+            source,
+            destination,
+            scale: (
+                destination.width / f64::from(source.width),
+                destination.height / f64::from(source.height),
+            )
+                .into(),
+        }
+    }
+
+    fn inverse(self, point: Point<f64, Logical>) -> Point<f64, Logical> {
+        (
+            f64::from(self.source.x) + (point.x - self.destination.x) / self.scale.x,
+            f64::from(self.source.y) + (point.y - self.destination.y) / self.scale.y,
+        )
+            .into()
+    }
+
+    fn forward(self, point: Point<f64, Logical>) -> Point<f64, Logical> {
+        (
+            self.destination.x + (point.x - f64::from(self.source.x)) * self.scale.x,
+            self.destination.y + (point.y - f64::from(self.source.y)) * self.scale.y,
+        )
+            .into()
+    }
+}
+
+fn animated_clips(visual: &AnimatedWindow) -> Vec<Rect> {
+    visual
+        .clip_outputs
+        .iter()
+        .filter_map(|output| {
+            visual
+                .sampled
+                .clip
+                .map_or(Some(*output), |clip| output.intersection(clip))
+        })
+        .collect()
 }
 
 pub(super) enum HitOwner {
@@ -260,7 +313,7 @@ impl Compositor {
                     placement.focused
                         && self.host_focused
                         && layer_focus.is_none()
-                        && self.runtime.overview.is_none(),
+                        && !self.overview_present(),
                 );
                 top.send_pending_configure();
             }
@@ -270,6 +323,8 @@ impl Compositor {
         }
         self.placements = placements;
         self.refresh_animation_targets();
+        self.sync_overview_animation();
+        self.reconcile_window_animations();
         let focus = layer_focus
             .or_else(|| {
                 self.runtime
@@ -279,7 +334,7 @@ impl Compositor {
                     .and_then(|w| w.window.toplevel())
                     .map(|t| t.wl_surface().clone())
             })
-            .filter(|_| self.host_focused && self.runtime.overview.is_none());
+            .filter(|_| self.host_focused && !self.overview_present());
         let keyboard = self.seat.get_keyboard().expect("keyboard is initialized");
         if !keyboard.is_grabbed() && keyboard.current_focus() != focus {
             keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
@@ -347,12 +402,52 @@ impl Compositor {
         })
     }
 
+    /// Update stationary pointer focus from the last successfully submitted scene.
+    pub fn refresh_pointer_animation_focus(&mut self) {
+        if !self.host_focused || self.drag.is_some() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().expect("pointer initialized");
+        if pointer.is_grabbed() {
+            return;
+        }
+        let location = pointer.current_location();
+        let target = self.surface_under(location);
+        pointer.motion(
+            self,
+            target,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.frame_time.as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+    }
+
     fn fullscreen_outputs(&self) -> BTreeSet<OutputId> {
         self.placements
             .iter()
             .filter_map(|p| self.runtime.desktop.window(p.window))
             .filter(|w| w.fullscreen)
             .filter_map(|w| w.output)
+            .chain(
+                self.window_animations
+                    .outgoing()
+                    .filter(|visual| {
+                        visual.fullscreen_priority && visual.sampled.pose.opacity > 0.0
+                    })
+                    .flat_map(|visual| {
+                        self.outputs
+                            .iter()
+                            .filter(|output| {
+                                animated_clips(visual)
+                                    .iter()
+                                    .any(|clip| clip.intersection(output.rect).is_some())
+                            })
+                            .map(|output| output.id)
+                    }),
+            )
             .collect()
     }
 
@@ -365,7 +460,7 @@ impl Compositor {
     }
 
     pub fn hit_test(&self, point: Point<f64, Logical>) -> Option<SurfaceHit> {
-        if self.runtime.overview.is_some() {
+        if self.overview_present() {
             return None;
         }
         if let Some(layer) = self.layer_under(point, &[Layer::Overlay]) {
@@ -397,6 +492,18 @@ impl Compositor {
     ) -> Option<SurfaceHit> {
         for p in self.placements.iter().rev() {
             if self.elevated_window(p.window, fullscreen_outputs) != elevated {
+                continue;
+            }
+            if self.outputs.iter().any(|output| {
+                contains(output.rect, point)
+                    && self.window_animations.workspace_input_blocked(output.id)
+            }) {
+                continue;
+            }
+            if let Some(visual) = self.window_animations.presented_visual(p.window) {
+                if let Some(hit) = self.animated_window_hit(p, visual, point) {
+                    return Some(hit);
+                }
                 continue;
             }
             if !self
@@ -454,6 +561,86 @@ impl Compositor {
         None
     }
 
+    fn animated_window_hit(
+        &self,
+        placement: &Placement,
+        visual: &AnimatedWindow,
+        point: Point<f64, Logical>,
+    ) -> Option<SurfaceHit> {
+        if !visual.sampled.input_eligible
+            || visual.sampled.outgoing
+            || visual.sampled.pose.opacity <= 0.0
+            || !animated_clips(visual)
+                .iter()
+                .any(|clip| contains(*clip, point))
+        {
+            return None;
+        }
+        let entry = self.windows.get(&placement.window)?;
+        if !entry.mapped || entry.mapping_generation != visual.sampled.key.generation {
+            return None;
+        }
+        let transform = WindowTransform::new(visual.image.frame, visual.sampled.pose.rect);
+        let local = transform.inverse(point);
+        let content = visual.committed_content;
+        let origin: Point<f64, Logical> = (
+            f64::from(content.x - visual.committed_geometry_origin.0),
+            f64::from(content.y - visual.committed_geometry_origin.1),
+        )
+            .into();
+        let top = entry.window.toplevel()?;
+        // Window::surface_under adds its latest XDG geometry origin to popups.
+        // The parent image may still show the prior commit, so use its captured
+        // content origin, exactly as the live popup render path does.
+        for (popup, offset) in PopupManager::popups_for_surface(top.wl_surface()) {
+            let popup_origin: Point<i32, Logical> = (
+                content.x + offset.x - popup.geometry().loc.x,
+                content.y + offset.y - popup.geometry().loc.y,
+            )
+                .into();
+            if let Some((surface, offset)) = under_from_surface_tree(
+                popup.wl_surface(),
+                local,
+                popup_origin,
+                WindowSurfaceType::ALL,
+            ) {
+                return Some(SurfaceHit {
+                    surface,
+                    origin: transform.forward(offset.to_f64()),
+                    owner: HitOwner::Window(placement.window),
+                    scale: transform.scale,
+                });
+            }
+        }
+        if contains(content, local)
+            && visual.image.outline.inner.contains(local)
+            && let Some((surface, offset)) = entry.window.surface_under(
+                local - origin,
+                WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+            )
+        {
+            return Some(SurfaceHit {
+                surface,
+                origin: transform.forward(origin + offset.to_f64()),
+                owner: HitOwner::Window(placement.window),
+                scale: transform.scale,
+            });
+        }
+        if visual.committed_ssd
+            && visual.image.outline.inner.contains(local)
+            && let Some(part) = titlebar_hit(visual.image.frame, local, &visual.committed_titlebar)
+            && let Some(top) = entry.window.toplevel()
+        {
+            return Some(SurfaceHit {
+                surface: top.wl_surface().clone(),
+                origin: transform.forward((f64::from(content.x), f64::from(content.y)).into()),
+                owner: HitOwner::Decoration(placement.window, part),
+                scale: transform.scale,
+            });
+        }
+        None
+    }
+
     fn placement_clips(&self, placement: &crate::core::Placement) -> Vec<Rect> {
         placement_clips(
             &self.runtime.desktop,
@@ -463,7 +650,7 @@ impl Compositor {
     }
 
     pub fn scene_elements(
-        &self,
+        &mut self,
         renderer: &mut GlesRenderer,
         wallpapers: &mut WallpaperCache,
         titlebars: &mut TitlebarCache,
@@ -472,6 +659,8 @@ impl Compositor {
     ) -> Result<Scene, GlesError> {
         let mut elements = Vec::new();
         let mut groups = Vec::new();
+        let mut drawn = BTreeSet::new();
+        let mut drawn_workspaces = BTreeSet::new();
         titlebars.retain(|id| self.windows.get(&id).is_some_and(|entry| entry.uses_ssd()));
         let full_outputs = self.fullscreen_outputs();
         self.layer_elements(renderer, &[Layer::Overlay], &mut elements, &mut groups);
@@ -494,12 +683,50 @@ impl Compositor {
                 );
             }
             for placement in self.placements.iter().rev() {
+                if self.overview_present() {
+                    continue;
+                }
                 if self.elevated_window(placement.window, &full_outputs) != elevated {
                     continue;
                 }
                 let Some(entry) = self.windows.get(&placement.window) else {
                     continue;
                 };
+                if let Some(visual) = self.window_animations.visual(placement.window) {
+                    for clip in animated_clips(visual) {
+                        self.animated_popups(
+                            renderer,
+                            placement.window,
+                            visual,
+                            clip,
+                            &mut elements,
+                            &mut groups,
+                        );
+                        let start = elements.len();
+                        if let Some(element) = visual.image.element(
+                            visual.destination(),
+                            visual.sampled.pose.opacity as f32,
+                            clip,
+                        ) {
+                            elements.push(SceneElement::Titlebar(element));
+                        }
+                        if elements.len() > start {
+                            groups.push(SceneGroup {
+                                elements: start..elements.len(),
+                                clip: physical(clip),
+                                mask: Some(BlurMask::AnimatedWindow {
+                                    source: visual.image.outline.outer,
+                                    destination: visual.destination(),
+                                    alpha: visual.sampled.pose.opacity as f32,
+                                }),
+                            });
+                            drawn.insert(visual.sampled.source);
+                        } else if visual.sampled.pose.opacity == 0.0 {
+                            drawn.insert(visual.sampled.source);
+                        }
+                    }
+                    continue;
+                }
                 let theme = &self.runtime.config.theme;
                 let rounded = rounded
                     .filter(|_| !entry.committed_fullscreen && theme.corner_radius.is_rounded());
@@ -606,6 +833,12 @@ impl Compositor {
                             clip: physical(clip),
                             mask: Some(BlurMask::Window(outline.outer)),
                         });
+                        if elements.len() > start {
+                            drawn.insert(PresentationSource::Live(WindowKey {
+                                window: placement.window,
+                                generation: entry.mapping_generation,
+                            }));
+                        }
                         continue;
                     }
                     // A client can commit an old or oversized buffer after a new configure.
@@ -655,6 +888,40 @@ impl Compositor {
                         clip: physical(clip),
                         mask: Some(BlurMask::SquareWindow(outline.outer)),
                     });
+                    if elements.len() > start {
+                        drawn.insert(PresentationSource::Live(WindowKey {
+                            window: placement.window,
+                            generation: entry.mapping_generation,
+                        }));
+                    }
+                }
+            }
+            if !self.overview_present() {
+                for visual in self
+                    .window_animations
+                    .outgoing()
+                    .filter(|visual| visual.fullscreen_priority == elevated)
+                {
+                    for clip in animated_clips(visual) {
+                        let start = elements.len();
+                        if let Some(element) = visual.image.element(
+                            visual.destination(),
+                            visual.sampled.pose.opacity as f32,
+                            clip,
+                        ) {
+                            elements.push(SceneElement::Titlebar(element));
+                            groups.push(SceneGroup {
+                                elements: start..elements.len(),
+                                clip: physical(clip),
+                                mask: Some(BlurMask::AnimatedWindow {
+                                    source: visual.image.outline.outer,
+                                    destination: visual.destination(),
+                                    alpha: visual.sampled.pose.opacity as f32,
+                                }),
+                            });
+                            drawn.insert(visual.sampled.source);
+                        }
+                    }
                 }
             }
         }
@@ -666,6 +933,34 @@ impl Compositor {
         );
         wallpapers.retain(&self.runtime.wallpapers);
         for region in &self.outputs {
+            if let Some(motion) = self.window_animations.wallpaper_offsets(region.id) {
+                for source in self
+                    .outputs
+                    .iter()
+                    .filter(|source| motion.outputs.contains(&source.id))
+                {
+                    for element in wallpapers.workspace_elements_for_clip(
+                        renderer,
+                        &self.runtime.wallpapers,
+                        &source.output.name(),
+                        source.rect,
+                        region.rect,
+                        motion.incoming_offset,
+                        motion.outgoing_offset,
+                    ) {
+                        let start = elements.len();
+                        elements.push(SceneElement::Wallpaper(element));
+                        groups.push(SceneGroup {
+                            elements: start..elements.len(),
+                            clip: physical(region.rect),
+                            mask: None,
+                        });
+                    }
+                }
+                // The output clear is the solid canvas when no image is configured.
+                drawn_workspaces.insert(motion.group);
+                continue;
+            }
             if let Some(element) = wallpapers.element(
                 renderer,
                 &self.runtime.wallpapers,
@@ -681,7 +976,85 @@ impl Compositor {
                 });
             }
         }
+        for source in drawn {
+            self.window_animations.drawn(source);
+        }
+        for group in drawn_workspaces {
+            self.window_animations.drawn_workspace(group);
+        }
         Ok(Scene { elements, groups })
+    }
+
+    fn animated_popups(
+        &self,
+        renderer: &mut GlesRenderer,
+        id: WindowId,
+        visual: &AnimatedWindow,
+        clip: Rect,
+        elements: &mut Vec<SceneElement>,
+        groups: &mut Vec<SceneGroup>,
+    ) {
+        let Some(top) = self
+            .windows
+            .get(&id)
+            .and_then(|entry| entry.window.toplevel())
+        else {
+            return;
+        };
+        let transform = WindowTransform::new(visual.image.frame, visual.sampled.pose.rect);
+        let frame = visual.image.frame;
+        let destination = transform
+            .forward((f64::from(frame.x), f64::from(frame.y)).into())
+            .to_i32_round();
+        for (popup, offset) in PopupManager::popups_for_surface(top.wl_surface()) {
+            let location: Point<i32, Physical> = (
+                visual.committed_content.x + offset.x - popup.geometry().loc.x - frame.x,
+                visual.committed_content.y + offset.y - popup.geometry().loc.y - frame.y,
+            )
+                .into();
+            let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                render_elements_from_surface_tree(
+                    renderer,
+                    popup.wl_surface(),
+                    location,
+                    1.0,
+                    visual.sampled.pose.opacity as f32,
+                    Kind::Unspecified,
+                );
+            let start = elements.len();
+            let mut shape: Option<Rectangle<i32, Physical>> = None;
+            for surface in surfaces {
+                let scaled = RescaleRenderElement::from_element(
+                    surface,
+                    (0, 0).into(),
+                    (transform.scale.x, transform.scale.y),
+                );
+                let relocated = RelocateRenderElement::from_element(
+                    scaled,
+                    (destination.x, destination.y),
+                    Relocate::Relative,
+                );
+                let geometry = relocated.geometry(1.0.into());
+                shape = Some(shape.map_or(geometry, |old| old.merge(geometry)));
+                if let Some(element) =
+                    CropRenderElement::from_element(relocated, 1.0, physical(clip))
+                {
+                    elements.push(SceneElement::AnimatedPopup(element));
+                }
+            }
+            groups.push(SceneGroup {
+                elements: start..elements.len(),
+                clip: physical(clip),
+                mask: shape.map(|shape| {
+                    BlurMask::ClientAlpha(Rect::new(
+                        shape.loc.x,
+                        shape.loc.y,
+                        shape.size.w,
+                        shape.size.h,
+                    ))
+                }),
+            });
+        }
     }
 
     fn layer_elements(
@@ -769,7 +1142,7 @@ impl Compositor {
     /// mapped into Space and must keep toolkits aware of their visible output.
     pub fn refresh_overview_outputs(&mut self) {
         let live = self.overview_live_windows();
-        let output = self.runtime.overview.as_ref().and_then(|session| {
+        let output = self.overview_render_session().and_then(|session| {
             self.outputs
                 .iter()
                 .find(|r| r.id == session.output)
@@ -821,7 +1194,7 @@ impl Compositor {
                 );
             }
         }
-        if let Some(session) = &self.runtime.overview
+        if let Some(session) = self.overview_render_session()
             && let Some(region) = self.outputs.iter().find(|r| r.id == session.output)
         {
             for id in self.overview_live_windows().difference(&ordinary_live) {
@@ -905,6 +1278,46 @@ fn square_border_regions(
 mod tests {
     use super::*;
     use crate::core::{Command, WorkspaceId};
+
+    #[test]
+    fn animated_hits_inverse_map_original_rounding_ssd_and_surface_offsets() {
+        let frame = Rect::new(100, 50, 240, 180);
+        let transform = WindowTransform::new(
+            frame,
+            crate::runtime::animation::AnimationRect {
+                x: 17.25,
+                y: 43.5,
+                width: 360.0,
+                height: 90.0,
+            },
+        );
+        let mut theme = crate::decoration::Theme::default();
+        theme.corner_radius = crate::config::Config::from_source("[theme]\ncorner_radius = 30")
+            .unwrap()
+            .theme
+            .corner_radius;
+        let outline = WindowOutline::new(frame, &theme);
+        // Anisotropic scaling preserves the original curved cut-out, rather than
+        // fitting a new circular corner to the resized destination.
+        for (source, inside) in [((101.0, 51.0), false), ((130.0, 80.0), true)] {
+            let displayed = transform.forward(source.into());
+            assert_eq!(outline.inner.contains(transform.inverse(displayed)), inside);
+        }
+        let titlebar = &theme.titlebar;
+        let close: Point<f64, Logical> = (330.0, 66.0).into();
+        assert_eq!(
+            titlebar_hit(frame, transform.inverse(transform.forward(close)), titlebar),
+            Some(TitlebarPart::Close)
+        );
+        // Geometry offsets and subsurface/popup origins stay independent of scale.
+        let origin: Point<f64, Logical> = (93.0, 75.0).into();
+        let surface_local: Point<f64, Logical> = (17.5, 33.25).into();
+        let displayed = transform.forward(origin + surface_local);
+        let recovered = transform.inverse(displayed) - origin;
+        assert!((recovered.x - surface_local.x).abs() < 1e-12);
+        assert!((recovered.y - surface_local.y).abs() < 1e-12);
+        assert_eq!(transform.scale, (1.5, 0.5).into());
+    }
 
     #[test]
     fn square_blur_or_ssd_border_does_not_fill_translucent_content() {

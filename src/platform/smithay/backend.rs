@@ -95,6 +95,10 @@ pub(super) fn init(
         .handle()
         .insert_source(events, move |event, _, state| match event {
             WinitEvent::Resized { size, .. } if size.w > 0 && size.h > 0 => {
+                state.window_animations.reset();
+                state.clear_overview_animation();
+                window_images.clear();
+                overview.clear();
                 resize(state, size, host_timing.refresh_millihertz);
                 damage = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
                 if scheduler.request_redraw() {
@@ -111,6 +115,9 @@ pub(super) fn init(
                     state.overview_press = None;
                     state.overview_drag = None;
                     state.runtime.cancel_overview();
+                    state.clear_overview_animation();
+                    state.window_animations.reset();
+                    window_images.clear();
                     overview.clear();
                 }
                 state.dirty = true;
@@ -132,7 +139,8 @@ pub(super) fn init(
                     return;
                 }
                 state.reconcile();
-                if state.runtime.overview.is_none() && !state.runtime.config.animations.enabled {
+                state.sample_overview_animation();
+                if !state.overview_present() && !state.runtime.config.animations.enabled {
                     window_images.clear();
                 }
                 let result = (|| -> Result<(), String> {
@@ -144,13 +152,24 @@ pub(super) fn init(
                         return Err("blur radius must be finite and in 0..=32".into());
                     }
                     if (state.runtime.config.theme.corner_radius.is_rounded()
-                        || state.runtime.overview.is_some())
+                        || state.overview_present()
+                        || state.runtime.config.animations.enabled)
                         && rounded.is_none()
                     {
                         rounded = Some(
                             RoundedShaders::new(renderer)
                                 .map_err(|e| format!("compile rounded window shaders: {e}"))?,
                         );
+                    }
+                    if let Some(shaders) = rounded.as_ref() {
+                        state
+                            .prepare_window_animations(
+                                renderer,
+                                &mut titlebars,
+                                shaders,
+                                &mut window_images,
+                            )
+                            .map_err(|e| format!("prepare window animations: {e}"))?;
                     }
                     let scene = state
                         .scene_elements(
@@ -257,6 +276,9 @@ pub(super) fn init(
                     state.fail(format!("submit frame: {error}"));
                     return;
                 }
+                state.acknowledge_window_animations();
+                state.mark_overview_presented();
+                state.refresh_pointer_animation_focus();
                 state.frame_callbacks();
                 // Client/layer callbacks and content still use continuous host
                 // opportunities until every scene invalidation has a wakeup.

@@ -1,24 +1,23 @@
-# Animation engine and configuration
+# Animations and presentation
 
 ## Implemented scope
 
-Clear implements a backend-independent animation clock, bounded presentation pose
-tracks, a pure snapshot/transition planner, and strict animation TOML preferences.
-The planner produces geometry/opacity frames for workspace switching, opening,
-closing, reflow, minimize/restore, maximize/restore, and fullscreen/restore.
-The platform does not yet consume those frames or render any of the eight visual
-effects. Workspace switching, window creation/destruction, tiled reflow, minimize/restore, maximize/restore,
-overview, and fullscreen/restore therefore keep their current instant visual
-behavior, including when `animations.enabled = true`. Fullscreen desktop policy
-is a separate [desktop](desktop.md) contract.
+Clear implements strict animation preferences, a monotonic analytical engine,
+a pure transition planner, and visible nested-backend effects when
+`animations.enabled = true`. Workspace switching slides windows and wallpaper;
+creation fades/scales in; actual unmap/destruction reverses creation; layout
+movement, minimize/restore, maximize/restore and fullscreen/restore transform
+owned committed images. [Overview](overview.md) defines its card/wallpaper
+transition and input ownership. Disabled or reduced-motion preferences retain
+instant behavior. Fullscreen policy remains a separate [desktop](desktop.md)
+contract; animation never changes requested placement or ownership.
 
-The [implementation plan](../docs/animations-design.md) describes subsequent
-remaining scene integration, transformed hit discovery, lifecycle snapshot
-capture, effect triggers, and acceptance work. Shared GPU composition and inverse
-coordinate delivery are implemented foundations described by
-[rendering](rendering.md) and [input](input.md); animation frames do not yet drive
-them. Proposed visual behaviors and image budgets are not implemented guarantees.
-Animation defaults MUST remain off until the visual/input acceptance gates pass.
+The [implementation plan](../docs/animations-design.md) retains future work and
+acceptance gates. Native DRM/KMS, presentation-feedback timing, vertical workspace
+layout policy, and arbitrary script animation laws remain unsupported. The pure
+workspace direction API can represent vertical motion, but current desktop
+workspace navigation uses horizontal slides. Global animations remain disabled
+by default while acceptance coverage is expanded.
 
 ## Configuration
 
@@ -54,14 +53,17 @@ Easing accepts integer `duration_ms` in `0..=2000` and `curve = "linear" |
 Spring accepts finite `stiffness` in `1..=10000` and is always critically damped.
 Fields belonging to the other kind MUST be rejected even when disabled. Only
 `window_open` and `window_close` accept `scale`, finite in `1..=1.25`, independent
-of kind. These scales are preferences for future visual effects; the engine's
+of kind. The planner applies these scales about the window frame center; the engine's
 rectangle target is supplied explicitly by its caller.
 
 The frame-rate preference controls selection of animation sampling opportunities;
 it MUST NOT publish a different display mode. The current backend's timing source,
 nominal fallback, and synchronization limits are described in
-[platform timing](platform.md#nested-frame-timing). Visual tracks are not yet
-sampled by that backend.
+[platform timing](platform.md#nested-frame-timing). One capped animation timestamp
+MUST drive window, workspace and overview sampling. Caps hold presentation poses
+between eligible host opportunities while client callbacks continue at host
+cadence. Late frames MUST NOT change the configured cap or clamp cadence to a
+smaller integer divisor; synchronization uses the host EGL swap interval.
 
 ## Clock and sampling
 
@@ -197,8 +199,9 @@ retain eligibility for the adapter's transformed hit testing. Frozen source
 ownership is represented only by opaque retained IDs and mapping-generation keys.
 Retention requests MUST pin an already owned prior committed image; adapters
 MUST NOT access a destroyed/unmapped surface to fulfill them. GPU allocation,
-image budgets, decoration/client commit synchronization, popup ownership, actual
-stack composition, and overview card/wallpaper motion are subsequent adapter work.
+image budgets, decoration/client commit synchronization, popup transforms and
+stack composition belong to the adapter contract below. The pure planner itself
+does not implement overview card/wallpaper motion.
 
 Sampling MUST be immutable, use one common timestamp/animation phase, and perform
 no commands, scripts, capture, IO, or resource releases. `mark_presented` records
@@ -227,6 +230,73 @@ records. Global/effect disable and reduced motion use exact engine settlement;
 re-enabling with an unchanged snapshot MUST NOT replay old operations. The
 planner avoids other callers' engine IDs and clears only its own tracks.
 
+## Visible window and workspace effects
+
+The nested adapter MUST build the planner snapshot only after policy placements,
+output bounds and advisory shell targets are reconciled. Normal windows are keyed
+by a mapping generation which changes on every new buffered mapping. Launchers,
+layers and their popups retain their existing independent paths. Closing begins
+only at actual unmap/destruction; sending a close request alone is not a visual
+trigger. Hidden workspace records MUST remain distinct from destroyed clients.
+
+With motion enabled, the adapter prepares live normal-window images from
+committed body/subsurface/SSD data using the shared
+[image composer](rendering.md#committed-window-images), and remembers only images
+whose source was included in a successfully submitted scene. A retention request
+MUST pin that prior owned image before pruning a dead/unmapped generation. It
+MUST never render from, import, or dereference a dead surface to fulfill closing
+or workspace retention. A never-drawn window without a cached source settles
+instantly. Retained outgoing images never receive input.
+
+The animation cache MUST retain at most 128 distinct images and 64 MiB of RGBA8
+texture storage, including current, last-submitted, retained and pending-source
+references. Shared references count once. Individual sources preserve aspect
+ratio while downscaling to at most 2048 pixels per edge. Composer scratch and
+driver/transient allocation overhead are described separately in
+[rendering](rendering.md#committed-window-images). Cache pressure may evict prior
+unneeded source images; failure to prepare/admit a source MUST cancel its visual
+track and use the ordinary instant path. A later destruction without that image
+also settles instantly. Textures still owned by a submitted/retained image MUST
+NOT be overwritten or reused as render targets.
+
+The complete original border/rounded silhouette MUST scale relative to the
+committed inner frame into the sampled `f64` frame. Output-group clips are applied
+after that transform; panel reservations MUST NOT clip a minimize destination.
+Live content commits update moving sources, preserving premultiplied alpha.
+Fullscreen decoration suppression MUST follow the buffered root commit, never an
+ACK or policy request alone. Once geometry motion finishes, a transformed source
+MUST remain fitted to the final requested frame while the committed frame size or
+fullscreen appearance still differs. A corresponding committed frame within one
+logical pixel of the target permits return to ordinary rendering. There is no
+mandatory old/new-buffer crossfade; source appearance changes with actual commits.
+
+Workspace translations MUST move windows and per-output wallpaper crops by the
+same group offsets while panels/layers remain stationary. A stretched group's
+source wallpaper crops remain per-output images and may cross member output clips;
+independent groups MUST remain clipped separately. Horizontal direction follows
+workspace IDs unless the planner receives an explicit cause. Outgoing source
+records and group offsets preserve the last submitted pose on reversal.
+
+Scene composition MUST record only successfully included sources and workspace
+metadata; frame acknowledgement MUST occur after successful backend submission.
+A failed draw MUST NOT advance that source's acknowledged pose. The acknowledged
+image, committed geometry origin, SSD inset/style and silhouette MUST drive inverse
+input discovery and popup transforms, as specified by [input](input.md) and
+[platform](platform.md#scene-and-hit-testing). Incoming workspace scenes remain
+noninteractive until settlement; the pending policy switch also blocks application
+input before its first animated draw. Paired application presses during workspace
+motion are suppressed together. A successful frame refreshes stationary-pointer
+focus without changing desktop focus.
+
+Direct move/resize, an active pointer grab or paired-press owner, overview ownership,
+renderer/topology reset and theme replacement MUST settle ordinary window/workspace
+motion rather than letting policy/input geometry compete with a retained image.
+Overview owns its card scene throughout opening/closing. Global disable and reduced
+motion release the ordinary animation cache and render final policy state on the
+next host redraw. Re-enabling an unchanged policy snapshot MUST NOT replay old
+operations. The backend continues requesting host redraws for client/layer content
+and exposure; animation completion does not suppress a required terminal redraw.
+
 ## Reload
 
 The [configuration reload](configuration.md#reload) preparation contract applies.
@@ -253,5 +323,15 @@ reset engine phase or pose.
   skipped sampling, speed rebasing, captured parameters, spring interruption,
   group progress, bounded completion/tracks, unsafe overshoot clamping, instant
   settlement, and atomic reload.
-  These are CPU contracts, not evidence of GPU effects, physical input, refresh-rate
-  presentation, or double-buffer operation.
+  These are CPU contracts, not evidence of GPU effects, physical input or
+  presentation-feedback timing.
+- [Nested bridge](../src/platform/smithay/animations.rs),
+  [scene/input integration](../src/platform/smithay/scene.rs), and
+  [backend submission](../src/platform/smithay/backend.rs) implement visible
+  effects; bridge unit tests cover bounded image admission and original-frame
+  scaling/committed geometry gates. GPU validation records belong in
+  [VM testing](../docs/vm-testing.md).
+- [Bounded animation GPU fixture](../scripts/vm-animation-smoke.py) exercises all
+  eight effects plus restore/overview exit, fading backdrop coverage and held
+  fullscreen commits. This verifies captured images and policy/configures, not
+  delivered cadence or physical input.

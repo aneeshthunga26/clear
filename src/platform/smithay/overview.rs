@@ -355,6 +355,7 @@ impl OverviewCache {
         text: &str,
         rect: Rect,
         icon: Option<&Arc<crate::runtime::titlebar::TitlebarImage>>,
+        opacity: f32,
     ) -> Result<Option<SceneElement>, GlesError> {
         if rect.width <= 0 || rect.height < 32 {
             return Ok(None);
@@ -398,7 +399,7 @@ impl OverviewCache {
                 self.labels[&key].texture.clone(),
                 1,
                 Transform::Normal,
-                None,
+                Some(opacity),
                 None,
                 None,
                 None,
@@ -420,7 +421,11 @@ impl OverviewCache {
         shaders: &RoundedShaders,
         composer: &mut WindowImageComposer,
         output_clip: Rect,
+        opacity: f32,
     ) -> Result<Vec<SceneElement>, GlesError> {
+        if opacity <= 0.0 {
+            return Ok(Vec::new());
+        }
         let Some(prepared) = PreparedWindowImage::prepare(
             state,
             renderer,
@@ -479,33 +484,29 @@ impl OverviewCache {
         thumbnail.last_use = self.generation;
         let dest = fit(thumbnail.image.source, dest);
         let outline = thumbnail.image.outline;
-        let body = || {
-            thumbnail
-                .image
-                .texture_element(logical(dest).to_f64(), 1.0)
-                .expect("positive fitted preview destination")
-        };
         let selected = state
-            .runtime
-            .overview
-            .as_ref()
+            .overview_render_session()
             .is_some_and(|session| session.selected == OverviewTarget::Window(id))
             || state
                 .overview_drag
                 .as_ref()
                 .is_some_and(|drag| drag.active && drag.window == id);
         let mut elements = Vec::with_capacity(if selected { 2 } else { 1 });
-        if selected {
+        if selected
+            && let Some(body) = thumbnail
+                .image
+                .texture_element(logical(dest).to_f64(), opacity)
+        {
             elements.push(SceneElement::RoundedSurface(shaders.outline_texture(
-                body(),
+                body,
                 outline.scaled(dest).selection(2),
-                theme.active_border,
+                fade_color(theme.active_border, state.overview_progress() as f32),
                 state.host_size.h,
             )));
         }
         if let Some(body) = thumbnail
             .image
-            .element(logical(dest).to_f64(), 1.0, output_clip)
+            .element(logical(dest).to_f64(), opacity, output_clip)
         {
             elements.push(SceneElement::Titlebar(body));
         }
@@ -522,11 +523,14 @@ impl OverviewCache {
         wallpapers: &mut WallpaperCache,
         composer: &mut WindowImageComposer,
     ) -> Result<Vec<SceneElement>, GlesError> {
-        let Some(session) = &state.runtime.overview else {
+        let Some(session) = state.overview_render_session() else {
             self.clear();
             return Ok(Vec::new());
         };
-        let Some(layout) = state.overview_layout() else {
+        let Some(layout) = state
+            .overview_sampled_layout()
+            .or_else(|| state.overview_layout())
+        else {
             self.clear();
             return Ok(Vec::new());
         };
@@ -612,6 +616,7 @@ impl OverviewCache {
                 shaders,
                 composer,
                 layout.output,
+                state.overview_progress() as f32,
             ) {
                 Ok(preview) => elements.extend(preview),
                 Err(error) => tracing_fallback(error),
@@ -645,6 +650,7 @@ impl OverviewCache {
                                 shaders,
                                 composer,
                                 layout.output,
+                                state.overview_progress() as f32,
                             ) {
                                 Ok(preview) => elements.extend(preview),
                                 Err(error) => {
@@ -661,16 +667,20 @@ impl OverviewCache {
                             &region.output.name(),
                             layout.output,
                             preview,
+                            state.overview_progress() as f32,
                         );
                         ring(
                             &mut elements,
                             preview,
                             2,
-                            if id == session.workspace {
-                                state.runtime.config.theme.active_border
-                            } else {
-                                [0.35, 0.38, 0.44, 0.8]
-                            },
+                            fade_color(
+                                if id == session.workspace {
+                                    state.runtime.config.theme.active_border
+                                } else {
+                                    [0.35, 0.38, 0.44, 0.8]
+                                },
+                                state.overview_progress() as f32,
+                            ),
                             layout.output,
                         );
                     }
@@ -694,6 +704,7 @@ impl OverviewCache {
                             shaders,
                             composer,
                             layout.output,
+                            state.overview_window_opacity(id),
                         ) {
                             Ok(preview) => elements.extend(preview),
                             Err(error) => {
@@ -748,11 +759,22 @@ impl OverviewCache {
             };
             if let Some(mut label_rect) = label_rect {
                 label_rect.x = item.rect.x + (item.rect.width - label_rect.width) / 2;
-                if let Some(label) = self.label(renderer, titlebars, &label, label_rect, icon)? {
+                if let Some(label) = self.label(
+                    renderer,
+                    titlebars,
+                    &label,
+                    label_rect,
+                    icon,
+                    state.overview_progress() as f32,
+                )? {
                     elements.push(label);
                 }
                 if matches!(item.target, OverviewTarget::Window(_)) {
-                    solid(&mut elements, label_rect, [0.025, 0.03, 0.045, 0.85]);
+                    solid(
+                        &mut elements,
+                        label_rect,
+                        [0.025, 0.03, 0.045, 0.85 * state.overview_progress() as f32],
+                    );
                 }
             }
         }
@@ -775,10 +797,21 @@ impl OverviewCache {
             )
             .intersection(layout.output);
             if let Some(rect) = status_rect {
-                if let Some(label) = self.label(renderer, titlebars, &status, rect, None)? {
+                if let Some(label) = self.label(
+                    renderer,
+                    titlebars,
+                    &status,
+                    rect,
+                    None,
+                    state.overview_progress() as f32,
+                )? {
                     elements.push(label);
                 }
-                solid(&mut elements, rect, [0.025, 0.03, 0.045, 0.85]);
+                solid(
+                    &mut elements,
+                    rect,
+                    [0.025, 0.03, 0.045, 0.85 * state.overview_progress() as f32],
+                );
             }
         }
         desktop_backing(
@@ -789,6 +822,7 @@ impl OverviewCache {
             &region.output.name(),
             layout.output,
             layout.canvas,
+            1.0,
         );
         for region in &state.outputs {
             // Cover the ordinary scene with wallpaper before dimming it: panels
@@ -801,9 +835,9 @@ impl OverviewCache {
                     0.02,
                     0.035,
                     if region.id == session.output {
-                        0.65
+                        0.65 * state.overview_progress() as f32
                     } else {
-                        0.85
+                        0.85 * state.overview_progress() as f32
                     },
                 ],
             );
@@ -815,6 +849,7 @@ impl OverviewCache {
                 &region.output.name(),
                 region.rect,
                 region.rect,
+                1.0,
             );
         }
         Ok(elements)
@@ -847,18 +882,29 @@ fn desktop_backing(
     output: &str,
     source: Rect,
     dest: Rect,
+    opacity: f32,
 ) {
     if dest.width <= 0 || dest.height <= 0 {
         return;
     }
-    if let Some(element) =
-        wallpapers.preview_element(renderer, &state.runtime.wallpapers, output, source, dest)
-    {
+    if let Some(element) = wallpapers.preview_element(
+        renderer,
+        &state.runtime.wallpapers,
+        output,
+        source,
+        dest,
+        opacity,
+    ) {
         elements.push(SceneElement::Wallpaper(element));
     }
     let mut background = state.runtime.config.theme.background;
-    background[3] = 1.0;
+    background[3] = opacity;
     solid(elements, dest, background);
+}
+
+fn fade_color(mut color: [f32; 4], opacity: f32) -> [f32; 4] {
+    color[3] *= opacity;
+    color
 }
 
 fn ring(elements: &mut Vec<SceneElement>, rect: Rect, width: i32, color: [f32; 4], clip: Rect) {
@@ -931,7 +977,10 @@ impl Compositor {
 
     /// Only clients represented by a visible card, miniature or drag ghost are live.
     pub fn overview_live_windows(&self) -> BTreeSet<WindowId> {
-        let Some(layout) = self.overview_layout() else {
+        let Some(layout) = self
+            .overview_sampled_layout()
+            .or_else(|| self.overview_layout())
+        else {
             return BTreeSet::new();
         };
         let mut windows = BTreeSet::new();
@@ -961,7 +1010,13 @@ impl Compositor {
     }
 
     pub fn overview_layout(&self) -> Option<OverviewLayout> {
-        let session = self.runtime.overview.as_ref()?;
+        self.overview_displayed_layout().or_else(|| {
+            self.overview_render_session()
+                .and_then(|session| self.overview_target_layout(session))
+        })
+    }
+
+    pub fn overview_target_layout(&self, session: &OverviewSession) -> Option<OverviewLayout> {
         let region = self.outputs.iter().find(|r| r.id == session.output)?;
         let mut layout = OverviewLayout::new(session, region.rect);
         layout.fit_previews(|id| {

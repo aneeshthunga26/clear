@@ -81,8 +81,8 @@ fractional until the renderer's physical placement; destination dimensions are
 rounded to positive physical pixels at the current scale 1. Opacity MUST multiply
 premultiplied RGB and alpha together; the element reports no opaque regions.
 Zero opacity and invalid/nonfinite destination or opacity values emit no element.
-This API does not by itself implement transition triggers, input transforms,
-source replacement, or closing/minimization lifecycle policy.
+The normal animation bridge uses this API for sampled presentation; transition
+triggers, replacement and retention follow [animations](animations.md).
 
 One shared composer reuses two RGBA8 source scratch textures, each growing to at
 most 2048×2048 pixels (32 MiB combined). Its consumers use these allocations;
@@ -100,6 +100,54 @@ scratch reuse and the final owned image use Smithay renderer synchronization.
 Reusing an output allocation requires that no retained snapshot or outstanding
 render element still samples it; callers may instead allocate a new owned result.
 The backend MUST restore its window target after offscreen work before swapping.
+
+## Animated scene composition
+
+When [animations](animations.md) are enabled, a moving normal window MUST replace
+its ordinary body/SSD/border with one owned committed image. Its sampled rectangle
+represents the inner policy frame; the full original source, including outer
+border, scales relative to that frame. The image MUST NOT be drawn alongside a
+second ordinary body. Settled or disabled windows use the ordinary render path.
+Image preparation may observe newer committed client content while policy already
+has final placements; it preserves committed source geometry independently of
+that requested endpoint. Failed preparation falls back through the animation
+bridge's settlement rules rather than leaving a permanently missing live body.
+
+Output clipping follows the animated source's owning output group. Scroll and
+usable-area clips also apply where specified by the planner; minimize motion may
+cross reserved panel space within its owning output. Each clip samples the same
+whole image and original corner silhouette, without deriving new corners from a
+crop. Backdrop geometric coverage MUST inverse-map the fractional destination to
+the original outline and multiply coverage by animation opacity; premultiplied
+foreground RGB/alpha are multiplied by the same opacity. Fully transparent
+samples MUST NOT leave an independent backdrop ghost.
+
+Live popup trees remain separate client elements. They follow their parent's
+translation and independent-axis scale, keep current committed popup geometry,
+and bypass the parent's rounded body mask. Retained outgoing images contain no
+popups and receive no input. Their last submitted fullscreen stacking priority determines
+whether they stay above Top layers on their source outputs, independently of
+committed SSD/decoration state; Overlay layers retain
+priority. Other ordinary application/layer priority follows [platform](platform.md#scene-and-hit-testing).
+
+A workspace group slides incoming and retained outgoing window images with the
+same sampled offsets as its wallpaper. Every source output's full wallpaper
+placement is translated before cropping to each actual destination output, so
+stretched groups preserve individual wallpaper images and monitor gaps rather
+than stretching one wallpaper over the group. Static shell layers retain their
+positions. An output without a wallpaper uses the configured theme background.
+The overview pass owns window bodies throughout its retained opening/closing
+scene as specified in [overview](overview.md#rendering-and-resource-bounds).
+
+Only elements included in a successfully submitted scene acknowledge visual
+sources and workspace groups. Ordinary live draws also record their generation
+so a later close can retain the image actually submitted. Resource counts,
+retention, renderer reset and terminal acknowledgement are specified in
+[animations](animations.md); the shared composer's scratch limit above is separate
+from those consumer budgets. CPU geometry tests do not establish GPU opacity,
+retained destruction or physical input behavior; the bounded
+[animation GPU fixture](../scripts/vm-animation-smoke.py) exercises intermediate
+images and final policy independently of those tests.
 
 ## Backdrop composition
 

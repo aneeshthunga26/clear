@@ -56,7 +56,8 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
   validation; pure `execute` rejects them. The transport supplies kernel peer
   credentials without exposing them on the wire. Panel registrations must expire
   and be removed on disconnect/unmap/geometry changes. Accepted reports do not
-  alter focus, configures or desktop policy; minimize motion is not connected yet.
+  alter focus, configures or desktop policy; the animation adapter consumes the
+  resolved target when enabled minimize motion begins.
 - Use Serde for all JSON encoding, including untrusted client metadata. Every
   encoded response is exactly one newline-terminated JSON message.
 

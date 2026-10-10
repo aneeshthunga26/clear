@@ -1,5 +1,6 @@
 //! Smithay objects and Wayland protocol state never escape this adapter.
 
+mod animations;
 mod backend;
 mod blur;
 mod decorations;
@@ -7,6 +8,7 @@ mod frame_scheduler;
 mod input;
 mod layers;
 mod overview;
+mod overview_animation;
 mod presentation_input;
 mod protocols;
 mod rounded;
