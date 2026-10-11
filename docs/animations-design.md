@@ -15,7 +15,8 @@ describe current behavior. This plan retains the full target architecture and
 delivery sequence below; proposed API sketches are not current support claims.
 
 The [performance review](animation-performance-review.md) records renderer hot
-paths and follow-up work. The [validation record](vm-testing.md#animation-performance-and-fps-overlay-2026-10-11)
+paths and follow-up work. The [demand-driven rendering plan](demand-driven-rendering-plan.md)
+covers idle scheduling and the later damage-tracking work. The [validation record](vm-testing.md#animation-performance-and-fps-overlay-2026-10-11)
 distinguishes correctness checks from runtime performance measurement.
 
 ## Intended result

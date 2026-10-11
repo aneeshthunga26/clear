@@ -245,6 +245,10 @@ commands, and capture/deadline work. It can reduce idle power, but is separate
 from removing wasted work within an animation frame. Preserve continuous host
 opportunities until those invalidation paths are complete.
 
+The [demand-driven rendering plan](demand-driven-rendering-plan.md) expands this
+follow-up into wakeup coverage, callback/maintenance deadlines, staged commits and
+acceptance checks. It remains a proposal rather than a current scheduling contract.
+
 ### Keep the low-latency drag behavior
 
 [`overview_drag.rs`](../src/platform/smithay/overview_drag.rs) already derives

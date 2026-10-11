@@ -6,12 +6,13 @@ today. Each feature needs its own design and specification update when work on i
 begins. The items below have no committed dates or priorities.
 
 Clear currently runs nested with virtual outputs. It has Super+mouse
-move/resize/scroll gestures and an Alt+Tab switcher, and an instant compositor
-overview with window-to-workspace drops, but no touchpad gestures,
-animated overview transitions, compositor animations, live window capture protocol, native DRM/KMS
-output, HDR pipeline, or compositor screen-reader interface. See the current
-[input](specs/input.md), [platform](specs/platform.md#current-limitations), and
-[rendering](specs/rendering.md) contracts.
+move/resize/scroll gestures, an Alt+Tab switcher, and a compositor overview with
+animated transitions and window-to-workspace drops. Window/workspace animations
+are also implemented. Touchpad gestures, a live window capture protocol, native
+DRM/KMS output, an HDR pipeline and a compositor screen-reader interface remain
+future work. See the current [input](specs/input.md),
+[animations](specs/animations.md), [platform](specs/platform.md#current-limitations),
+and [rendering](specs/rendering.md) contracts.
 
 ## Feature list
 
@@ -22,6 +23,7 @@ output, HDR pipeline, or compositor screen-reader interface. See the current
 | Overview, following Plasma | The [initial overview](specs/overview.md) is implemented; extend the [design](docs/overview-design.md) with search and additional window-transfer interaction. | Clear owns activation, transient selection, rendering, and input; Quickshell may only request opening. Selecting a card uses normal focus/restore behavior. Search and moving windows between workspaces follow in later slices. [Plasma's KWin overview](https://github.com/KDE/kwin/tree/master/src/plugins/overview) is the visual reference. |
 | Hot corners for overview and show desktop | Configure a corner of each output to open the overview or toggle show desktop. | Edge dwell, retrigger delay, fullscreen behavior, and multi-output boundaries are predictable; show desktop restores only the windows it hid. The action belongs in compositor state rather than the optional Quickshell example. Use KDE's [screen-edge controls](https://docs.kde.org/trunk_kf6/en/kwin/kcontrol/kwinscreenedges/index.html) as the interaction reference. |
 | Animations | Follow the [implementation plan](docs/animations-design.md) for workspace slides, window open/close and tiled movement, minimize/restore to panel icons, maximize, overview with wallpaper scaling, and fullscreen. | All eight scene effects now consume the shared planner/image/input foundations, with optional validated panel hints. Complete physical timing/input and performance acceptance before enabling global defaults; default to presentation refresh with 30/60/120 caps, speed controls and no automatic divisor fallback. Preserve final policy, asynchronous client handling and bounded GPU resources. Instant fullscreen policy and XDG handling are implemented. Niri's [animation controls](https://niri-wm.github.io/niri/Configuration%3A-Animations.html) are a reference. |
+| Demand-driven rendering and damage tracking | Follow the [implementation plan](docs/demand-driven-rendering-plan.md) to stop idle painting, explicitly pace callbacks and IO, then add incremental damage. | Quiet desktops stop submissions; client animations and first input after idle remain responsive; terminal animation frames, shell backpressure and capture/exit deadlines are preserved. Incremental damage follows stable element identities and valid buffer-age handling, with conservative blur/glass dependencies. |
 | HDR | Display HDR clients on capable physical outputs while keeping SDR content and captures correct. | Negotiate color spaces and output capability, render at sufficient precision, apply SDR/HDR mapping, and fall back cleanly on SDR displays. This requires native DRM/KMS plus a color-managed rendering and capture pipeline; the current RGBA8, scale-1 nested path is not an HDR base. Track this independently: HDR is not listed among Niri's mainline features in its [README](https://github.com/niri-wm/niri). |
 | Screen reader support | Make compositor-owned controls and state changes usable with Orca, starting with workspaces, Alt+Tab, and the overview. | Keyboard-only navigation and spoken focus/status announcements work in a standalone Clear session; the optional shell is audited separately. Investigate AccessKit and the accessibility keyboard-monitor interface, while avoiding conflicts with a host screen reader in nested mode. Niri's [accessibility guide](https://niri-wm.github.io/niri/Accessibility.html) is the reference. |
 
