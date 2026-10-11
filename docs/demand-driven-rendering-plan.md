@@ -1,22 +1,28 @@
 # Demand-driven rendering — implementation plan
 
-**Status: proposed, not implemented.** Reviewed against `dc2bcfc`. Clear still
-requests continuous host redraws and renders with buffer age zero. The current
-contracts remain in [platform timing](../specs/platform.md#nested-frame-timing),
+**Status: demand-driven scheduling and conservative incremental damage implemented.**
+The original proposal below was reviewed against `dc2bcfc`. The first five stages
+now stop quiet rendering, pace callbacks independently and use explicit IO and
+maintenance wakeups. Stage six uses actual buffer age for ordinary unfiltered
+client updates, with bounded destination identities and conservative complete
+redraws for motion, policy/recovery and filtered scenes. Partial compositor-motion
+rendering and filter dependency reuse remain future work. See the validation
+record in [testing](vm-testing.md#demand-driven-rendering-2026-10-11).
+Implemented contracts live in [platform timing](../specs/platform.md#nested-frame-timing),
 [animations](../specs/animations.md), [overview](../specs/overview.md),
 [rendering](../specs/rendering.md), and [shell IPC](../specs/shell.md).
 
-The goal is to stop submitting identical frames when the desktop is quiet, while
+The original goal was to stop submitting identical frames when the desktop is quiet, while
 keeping client updates, compositor animations and pointer interactions responsive.
 Implement idle scheduling first with complete-frame rendering on demand. Add
 incremental damage separately, after wakeups and lifecycle tests pass. Idle
 scheduling does not require partial rendering to deliver its main benefit.
 
-## 1. Current behavior and the changes required
+## 1. Original behavior and proposed changes
 
-| Current code | Consequence | Planned change |
+| Code at the original review | Consequence | Proposed change |
 | --- | --- | --- |
-| [backend.rs](../src/platform/smithay/backend.rs) requests another redraw after every successful submit | A static scene continues drawing at host cadence | Request another opportunity only for pending rendering or callback work |
+| Previous [backend.rs](../src/platform/smithay/backend.rs) requested another redraw after every successful submit | A static scene continued drawing at host cadence | Request another opportunity only for pending rendering or callback work |
 | [FrameScheduler](../src/platform/smithay/frame_scheduler.rs) coalesces requests and selects animation samples | It has no dirty-scene or idle decision | Add a small demand state and deadline calculation around the existing sampling law |
 | [Compositor::reconcile](../src/platform/smithay/scene.rs) consumes `dirty` | Layout can be clean while pixels still need updating | Separate policy dirtiness from outstanding visual invalidation |
 | [frame_callbacks](../src/platform/smithay/scene.rs) runs after submission | A client waiting to animate depends on that render loop | Detect committed callback requests and service them on explicit paced opportunities |
@@ -26,8 +32,9 @@ scheduling does not require partial rendering to deliver its main benefit.
 | [FPS](../src/platform/smithay/fps.rs) updates only on submissions | The last high reading would remain visible while idle | Add a bounded idle indication without making the HUD a perpetual render source |
 
 The source review's [damage and redraw findings](animation-performance-review.md#damage-tracking-and-callback-driven-redraws)
-are the starting point. No idle-power or latency improvement has been measured
-for this proposal.
+were the starting point. Submission and event-loop counters verify idle behavior;
+no physical input latency, idle-power improvement or active-frame percentage
+speedup is claimed.
 
 ## 2. Separate policy, rendering and callback demand
 

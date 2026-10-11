@@ -131,6 +131,9 @@ into a toolkit. [Shell IPC](../specs/shell.md) defines the interface; the
 
 See [current platform limitations](../specs/platform.md#current-limitations) for
 unsupported functionality. Future backends must preserve the core/runtime boundary
-while adapting framebuffer coordinates and resource ownership. Event-driven damage
-scheduling, texture reuse for rounded bodies, extensible per-mode state, and a
+while adapting framebuffer coordinates and resource ownership. Demand-driven
+scheduling and conservative ordinary-client damage live in the adapter; see
+[the platform contract](../specs/platform.md#demand-driven-scheduling) and
+[rendering](../specs/rendering.md#incremental-nested-damage). Filter dependency reuse,
+texture reuse for rounded bodies, extensible per-mode state, and a
 richer decoration scene API remain design work rather than supported contracts.

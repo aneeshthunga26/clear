@@ -1119,3 +1119,68 @@ Six additional cases passed with the same binary: `cancelled`, `odd-outputs`,
 GPU/protocol cases. A bounded Quickshell session with three animated foot clients
 also passed on the private local virtual KWin host; its capture is
 `target/overview-demo/frame.png`.
+
+## Demand-driven rendering (2026-10-11)
+
+The implemented contracts are in [platform timing](../specs/platform.md#nested-frame-timing),
+[rendering](../specs/rendering.md#incremental-nested-damage),
+[animations](../specs/animations.md), [overview](../specs/overview.md) and
+[shell IPC](../specs/shell.md). The [original implementation plan](demand-driven-rendering-plan.md)
+records the delivery stages and remaining filtered-scene/motion damage work.
+
+Build the binary separately, then run the bounded fixture on an isolated virtual
+KWin host (inside a VM where available):
+
+```sh
+cargo build --locked --release
+python3 -B scripts/vm-idle-smoke.py --binary target/release/clear \
+  --artifacts target/idle-release
+```
+
+Dependencies match the existing layer/fullscreen fixtures: KWin, `dbus-run-session`,
+a C compiler, `pkg-config`, `wayland-scanner`, Wayland development files, XDG and
+layer-shell protocol XMLs, and the build's graphics dependencies. Clear exits
+after eight seconds per case; the runner tears down its private host and clients.
+Use repeated `--case` arguments to select cases. The `partial-damage` case requires
+working EGL buffer-age support; without it, complete-frame recovery remains valid
+but this case cannot verify incremental repair. Run the other thirteen cases on
+such systems by selecting them explicitly.
+
+The fourteen cases cover empty/static idle, callback-only commits, callback-driven
+content, the FPS idle indication, late IPC, ordinary/synchronized subsurfaces,
+popup destruction, layer unmap, disconnect, overview settlement, an animation
+started after idle, and incremental damage. Shutdown counters distinguish scene
+work from the final forced capture, so capture cannot conceal a missing late
+wakeup. The incremental case checks partial-frame pixels before swap, translucent
+replacement, and a new buffer without usable damage followed by normal partial
+updates. Its bounded diagnostic readbacks are correctness checks, not benchmarks.
+
+All thirteen initial idle/lifecycle cases passed with buffer-age rendering in
+`target/demand-idle-age/`. A static client submitted six frames in eight seconds;
+a callback-only client received 74 callbacks while submitting six frames; the HUD
+requested one idle diagnostic frame. The final incremental-recovery case passed
+in `target/demand-partial-final/`, including four partial readbacks and one forced
+uncertain-buffer recovery. Release checks for `callbacks`, `hud`, `partial-damage`
+and `animation-after-idle` passed in `target/demand-release-idle/`.
+
+All twelve animation cases passed during idle-scheduler validation in
+`target/demand-animations-first/`. Seven overview GPU cases passed with incremental
+damage in `target/demand-overview-final/`: `many-windows`, `sharp-preview`,
+`rounded-blur`, `live-cards`, `live-miniatures`, `live-subsurface` and `odd-outputs`.
+The shell IPC fixture passed in `target/demand-shell-final/`, covering snapshots,
+subscription, commands, validation, reconnect, disabled mode and cleanup.
+
+After the stationary-focus correction, Cargo fmt/check/test/build, the optimized
+release build and editor diagnostics passed again, including 158 library tests
+and the integration suites. Final release idle checks passed in
+`target/demand-release-final-idle/`: `callbacks`, `partial-damage` and
+`animation-after-idle`. Movement, fading blurred destruction, held fullscreen
+and overview exit were rechecked in `target/demand-release-final-animations/`.
+The Kawase radius 2/passes 3 XDG liquid-glass pixel oracle passed in
+`target/demand-release-final-glass/`, checking both radius-zero and filtered paths.
+
+These runs used a private **local virtual KWin host, not a VM**. They verify GPU
+pixels, protocol lifecycle, callback delivery and bounded quiet submissions.
+They do not automate physical input or measure CPU use, idle power, monitor
+presentation cadence or a percentage speedup. Animations and blur/glass retain
+conservative complete-frame rendering while active.
