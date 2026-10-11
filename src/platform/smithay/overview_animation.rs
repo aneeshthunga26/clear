@@ -201,6 +201,28 @@ impl Compositor {
             ),
         ))
     }
+    /// Known transition endpoints prewarm sufficient resolution without following sampled scale.
+    pub fn overview_preview_endpoints(&self) -> impl Iterator<Item = (WindowId, Rect)> + '_ {
+        fn cards(layout: &OverviewLayout) -> impl Iterator<Item = (WindowId, Rect)> + '_ {
+            layout.items.iter().filter_map(|item| match item.target {
+                OverviewTarget::Window(id) => item.preview.map(|rect| (id, rect)),
+                OverviewTarget::Workspace(_) => None,
+            })
+        }
+        let animation = &self.overview_animation;
+        animation
+            .target
+            .iter()
+            .chain(animation.transition_from.iter())
+            .flat_map(cards)
+            .chain(animation.desktop.iter().map(|(&id, &rect)| (id, rect)))
+            .chain(animation.workspace_zoom.iter().flat_map(|zoom| {
+                zoom.desktop
+                    .iter()
+                    .chain(zoom.miniatures.iter())
+                    .map(|(&id, &rect)| (id, rect))
+            }))
+    }
     /// Reveal shell layers as the selected desktop expands, reversing with a reopen.
     pub fn overview_shell_reveal(&self) -> Option<(OutputId, f32)> {
         let animation = &self.overview_animation;

@@ -12,6 +12,8 @@ only directory allowed to depend on Smithay and Wayland types.
 - `backend.rs`: nested winit lifecycle, virtual outputs, rendering loop, bounded
   shutdown, and framebuffer capture. Insert tile-zoom overview beneath revealed
   shell trees before backdrop filtering so their blur samples the live preview.
+  Skip ordinary scene preparation only after a complete overview backing exists,
+  retaining renderer cache housekeeping. Filter only scenes with masked trees.
 - `fps.rs`: optional submitted-frame diagnostics with a single cached texture,
   drawn after filtering/overview. Measure successful submission intervals without
   affecting pacing; [rendering](../../../specs/rendering.md#fps-overlay) owns semantics.
@@ -31,7 +33,9 @@ only directory allowed to depend on Smithay and Wayland types.
   compact metadata-label caches and single-instance card/ghost rendering.
   Input arms/drops gestures; reconciliation cancels invalid sources. Reuse one bounded texture across card/miniature
   destinations, plan its resolution from the largest visible destination before
-  rendering any tile, and explicitly sample its full source when scaling. Apply
+  rendering any tile. Plan endpoints/retain sufficient capacity only after reserving
+  all visible requirements within the cache budget; validate shared sources once
+  per generation. Explicitly sample the full source when scaling. Apply
   desktop corner masks to the composited content/SSD source before resizing the
   complete image. Radii/insets scale with that source. A separate selection ring
   follows its silhouette without masking the client image again.
@@ -53,7 +57,9 @@ only directory allowed to depend on Smithay and Wayland types.
   popup and DnD coordinates before client input-region checks.
 - `window_image.rs`: shared committed GPU body/SSD/border/mask composition for
   previews and owned snapshots. One backend composer owns scratch; callers own
-  bounded retained textures. Never reuse a texture still sampled by a snapshot.
+  bounded retained textures. Mask directly into owned native-size results; retain
+  native masked scratch for actual downsampling. Never reuse a texture still
+  sampled by a snapshot.
 - `shell.rs`: optional socket initialization and dispatch; reconcile commands
   before acknowledging/publishing. Wire types and transport stay in `src/shell/`.
   Validate advisory icon reports against mapped committed panel geometry and

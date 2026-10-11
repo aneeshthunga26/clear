@@ -23,7 +23,7 @@ default configuration rather than partly applying invalid declarations.
 | `wallpaper`              | No image, `fill`                                | [Wallpaper selection](wallpaper.md#selection)                       |
 | `shell`                  | `wofi` launcher; `waybar` top-layer rule        | [Shell rules](#shell-rules)                                         |
 | `overview.preview_workspace_on_hover` | `false` | Strict boolean; [overview interaction](overview.md#layout-and-input) |
-| `animations` | Engine disabled, speed 1, refresh-rate sampling | Strict effect tables; [animation engine](animations.md#configuration); visual effects are not yet connected |
+| `animations` | Engine disabled, speed 1, refresh-rate sampling | Strict effect tables; [animation engine](animations.md#configuration) |
 
 Unknown fields and malformed typed values MUST be rejected. Supplied output,
 workspace, and binding arrays replace their default declarations. Empty bindings

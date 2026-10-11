@@ -391,7 +391,14 @@ impl WindowImageComposer {
             native_size.1,
         );
         let sync = {
-            let mut target = renderer.bind(&mut buffers.masked)?;
+            // At native resolution, mask straight into the caller-owned image;
+            // an identity copy through masked scratch adds no useful work.
+            let destination = if size == native_size {
+                &mut texture
+            } else {
+                &mut buffers.masked
+            };
+            let mut target = renderer.bind(destination)?;
             let mut frame = renderer.render(&mut target, native_size.into(), Transform::Normal)?;
             let area = Rectangle::from_size(native_size.into());
             frame.clear([0.0; 4].into(), &[area])?;
@@ -399,38 +406,40 @@ impl WindowImageComposer {
             frame.finish()?
         };
         renderer.wait(&sync)?;
-        let masked = TextureRenderElement::from_static_texture(
-            Id::new(),
-            renderer.context_id(),
-            (0.0, 0.0),
-            buffers.masked.clone(),
-            1,
-            Transform::Normal,
-            None,
-            Some(Rectangle::from_size(
-                (f64::from(native_size.0), f64::from(native_size.1)).into(),
-            )),
-            Some(native_size.into()),
-            None,
-            Kind::Unspecified,
-        );
-        let sync = {
-            let mut target = renderer.bind(&mut texture)?;
-            let mut frame = renderer.render(&mut target, size.into(), Transform::Normal)?;
-            let area = Rectangle::from_size(size.into());
-            frame.clear([0.0; 4].into(), &[area])?;
-            RenderElement::<GlesRenderer>::draw(
-                &masked,
-                &mut frame,
-                masked.src(),
-                area,
-                &[area],
-                &[],
+        if size != native_size {
+            let masked = TextureRenderElement::from_static_texture(
+                Id::new(),
+                renderer.context_id(),
+                (0.0, 0.0),
+                buffers.masked.clone(),
+                1,
+                Transform::Normal,
                 None,
-            )?;
-            frame.finish()?
-        };
-        renderer.wait(&sync)?;
+                Some(Rectangle::from_size(
+                    (f64::from(native_size.0), f64::from(native_size.1)).into(),
+                )),
+                Some(native_size.into()),
+                None,
+                Kind::Unspecified,
+            );
+            let sync = {
+                let mut target = renderer.bind(&mut texture)?;
+                let mut frame = renderer.render(&mut target, size.into(), Transform::Normal)?;
+                let area = Rectangle::from_size(size.into());
+                frame.clear([0.0; 4].into(), &[area])?;
+                RenderElement::<GlesRenderer>::draw(
+                    &masked,
+                    &mut frame,
+                    masked.src(),
+                    area,
+                    &[area],
+                    &[],
+                    None,
+                )?;
+                frame.finish()?
+            };
+            renderer.wait(&sync)?;
+        }
         Ok(WindowImage {
             texture,
             source,

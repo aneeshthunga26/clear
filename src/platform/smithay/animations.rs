@@ -613,6 +613,7 @@ impl Compositor {
                 animations.visuals.insert(sample.key.window, visual);
             }
         }
+        let needs_resample = !unavailable.is_empty();
         for key in unavailable {
             let released = animations
                 .planner
@@ -621,7 +622,9 @@ impl Compositor {
             animations.forget_window(key);
         }
         // A failed source is settled before any scene element can use its abandoned prediction.
-        frame = animations.planner.sample(now, &self.runtime.animations);
+        if needs_resample {
+            frame = animations.planner.sample(now, &self.runtime.animations);
+        }
         animations.frame = Some(frame);
         self.window_animations = animations;
         Ok(())

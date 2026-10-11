@@ -274,18 +274,39 @@ The canvas, miniature desktops and dimmed outer backdrop reuse renderer-owned
 wallpaper textures. Preview placement MUST scale the full-output wallpaper crop
 and letterboxing, including `center` and `fit`, rather than recomputing a crop for
 the small destination. The outer backdrop covers normal windows and unrevealed
-layers with wallpaper/theme background before dimming it. Other outputs show that dimmed
+layers with wallpaper/theme background before dimming it. Because this backing is
+opaque on every output, the backend MUST omit ordinary scene gathering/filtering
+beneath a successfully constructed overview. Keep renderer cache retention and
+protocol/callback ownership independent of this shortcut. If no complete overview
+elements are produced, use the ordinary scene fallback. Tile zoom still gathers
+only the eligible revealed shell trees and filters them over the live overview;
+plain overview frames need no backdrop filtering. Other outputs show that dimmed
 backdrop; only the interactive output shows the strip and window canvas.
 
 The renderer-local thumbnail cache MUST retain at most 128 RGBA8 textures and
 64 MiB of texture storage, each at most 2048×2048 pixels. Before compositing,
-choose each window's texture dimensions from its largest visible card, miniature
-or ghost, preserving source aspect ratio and never exceeding the committed source
-resolution. Cards within the texture limit MUST NOT enlarge an intermediate
+reserve each window's largest current visible card, miniature or ghost size,
+preserving source aspect ratio and never exceeding committed source resolution.
+Known card/desktop/zoom transition endpoints and drag pickup/normal-size endpoints
+MAY prewarm larger sufficient images. Existing sufficient same-source capacity
+MAY be retained across shrinking destinations. Reserve all current visible
+requirements first, then retain existing capacity, then admit endpoint upgrades
+only from remaining 64 MiB headroom. Reclaim allocations whose planned capacity
+changes before admitting upgrades, and evict hidden cache entries before current
+visible entries. Optional capacity MUST NOT evict other
+visible requirements merely to prewarm a transition. If current visible requirements
+themselves exceed the cache budget, ordinary bounded LRU eviction still applies;
+no below-required-resolution image is admitted to hide that pressure.
+Cards within the texture limit MUST NOT enlarge an intermediate
 low-resolution capture. Compose and mask the source at committed desktop
 resolution (aspect-fitted to the same 2048×2048 bound for oversized sources), then
-reduce the complete source image to the largest preview's pixel dimensions.
-Smaller destinations share that texture. Visible selected-workspace cards update
+reduce the complete source image to the planned dimensions when necessary.
+Smaller destinations share that texture. Destination-only transforms MUST reuse
+an unchanged sufficient image instead of recompositing it at each sampled size.
+Validate/prepare each successfully cached source at most once per overview render
+generation; additional destinations reuse it, while evicted or failed sources may
+retry. Check committed appearance again in the next generation.
+Visible selected-workspace cards update
 on tree commits at most once per presented frame. Hidden pages may
 retain still textures, evicting least recently used entries under pressure.
 Overview-only visible clients receive throttled frame callbacks (33 ms), including
@@ -312,7 +333,7 @@ render elements are additional to these retained texture bounds.
 Committed fullscreen mask changes MUST invalidate a thumbnail even when source
 dimensions and client buffer damage are unchanged. Fullscreen preview sources
 suppress compositor titlebars, borders and rounding as in [decorations](decorations.md).
-Unmap/destruction, changed thumbnail size, output geometry/identity changes,
+Unmap/destruction, required capacity growth or budget-driven shrink, output geometry/identity changes,
 theme changes, renderer destruction, overview exit and shutdown release affected
 thumbnail resources. Successful reload rebuilds restyled resources without
 resetting desktop geometry; failed reload retains last-good configuration.
@@ -328,7 +349,7 @@ hot corners and touchpad progress remain future work.
   configuration and targeted drops preserving focus and saved window flags.
 - [Adapter layout/render cache and unit tests](../src/platform/smithay/overview.rs):
   shared hit boxes, odd origins, pagination, tiny outputs, relative frame sizes,
-  bounded miniature geometry, destination-driven texture dimensions, and source
+  bounded miniature geometry, budget-aware endpoint/retained resolution planning, and source
   resolution/texture-limit clamps. [Wallpaper placement tests](../src/platform/smithay/wallpaper.rs)
   cover preservation of full-output crops and letterboxing in previews.
   Shared source composition belongs to

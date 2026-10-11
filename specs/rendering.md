@@ -87,6 +87,11 @@ size before the corresponding client content commits.
 
 It composites client content and SSD into transparent premultiplied RGBA, then
 adds the original border and corner mask once before scaling the complete image.
+When requested image dimensions equal the bounded native source dimensions, bake
+that mask directly into the independently owned result, omitting an identity-copy
+pass. Smaller images retain the masked native intermediate before downsampling.
+Both paths clear initialized regions, keep read/write targets distinct and retain
+the same synchronized image ownership.
 Committed fullscreen sources use their decoration-free outline. Popups, layers,
 other windows, wallpaper, backdrop blur/glass and overview UI MUST NOT be baked
 into these images. [Overview](overview.md#rendering-and-resource-bounds) uses this

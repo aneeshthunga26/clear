@@ -5,7 +5,7 @@ use super::{
     overview::OverviewCache,
     rounded::RoundedShaders,
     scene::premultiply,
-    scene::{SceneElement, SceneGroup},
+    scene::{Scene, SceneElement, SceneGroup},
     state::{Compositor, OutputRegion},
     titlebar::TitlebarCache,
     wallpaper::WallpaperCache,
@@ -175,15 +175,12 @@ pub(super) fn init(
                             )
                             .map_err(|e| format!("prepare window animations: {e}"))?;
                     }
-                    let mut scene = state
-                        .scene_elements(
-                            renderer,
-                            &mut wallpapers,
-                            &mut titlebars,
-                            rounded.as_ref(),
-                            radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled,
-                        )
-                        .map_err(|e| format!("compose scene: {e}"))?;
+                    if state.overview_present() {
+                        titlebars.retain(|id| {
+                            state.windows.get(&id).is_some_and(|entry| entry.uses_ssd())
+                        });
+                        wallpapers.retain(&state.runtime.wallpapers);
+                    }
                     let background = premultiply(state.runtime.config.theme.background);
                     let mut final_elements = if let Some(shaders) = rounded.as_ref() {
                         overview
@@ -200,6 +197,24 @@ pub(super) fn init(
                         overview.clear();
                         Vec::new()
                     };
+                    // Overview supplies opaque backing for every output. Preparing
+                    // hidden desktop trees would import and filter invisible pixels.
+                    let mut scene = if !final_elements.is_empty() {
+                        Scene {
+                            elements: Vec::new(),
+                            groups: Vec::new(),
+                        }
+                    } else {
+                        state
+                            .scene_elements(
+                                renderer,
+                                &mut wallpapers,
+                                &mut titlebars,
+                                rounded.as_ref(),
+                                radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled,
+                            )
+                            .map_err(|e| format!("compose scene: {e}"))?
+                    };
                     if state.overview_shell_reveal().is_some() {
                         let mut revealed = state.overview_shell_scene(renderer);
                         let start = revealed.elements.len();
@@ -213,7 +228,9 @@ pub(super) fn init(
                         // the ordinary scene hidden behind the retained overview.
                         scene.prepend(revealed);
                     }
-                    if radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled {
+                    if (radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled)
+                        && scene.groups.iter().any(|group| group.mask.is_some())
+                    {
                         if blur.is_none() {
                             blur = Some(
                                 BackdropBlur::new(renderer)

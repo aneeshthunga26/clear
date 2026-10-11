@@ -250,27 +250,92 @@ pub(super) fn fit(source: Rect, dest: Rect) -> Rect {
 // Choose resolution before drawing any destination, so a strip tile cannot
 // prepare a low-resolution texture that is subsequently enlarged for a card.
 #[derive(Default)]
-struct PreviewSizes(BTreeMap<WindowId, (i32, i32)>);
+struct PreviewSizes {
+    required: BTreeMap<WindowId, (i32, i32)>,
+    endpoints: BTreeMap<WindowId, (i32, i32)>,
+    planned: BTreeMap<WindowId, (i32, i32)>,
+}
+
+fn include_size(sizes: &mut BTreeMap<WindowId, (i32, i32)>, id: WindowId, dest: Rect) {
+    let size = sizes.entry(id).or_default();
+    size.0 = size.0.max(dest.width);
+    size.1 = size.1.max(dest.height);
+}
+
+fn fitted_size(source: Rect, requested: (i32, i32)) -> (i32, i32) {
+    let bounded = fit(
+        source,
+        Rect::new(
+            0,
+            0,
+            requested.0.clamp(1, MAX_TEXTURE_EDGE),
+            requested.1.clamp(1, MAX_TEXTURE_EDGE),
+        ),
+    );
+    (bounded.width, bounded.height)
+}
+
+fn texture_bytes(size: (i32, i32)) -> usize {
+    size.0 as usize * size.1 as usize * 4
+}
 
 impl PreviewSizes {
     fn include(&mut self, id: WindowId, dest: Rect) {
-        let size = self.0.entry(id).or_default();
-        size.0 = size.0.max(dest.width);
-        size.1 = size.1.max(dest.height);
+        include_size(&mut self.required, id, dest);
+    }
+
+    fn include_endpoint(&mut self, id: WindowId, dest: Rect) {
+        include_size(&mut self.endpoints, id, dest);
     }
 
     fn texture_size(&self, id: WindowId, source: Rect) -> (i32, i32) {
-        let requested = self.0[&id];
-        let bounded = fit(
-            source,
-            Rect::new(
-                0,
-                0,
-                requested.0.clamp(1, MAX_TEXTURE_EDGE),
-                requested.1.clamp(1, MAX_TEXTURE_EDGE),
-            ),
-        );
-        (bounded.width, bounded.height)
+        self.planned
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| fitted_size(source, self.required[&id]))
+    }
+
+    /// Reserve every visible requirement first. Retention/prewarming may use only headroom.
+    fn plan(&mut self, source: impl Fn(WindowId) -> Option<(Rect, Option<(i32, i32)>)>) {
+        let mut candidates = Vec::with_capacity(self.required.len());
+        let mut required_bytes = 0;
+        for (&id, &required) in &self.required {
+            let Some((source, previous)) = source(id) else {
+                continue;
+            };
+            let required = fitted_size(source, required);
+            required_bytes += texture_bytes(required);
+            self.planned.insert(id, required);
+            let endpoint = self.endpoints.get(&id).copied().unwrap_or(required);
+            let preferred = fitted_size(
+                source,
+                (endpoint.0.max(required.0), endpoint.1.max(required.1)),
+            );
+            let retained = previous
+                .filter(|old| old.0 >= required.0 && old.1 >= required.1)
+                .unwrap_or(required);
+            candidates.push((id, retained, preferred));
+        }
+        let mut headroom = MAX_BYTES.saturating_sub(required_bytes);
+        // Keep existing sufficient allocations before admitting new endpoint upgrades.
+        for (id, retained, _) in &candidates {
+            let extra = texture_bytes(*retained) - texture_bytes(self.planned[id]);
+            if extra <= headroom {
+                self.planned.insert(*id, *retained);
+                headroom -= extra;
+            }
+        }
+        for (id, _, preferred) in candidates {
+            let current = self.planned[&id];
+            if preferred.0 <= current.0 && preferred.1 <= current.1 {
+                continue;
+            }
+            let extra = texture_bytes(preferred).saturating_sub(texture_bytes(current));
+            if extra <= headroom {
+                self.planned.insert(id, preferred);
+                headroom -= extra;
+            }
+        }
     }
 }
 
@@ -388,60 +453,68 @@ impl OverviewCache {
         if opacity <= 0.0 {
             return Ok(Vec::new());
         }
-        let Some(prepared) = PreparedWindowImage::prepare(
-            state,
-            renderer,
-            titlebars,
-            id,
-            state.runtime.desktop.focused_window() == Some(id),
-        )?
-        else {
-            return Ok(Vec::new());
-        };
-        let theme = &state.runtime.config.theme;
-        let source = prepared.identity.source;
-        // Main cards and miniatures share a cache planned for the largest destination.
-        let size = sizes.texture_size(id, source);
-        let appearance = ThumbnailAppearance {
-            image: prepared.identity.clone(),
-            size,
-        };
-        let changed = self
+        // A committed surface cannot change midway through this synchronous render.
+        // Largest-destination planning makes every destination share this validation.
+        if !self
             .thumbnails
             .get(&id)
-            .is_none_or(|t| t.appearance != appearance);
-        let bytes = size.0 as usize * size.1 as usize * 4;
-        if changed {
-            let reusable = self
-                .thumbnails
-                .remove(&id)
-                .filter(|old| old.image.size() == size)
-                .map(|old| old.image.texture);
-            while self.thumbnails.len() >= MAX_ENTRIES
-                || self.thumbnails.values().map(|t| t.bytes).sum::<usize>() + bytes > MAX_BYTES
-            {
-                let Some(oldest) = self
-                    .thumbnails
-                    .iter()
-                    .min_by_key(|(_, t)| t.last_use)
-                    .map(|(id, _)| *id)
-                else {
-                    return Ok(Vec::new());
-                };
-                self.thumbnails.remove(&oldest);
-            }
-            let image = composer.compose(renderer, shaders, &prepared, size, reusable)?;
-            let bytes = image.bytes();
-            self.thumbnails.insert(
+            .is_some_and(|cached| cached.last_use == self.generation)
+        {
+            let Some(prepared) = PreparedWindowImage::prepare(
+                state,
+                renderer,
+                titlebars,
                 id,
-                Thumbnail {
-                    image,
-                    appearance,
-                    last_use: self.generation,
-                    bytes,
-                },
-            );
+                state.runtime.desktop.focused_window() == Some(id),
+            )?
+            else {
+                return Ok(Vec::new());
+            };
+            let source = prepared.identity.source;
+            // Main cards and miniatures share a cache planned for the largest destination.
+            let size = sizes.texture_size(id, source);
+            let appearance = ThumbnailAppearance {
+                image: prepared.identity.clone(),
+                size,
+            };
+            let changed = self
+                .thumbnails
+                .get(&id)
+                .is_none_or(|t| t.appearance != appearance);
+            let bytes = texture_bytes(size);
+            if changed {
+                let reusable = self
+                    .thumbnails
+                    .remove(&id)
+                    .filter(|old| old.image.size() == size)
+                    .map(|old| old.image.texture);
+                while self.thumbnails.len() >= MAX_ENTRIES
+                    || self.thumbnails.values().map(|t| t.bytes).sum::<usize>() + bytes > MAX_BYTES
+                {
+                    let Some(oldest) = self
+                        .thumbnails
+                        .iter()
+                        .min_by_key(|(id, t)| (sizes.planned.contains_key(id), t.last_use))
+                        .map(|(id, _)| *id)
+                    else {
+                        return Ok(Vec::new());
+                    };
+                    self.thumbnails.remove(&oldest);
+                }
+                let image = composer.compose(renderer, shaders, &prepared, size, reusable)?;
+                let bytes = image.bytes();
+                self.thumbnails.insert(
+                    id,
+                    Thumbnail {
+                        image,
+                        appearance,
+                        last_use: self.generation,
+                        bytes,
+                    },
+                );
+            }
         }
+        let theme = &state.runtime.config.theme;
         let thumbnail = self.thumbnails.get_mut(&id).expect("prepared thumbnail");
         thumbnail.last_use = self.generation;
         let dest = fit(thumbnail.image.source, dest);
@@ -553,6 +626,49 @@ impl OverviewCache {
         {
             sizes.include(drag.window, rect);
         }
+        for (id, rect) in state.overview_preview_endpoints() {
+            sizes.include_endpoint(id, rect);
+        }
+        if let Some(drag) = &state.overview_drag
+            && drag.active
+        {
+            sizes.include_endpoint(drag.window, drag.preview);
+            sizes.include_endpoint(
+                drag.window,
+                fit(
+                    drag.preview,
+                    Rect::new(
+                        0,
+                        0,
+                        layout.output.width.min(240),
+                        layout.output.height.min(160),
+                    ),
+                ),
+            );
+        }
+        sizes.plan(|id| {
+            let entry = state.windows.get(&id).filter(|entry| entry.mapped)?;
+            let geometry = entry.window.geometry().size;
+            let height = geometry.h.max(1).saturating_add(if entry.uses_ssd() {
+                state.runtime.config.theme.titlebar.height
+            } else {
+                0
+            });
+            let frame = Rect::new(0, 0, geometry.w.max(1), height);
+            let source = entry.outline(frame, &state.runtime.config.theme).outer.rect;
+            Some((
+                source,
+                self.thumbnails.get(&id).map(|cached| cached.image.size()),
+            ))
+        });
+        // Reclaim capacity changes together before admission, so an early
+        // endpoint upgrade cannot evict a later visible image awaiting shrink.
+        self.thumbnails.retain(|id, cached| {
+            sizes
+                .planned
+                .get(id)
+                .is_none_or(|size| cached.image.size() == *size)
+        });
         let mut elements = Vec::new();
         let region = state
             .outputs
@@ -1220,6 +1336,115 @@ mod tests {
             sizes.texture_size(id, Rect::new(0, 0, 32768, 32768)),
             (MAX_TEXTURE_EDGE, MAX_TEXTURE_EDGE)
         );
+    }
+
+    #[test]
+    fn transition_endpoints_keep_resolution_stable_across_sampled_sizes() {
+        let id = WindowId(1);
+        let source = Rect::new(0, 0, 1600, 1000);
+        for width in [64, 320, 800, 1280, 320] {
+            let mut sizes = PreviewSizes::default();
+            sizes.include(id, Rect::new(0, 0, width, width * 5 / 8));
+            sizes.include_endpoint(id, Rect::new(0, 0, 1280, 800));
+            sizes.plan(|_| Some((source, None)));
+            assert_eq!(sizes.texture_size(id, source), (1280, 800));
+        }
+        let mut sizes = PreviewSizes::default();
+        sizes.include(id, Rect::new(0, 0, 240, 150));
+        sizes.plan(|_| Some((source, Some((1280, 800)))));
+        assert_eq!(sizes.texture_size(id, source), (1280, 800));
+        sizes.include(id, Rect::new(0, 0, 1440, 900));
+        sizes.plan(|_| Some((source, Some((1280, 800)))));
+        assert_eq!(sizes.texture_size(id, source), (1440, 900));
+    }
+
+    #[test]
+    fn endpoint_upgrades_reserve_all_visible_requirements_before_using_headroom() {
+        let source = Rect::new(0, 0, 32768, 32768);
+        let mut sizes = PreviewSizes::default();
+        for window in 1..=12 {
+            let id = WindowId(window);
+            sizes.include(id, Rect::new(0, 0, 320, 320));
+            sizes.include_endpoint(id, source);
+        }
+        sizes.plan(|_| Some((source, None)));
+        assert!(
+            sizes
+                .planned
+                .values()
+                .copied()
+                .map(texture_bytes)
+                .sum::<usize>()
+                <= MAX_BYTES
+        );
+        assert!(
+            sizes
+                .planned
+                .values()
+                .any(|&size| size == (MAX_TEXTURE_EDGE, MAX_TEXTURE_EDGE))
+        );
+        assert!(sizes.planned.values().any(|&size| size == (320, 320)));
+        for size in sizes.planned.values() {
+            assert!(size.0 >= 320 && size.1 >= 320);
+            assert!(size.0 <= MAX_TEXTURE_EDGE && size.1 <= MAX_TEXTURE_EDGE);
+        }
+        let previous = sizes.planned.clone();
+        // Small cards after a transition retain only capacity that still fits
+        // alongside every visible requirement, instead of evicting one another.
+        let mut next = PreviewSizes::default();
+        for window in 1..=12 {
+            next.include(WindowId(window), Rect::new(0, 0, 160, 160));
+        }
+        next.plan(|id| Some((source, previous.get(&id).copied())));
+        assert_eq!(next.planned, previous);
+    }
+
+    #[test]
+    fn retained_capacity_yields_to_growing_visible_requirements() {
+        let source = Rect::new(0, 0, 2048, 2048);
+        let mut sizes = PreviewSizes::default();
+        for window in 1..=12 {
+            sizes.include(WindowId(window), Rect::new(0, 0, 1024, 1024));
+        }
+        sizes.plan(|_| Some((source, Some((2048, 2048)))));
+        assert!(
+            sizes
+                .planned
+                .values()
+                .copied()
+                .map(texture_bytes)
+                .sum::<usize>()
+                <= MAX_BYTES
+        );
+        assert!(sizes.planned.values().any(|&size| size == (1024, 1024)));
+        assert!(
+            sizes
+                .planned
+                .values()
+                .all(|size| size.0 >= 1024 && size.1 >= 1024)
+        );
+    }
+
+    #[test]
+    fn oversized_visible_working_set_receives_no_optional_capacity_or_under_resolution() {
+        let source = Rect::new(0, 0, 2048, 2048);
+        let mut sizes = PreviewSizes::default();
+        for window in 1..=12 {
+            let id = WindowId(window);
+            sizes.include(id, Rect::new(0, 0, 1600, 1600));
+            sizes.include_endpoint(id, source);
+        }
+        sizes.plan(|_| Some((source, Some((2048, 2048)))));
+        assert!(
+            sizes
+                .planned
+                .values()
+                .copied()
+                .map(texture_bytes)
+                .sum::<usize>()
+                > MAX_BYTES
+        );
+        assert!(sizes.planned.values().all(|&size| size == (1600, 1600)));
     }
 
     #[test]
