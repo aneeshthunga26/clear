@@ -926,6 +926,30 @@ the [drag contract](../specs/overview.md#layout-and-input) separates pointer
 translation from animated pickup/scale. Repeat with a manual animation sampling
 cap to check that pointer tracking continues at host redraw cadence.
 
+### Overview desktop-tile activation zoom (2026-10-11)
+
+Cargo fmt/check/test/build passed (137 library tests), and Rust Analyzer reported
+no error/warning-level diagnostics. Pure zoom tests cover clicked-tile/window
+origins, intermediate and full-output bounds, added representatives, empty
+desktops and reversal. The synthetic seat test
+`overview_workspace_click_expands_the_submitted_tile_until_terminal_submit`
+activates an empty desktop through pointer press/release, checks the submitted
+tile origin, expands midway, reopens/cancels without rolling back the workspace,
+and retires overview only after the terminal frame is submitted.
+
+For manual review, open an animated overview, click a desktop tile and compare
+its wallpaper and window motion to a window-card activation or Escape exit.
+Check empty desktops, tiles with windows, and reopening during expansion. See the
+[presentation contract](../specs/overview.md#presentation-transitions).
+The synthetic tests establish geometry/input ownership, not physical clicks,
+new zoom GPU pixels or delivered cadence.
+
+Existing GPU/protocol regressions passed on private local virtual KWin, not a VM:
+`cards`, `rounded-asymmetric` and `live-cards` under
+`target/overview-desktop-zoom/overview-regression/`, and animated overview
+entry/ordinary exit under `target/overview-desktop-zoom/animation-regression/`.
+These fixtures do not activate workspace tiles or validate the new zoom's pixels.
+
 ### Live overview validation (2026-10-09)
 
 All seventeen overview GPU/protocol cases passed on a private local virtual

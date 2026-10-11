@@ -1,9 +1,12 @@
 //! Overview presentation state; desktop policy and renderer textures stay elsewhere.
 
-use super::{overview::OverviewLayout, state::Compositor};
+use super::{
+    overview::{OverviewLayout, miniature_frame},
+    state::Compositor,
+};
 use crate::{
     config::AnimationEffect,
-    core::{Rect, WindowId},
+    core::{Rect, WindowId, WorkspaceId},
     runtime::{
         OverviewSession, OverviewTarget,
         animation::{AnimationPose, AnimationRect},
@@ -11,7 +14,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
-/// One bounded transition retains only IDs/layout and at most twelve desktop poses.
+/// One bounded transition owns layouts plus capped desktop and miniature endpoints.
 #[derive(Default)]
 pub(super) struct OverviewAnimation {
     session: Option<OverviewSession>,
@@ -29,6 +32,79 @@ pub(super) struct OverviewAnimation {
     displayed_phase: f64,
     sampled_revision: Option<u64>,
     finished: bool,
+    workspace_zoom: Option<WorkspaceZoom>,
+}
+
+/// Four submitted miniature origins and up to twelve reconciled desktop endpoints.
+struct WorkspaceZoom {
+    workspace: WorkspaceId,
+    origin: Rect,
+    miniatures: BTreeMap<WindowId, Rect>,
+    desktop: BTreeMap<WindowId, Rect>,
+    opacity: f32,
+    from_amount: f64,
+}
+
+pub(super) struct WorkspaceZoomScene {
+    pub workspace: WorkspaceId,
+    pub canvas: Rect,
+    pub opacity: f32,
+    pub windows: Vec<(WindowId, Rect, f32)>,
+}
+
+impl WorkspaceZoom {
+    fn amount(&self, open: bool, progress: f64, start: f64) -> f64 {
+        let fraction = transition_fraction(open, progress, start);
+        if open {
+            self.from_amount * (1.0 - fraction)
+        } else {
+            self.from_amount + (1.0 - self.from_amount) * fraction
+        }
+    }
+
+    fn scene(&self, output: Rect, amount: f64) -> WorkspaceZoomScene {
+        let ids = self
+            .miniatures
+            .keys()
+            .chain(self.desktop.keys())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let windows =
+            ids.iter()
+                .filter_map(|id| {
+                    let target = self.desktop.get(id).copied().or_else(|| {
+                        miniature_frame(*self.miniatures.get(id)?, self.origin, output)
+                    })?;
+                    let from = self
+                        .miniatures
+                        .get(id)
+                        .copied()
+                        .or_else(|| miniature_frame(target, output, self.origin))
+                        .unwrap_or(self.origin);
+                    let from_alpha = if self.miniatures.contains_key(id) {
+                        self.opacity
+                    } else {
+                        0.0
+                    };
+                    let to_alpha = if self.desktop.contains_key(id) {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    Some((
+                        *id,
+                        interpolate(from, target, amount),
+                        from_alpha + (to_alpha - from_alpha) * amount as f32,
+                    ))
+                })
+                .collect();
+        WorkspaceZoomScene {
+            workspace: self.workspace,
+            canvas: interpolate(self.origin, output, amount),
+            opacity: self.opacity + (1.0 - self.opacity) * amount as f32,
+            windows,
+        }
+    }
 }
 
 impl OverviewAnimation {
@@ -73,8 +149,57 @@ impl Compositor {
         }
     }
     pub fn overview_window_opacity(&self, id: WindowId) -> f32 {
-        self.overview_animation
-            .window_opacity_at(id, self.overview_progress())
+        if self.overview_animation.workspace_zoom.is_some() && !self.overview_animation.open {
+            self.overview_progress() as f32
+        } else {
+            self.overview_animation
+                .window_opacity_at(id, self.overview_progress())
+        }
+    }
+    /// Capture the selected tile before committing its ordinary workspace command.
+    pub fn finish_overview_selection(&mut self) {
+        let config = self.runtime.animations.config();
+        let zoom = (config.enabled && !config.reduced_motion && config.overview.enabled)
+            .then(|| {
+                let session = self.runtime.overview.as_ref()?;
+                let OverviewTarget::Workspace(workspace) = session.selected else {
+                    return None;
+                };
+                let layout = self.overview_layout()?;
+                let origin = layout
+                    .items
+                    .iter()
+                    .find(|item| item.target == session.selected)?
+                    .preview?;
+                Some(WorkspaceZoom {
+                    workspace,
+                    origin,
+                    miniatures: self
+                        .overview_miniatures(workspace, origin, layout.output)
+                        .into_iter()
+                        .collect(),
+                    desktop: BTreeMap::new(),
+                    opacity: self.overview_animation.displayed_progress as f32,
+                    from_amount: 0.0,
+                })
+            })
+            .flatten();
+        self.runtime.finish_overview();
+        self.overview_animation.workspace_zoom = zoom;
+    }
+    /// Bounded live overlay; the selected desktop expands above the fading overview.
+    pub fn overview_workspace_zoom(&self) -> Option<WorkspaceZoomScene> {
+        let animation = &self.overview_animation;
+        let zoom = animation.workspace_zoom.as_ref()?;
+        let output = animation.target.as_ref()?.output;
+        Some(zoom.scene(
+            output,
+            zoom.amount(
+                animation.open,
+                animation.progress,
+                animation.transition_start,
+            ),
+        ))
     }
     fn overview_desktop_frames(
         &self,
@@ -169,6 +294,16 @@ impl Compositor {
                 _ => None,
             })
             .collect();
+        if changed {
+            let animation = &mut self.overview_animation;
+            if let Some(zoom) = &mut animation.workspace_zoom {
+                zoom.from_amount = zoom.amount(
+                    animation.open,
+                    animation.displayed_progress,
+                    animation.transition_start,
+                );
+            }
+        }
         if let (Some(session), Some(layout)) = (session, layout) {
             let topology_changed = self
                 .overview_animation
@@ -181,6 +316,9 @@ impl Compositor {
                     .as_ref()
                     .is_some_and(|old| old.output != session.output);
             if new_scene || topology_changed {
+                if topology_changed {
+                    self.overview_animation.workspace_zoom = None;
+                }
                 geometry_reset = topology_changed;
                 if topology_changed && let Some(track) = self.overview_animation.track.take() {
                     self.runtime.animations.remove(track);
@@ -194,6 +332,25 @@ impl Compositor {
             self.overview_animation.session = Some(session);
             self.overview_animation.target = Some(layout);
         } else if changed {
+            if let Some(zoom) = &self.overview_animation.workspace_zoom {
+                let mut session = self
+                    .overview_animation
+                    .session
+                    .clone()
+                    .expect("retained overview");
+                session.select(
+                    &self.runtime.desktop,
+                    OverviewTarget::Workspace(zoom.workspace),
+                );
+                if let Some(layout) = self.overview_target_layout(&session) {
+                    let desktop = self.overview_desktop_frames(&layout, false);
+                    self.overview_animation
+                        .workspace_zoom
+                        .as_mut()
+                        .expect("selected desktop")
+                        .desktop = desktop;
+                }
+            }
             if let Some(layout) = self.overview_animation.target.as_ref() {
                 self.overview_animation.desktop = self.overview_desktop_frames(layout, false);
             }
@@ -282,6 +439,12 @@ impl Compositor {
         self.overview_animation.sampled = self.overview_animation.target.as_ref().map(|layout| {
             let target = if self.overview_animation.open {
                 layout.clone()
+            } else if self.overview_animation.workspace_zoom.is_some() {
+                self.overview_animation
+                    .transition_from
+                    .as_ref()
+                    .unwrap_or(layout)
+                    .clone()
             } else {
                 transition_layout(layout, &self.overview_animation.desktop, 0.0)
             };
@@ -309,6 +472,9 @@ impl Compositor {
             .runtime
             .animation_time_at(self.start + self.animation_sample_time);
         self.overview_animation.displayed_phase = self.runtime.animations.clock.sample(now);
+        if self.overview_animation.open && self.overview_animation.finished {
+            self.overview_animation.workspace_zoom = None;
+        }
         let current = self
             .overview_animation
             .track
@@ -434,6 +600,76 @@ mod tests {
     use super::*;
     use crate::{config::AnimationsConfig, runtime::animation::AnimationEngine};
     use std::time::Duration;
+
+    #[test]
+    fn workspace_selection_expands_the_clicked_tile_and_its_live_windows() {
+        let output = Rect::new(319, 11, 641, 481);
+        let origin = Rect::new(540, 17, 80, 60);
+        let full = Rect::new(350, 50, 300, 200);
+        let miniature = miniature_frame(full, output, origin).unwrap();
+        let zoom = WorkspaceZoom {
+            workspace: WorkspaceId(3),
+            origin,
+            miniatures: BTreeMap::from([
+                (WindowId(1), miniature),
+                (WindowId(3), Rect::new(600, 40, 10, 10)),
+            ]),
+            desktop: BTreeMap::from([
+                (WindowId(1), full),
+                (WindowId(2), Rect::new(670, 50, 260, 200)),
+            ]),
+            opacity: 0.4,
+            from_amount: 0.0,
+        };
+        let first = zoom.scene(output, 0.0);
+        assert_eq!(first.canvas, origin);
+        assert_eq!(first.windows[0], (WindowId(1), miniature, 0.4));
+        assert_eq!(
+            first.windows[1].2, 0.0,
+            "windows absent from the four-window tile fade in"
+        );
+        let middle = zoom.scene(output, 0.5);
+        assert_eq!(middle.canvas, interpolate(origin, output, 0.5));
+        assert_eq!(middle.windows[0].1, interpolate(miniature, full, 0.5));
+        assert_eq!(middle.windows[1].2, 0.5);
+        let last = zoom.scene(output, 1.0);
+        assert_eq!(last.canvas, output);
+        assert_eq!(last.windows[0], (WindowId(1), full, 1.0));
+        assert_eq!(
+            last.windows[2].2, 0.0,
+            "representatives missing from the desktop fade out"
+        );
+        assert_eq!(last.opacity, 1.0);
+        let empty = WorkspaceZoom {
+            miniatures: BTreeMap::new(),
+            desktop: BTreeMap::new(),
+            ..zoom
+        };
+        assert!(empty.scene(output, 0.5).windows.is_empty());
+        assert_eq!(empty.scene(output, 1.0).canvas, output);
+    }
+
+    #[test]
+    fn workspace_zoom_reverses_from_submitted_progress_without_rolling_back_policy() {
+        let mut zoom = WorkspaceZoom {
+            workspace: WorkspaceId(3),
+            origin: Rect::new(400, 10, 80, 60),
+            miniatures: BTreeMap::new(),
+            desktop: BTreeMap::new(),
+            opacity: 1.0,
+            from_amount: 0.0,
+        };
+        let amount = zoom.amount(false, 0.6, 1.0);
+        assert_eq!(amount, 0.4);
+        zoom.from_amount = amount;
+        assert_eq!(zoom.amount(true, 0.6, 0.6), amount);
+        let reopened = zoom.amount(true, 0.8, 0.6);
+        assert!((reopened - 0.2).abs() < 1e-9);
+        zoom.from_amount = reopened;
+        assert_eq!(zoom.amount(false, 0.8, 0.8), reopened);
+        assert_eq!(zoom.amount(false, 0.0, 0.8), 1.0);
+        assert_eq!(zoom.workspace, WorkspaceId(3));
+    }
     #[test]
     fn entry_midpoint_and_exit_geometry_share_the_same_motion() {
         let mut desktop = crate::core::Desktop::new();

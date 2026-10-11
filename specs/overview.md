@@ -39,6 +39,29 @@ effect's analytic spring velocity. Changing animation speed rebases the same
 clock rather than restarting the scene. Ordinary pagination/navigation changes
 are not separate animated layout transitions.
 
+Activating a workspace tile by click or keyboard selection uses a desktop zoom
+instead of returning the large canvas to full size. The adapter captures that
+tile's last submitted preview rectangle and at most four remembered miniature
+origins before committing the ordinary workspace activation. An expanding live
+overlay interpolates its wallpaper bounds from that tile to the interactive
+output's full bounds, preserving the full-output wallpaper crop. Its windows
+move/scale from their miniature origins to the newly reconciled desktop origins
+with committed body dimensions. Windows absent from the tile's four miniature
+representatives fade in at their scaled desktop positions; representatives absent
+from the resulting visible desktop fade out. Desktop endpoints are bounded to
+the selected workspace's first overview page (at most twelve windows). Additional
+visible windows return with the ordinary desktop at terminal handoff.
+
+The underlying overview cards, strip and labels fade behind the expanding
+desktop; the selected tile MUST NOT render a second stationary miniature copy.
+Empty desktops expand their wallpaper/background alone. Global overview effect,
+speed, sampling and reduced-motion/disable behavior apply without another engine
+track or screenshots. Reopening during this zoom shrinks it from its submitted
+expansion amount while the new overview opens; it MUST NOT roll back the already
+committed workspace switch. Host/output teardown and terminal submission release
+the retained zoom geometry along with the existing overview session. Ordinary
+window-card activation and cancellation retain their existing return transitions.
+
 The adapter samples the shared capped animation timestamp before rendering;
 prediction does not advance pointer hits. Rendering consumes the sampled layout,
 and hit discovery consumes the last successfully submitted layout. Duplicate
@@ -56,7 +79,8 @@ loss or resizing of a closing scene's output clears that transition immediately.
 
 One shared engine track captures the effect law, using the ordinary animation
 speed/reduced-motion policy. Transition bookkeeping retains at most twelve
-desktop frame endpoints and opacity values, and four bounded layouts (target,
+desktop frame endpoints and opacity values, plus optional workspace zoom metadata
+(four miniature origins and twelve desktop endpoints), and four bounded layouts (target,
 transition source, sampled and submitted), each with at most 24 items, plus the
 existing ID-only runtime session. Texture/label bounds below continue applying throughout entry
 and closing; no separate overview screenshot or retained GPU texture pool is
@@ -301,6 +325,10 @@ hot corners and touchpad progress remain future work.
   terminal-frame/current-revision retirement.
   These CPU tests do not establish frame cadence, compositor input handoff or
   GPU intermediate pixels.
+- `workspace_selection_expands_the_clicked_tile_and_its_live_windows` in that
+  module checks tile/window endpoints, midpoint, missing representatives and empty
+  desktops. `workspace_zoom_reverses_from_submitted_progress_without_rolling_back_policy`
+  checks interrupted reopen/close geometry.
 - [Drag presentation and unit tests](../src/platform/smithay/overview_drag.rs):
   pickup starts at the card, retargets start at submitted geometry, proximity
   uses the same fitted miniature dimensions, moving away reverses sizing, output
@@ -314,6 +342,9 @@ hot corners and touchpad progress remain future work.
   `overview_keyboard_pairs_and_deferred_entry_without_shell_ipc` exercises
   synthetic keyboard/button pairs and implicit-grab deferral without a shell.
   These are compositor seat tests, not physical device tests.
+  `overview_workspace_click_expands_the_submitted_tile_until_terminal_submit`
+  commits an empty desktop through synthetic clicks, checks tile/midpoint/full
+  bounds and retains input ownership until successful terminal submission.
   `overview_hover_click_and_drag_without_shell_ipc` checks default/opt-in hover,
   workspace clicks, threshold/drop/cancel behavior, frozen source preview,
   independent-transfer invalidation and matching releases.

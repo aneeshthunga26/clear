@@ -425,6 +425,106 @@ mod tests {
     }
 
     #[test]
+    fn overview_workspace_click_expands_the_submitted_tile_until_terminal_submit() {
+        const CHILD: &str = "CLEAR_OVERVIEW_ZOOM_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("clear-overview-zoom-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "platform::smithay::input::tests::overview_workspace_click_expands_the_submitted_tile_until_terminal_submit", "--nocapture"])
+                .env(CHILD, "1").env("XDG_RUNTIME_DIR", &directory).status().unwrap();
+            std::fs::remove_dir_all(directory).unwrap();
+            assert!(status.success());
+            return;
+        }
+        use crate::{
+            config::{AnimationCurve, AnimationKind},
+            core::{OutputId, WorkspaceId},
+        };
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut state = overview_input_fixture(&event_loop);
+        let mut config = state.runtime.config.animations.clone();
+        config.enabled = true;
+        config.overview.kind = AnimationKind::Easing {
+            duration_ms: 200,
+            curve: AnimationCurve::Linear,
+        };
+        let base = state.start.elapsed();
+        let now = state.runtime.animation_time_at(state.start + base);
+        state
+            .runtime
+            .animations
+            .apply_config(config.clone(), now)
+            .unwrap();
+        state.runtime.config.animations = config;
+        state.runtime.toggle_overview();
+        state.frame_time = base;
+        state.animation_sample_time = base;
+        state.reconcile();
+        state.frame_time = base + std::time::Duration::from_millis(250);
+        state.animation_sample_time = state.frame_time;
+        state.sample_overview_animation();
+        state.mark_overview_presented();
+        let layout = state.overview_layout().unwrap();
+        let tile = layout
+            .items
+            .iter()
+            .find(|item| item.target == OverviewTarget::Workspace(WorkspaceId(3)))
+            .unwrap()
+            .preview
+            .unwrap();
+        state.motion(
+            (
+                (tile.x + tile.width / 2) as f64,
+                (tile.y + tile.height / 2) as f64,
+            )
+                .into(),
+            1,
+        );
+        state.pointer_button(0x110, ButtonState::Pressed, 2);
+        state.pointer_button(0x110, ButtonState::Released, 3);
+        assert!(state.runtime.overview.is_none());
+        assert_eq!(
+            state.runtime.desktop.workspace_for_output(OutputId(1)),
+            Some(WorkspaceId(3))
+        );
+        assert!(state.overview_present());
+        assert_eq!(state.overview_workspace_zoom().unwrap().canvas, tile);
+        state.animation_sample_time = base + std::time::Duration::from_millis(350);
+        state.sample_overview_animation();
+        let middle = state.overview_workspace_zoom().unwrap().canvas;
+        assert!(middle.width > tile.width && middle.width < layout.output.width);
+        state.frame_time = state.animation_sample_time;
+        state.mark_overview_presented();
+        state.runtime.toggle_overview();
+        state.reconcile();
+        assert_eq!(state.overview_workspace_zoom().unwrap().canvas, middle);
+        assert_eq!(
+            state.runtime.desktop.workspace_for_output(OutputId(1)),
+            Some(WorkspaceId(3))
+        );
+        state.mark_overview_presented();
+        state.runtime.cancel_overview();
+        state.reconcile();
+        assert_eq!(state.overview_workspace_zoom().unwrap().canvas, middle);
+        state.animation_sample_time = base + std::time::Duration::from_millis(600);
+        state.sample_overview_animation();
+        assert_eq!(
+            state.overview_workspace_zoom().unwrap().canvas,
+            layout.output
+        );
+        assert!(
+            state.overview_present(),
+            "sampling cannot hand input back before submission"
+        );
+        state.mark_overview_presented();
+        assert!(!state.overview_present());
+        assert!(state.overview_workspace_zoom().is_none());
+        assert!(state.suppressed_buttons.is_empty());
+    }
+
+    #[test]
     fn overview_hover_click_and_drag_without_shell_ipc() {
         const CHILD: &str = "CLEAR_OVERVIEW_DRAG_TEST";
         if std::env::var_os(CHILD).is_none() {
@@ -867,7 +967,7 @@ impl Compositor {
                         } else if symbols.contains(&Keysym::Return)
                             || symbols.contains(&Keysym::KP_Enter)
                         {
-                            state.runtime.finish_overview();
+                            state.finish_overview_selection();
                         } else if let Some(direction) =
                             overview_navigation(&symbols, mods.shift, mods.ctrl)
                         {
@@ -1047,7 +1147,7 @@ impl Compositor {
                         {
                             session.select(&self.runtime.desktop, target);
                         }
-                        self.runtime.finish_overview();
+                        self.finish_overview_selection();
                     }
                 }
             }

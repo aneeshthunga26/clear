@@ -521,6 +521,12 @@ impl OverviewCache {
             })
         });
         let mut sizes = PreviewSizes::default();
+        let zoom = state.overview_workspace_zoom();
+        if let Some(zoom) = &zoom {
+            for (id, rect, _) in &zoom.windows {
+                sizes.include(*id, *rect);
+            }
+        }
         for item in &layout.items {
             if let Some(preview) = item.preview {
                 match item.target {
@@ -553,6 +559,35 @@ impl OverviewCache {
             .iter()
             .find(|r| r.id == session.output)
             .expect("overview output");
+        if let Some(zoom) = &zoom {
+            for (id, rect, opacity) in &zoom.windows {
+                match self.thumbnail(
+                    state,
+                    renderer,
+                    titlebars,
+                    *id,
+                    *rect,
+                    &sizes,
+                    shaders,
+                    composer,
+                    zoom.canvas,
+                    *opacity,
+                ) {
+                    Ok(preview) => elements.extend(preview),
+                    Err(error) => tracing_fallback(error),
+                }
+            }
+            desktop_backing(
+                &mut elements,
+                wallpapers,
+                renderer,
+                state,
+                &region.output.name(),
+                layout.output,
+                zoom.canvas,
+                zoom.opacity,
+            );
+        }
         // Keep the drop target outline above the floating ghost so a center-grab
         // cannot cover every pixel of the eligible desktop's highlight.
         if let Some(drag) = &state.overview_drag
@@ -610,7 +645,9 @@ impl OverviewCache {
             }
             let label = match item.target {
                 OverviewTarget::Workspace(id) => {
-                    if let Some(preview) = item.preview {
+                    if let Some(preview) = item.preview
+                        && zoom.as_ref().is_none_or(|zoom| zoom.workspace != id)
+                    {
                         // Small desktop previews use remembered frames, not new
                         // policy placements or thumbnail-sized configures.
                         for (window, dest) in state.overview_miniatures(id, preview, layout.output)
@@ -917,7 +954,7 @@ fn solid(elements: &mut Vec<SceneElement>, rect: Rect, color: [f32; 4]) {
 
 impl Compositor {
     /// The same bounded miniature list drives rendering and client visibility.
-    fn overview_miniatures(
+    pub fn overview_miniatures(
         &self,
         workspace: WorkspaceId,
         preview: Rect,
@@ -959,6 +996,9 @@ impl Compositor {
             return BTreeSet::new();
         };
         let mut windows = BTreeSet::new();
+        if let Some(zoom) = self.overview_workspace_zoom() {
+            windows.extend(zoom.windows.into_iter().map(|(id, _, _)| id));
+        }
         for item in &layout.items {
             if let Some(preview) = item.preview {
                 match item.target {

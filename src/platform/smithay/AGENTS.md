@@ -61,7 +61,9 @@ only directory allowed to depend on Smithay and Wayland types.
   capture committed images before lifecycle loss, enforce image ownership/bounds,
   and retire only sources acknowledged by successful submission.
 - `overview_animation.rs`: bounded card/wallpaper interpolation and retained closing
-  input/render ownership; last submitted layout drives hits.
+  input/render ownership; last submitted layout drives hits. Capture workspace
+  activation through `finish_overview_selection` before committing selection;
+  the optional live tile zoom shares the overview track and bounded image cache.
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,
   shared visibility clips, and frame callbacks.
 - `wallpaper.rs`: renderer-owned immutable texture cache, per-output image

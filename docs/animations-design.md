@@ -3,7 +3,8 @@
 **Status: the eight visible effects are integrated; release acceptance remains.**
 The [animation specification](../specs/animations.md) owns implemented settings,
 clock, planner, window/workspace motion and retained images; [overview](../specs/overview.md)
-owns card/wallpaper transitions. [Platform timing](../specs/platform.md#nested-frame-timing)
+owns card/wallpaper transitions, drag presentation and desktop-tile activation
+zoom. [Platform timing](../specs/platform.md#nested-frame-timing)
 describes nested sampling and interval-1 swaps. Animations remain off globally
 pending physical timing/input and performance acceptance; interactive examples
 opt in explicitly. The sections below retain the original target architecture,
