@@ -974,6 +974,56 @@ fullscreen `ssd-held`, and Kawase radius 2/passes 3 with liquid glass
 These fixtures check existing layer/popup/blur/fullscreen pixels, not animated
 shell-reveal pixels or physical input.
 
+### Animation performance and FPS overlay (2026-10-11)
+
+The five immediate fixes from the [source review](animation-performance-review.md)
+were applied: budget-aware endpoint/retained preview resolution, omission of hidden
+ordinary rendering beneath overview, direct native-image masking without an identity
+copy, once-per-generation shared preview preparation, and planner resampling only
+after source failures. The [FPS overlay](../specs/rendering.md#fps-overlay) makes
+successful submission cadence visible without changing pacing.
+
+Cargo fmt/check/test/build and release build passed (145 library tests); Rust
+Analyzer reported no error/warning-level diagnostics. New tests cover measured
+59 FPS without refresh-divisor quantization, stalls and enable/disable reset,
+atomic preference reload, stable endpoint resolution, capacity growth/shrink, twelve
+large endpoints competing for headroom, and an over-budget required working set.
+
+GPU/protocol checks passed on private local virtual KWin, not a VM:
+
+- All twelve animation cases in `target/animation-performance/animations/`, including
+  destruction/blur, minimize/restore, workspace movement, held fullscreen commits
+  and overview entry/exit.
+- Overview sharp detail, rounded blur, odd outputs, live cards/miniatures/subsurfaces
+  in `target/animation-performance/overview/`.
+- Kawase radius 2/passes 3 with liquid glass, `layer-top` and `glass-corner`, in
+  `target/animation-performance/glass/`.
+- FPS-enabled fullscreen and overview-entry captures in
+  `target/animation-performance/fps/`, with bright-glyph pixel checks above those
+  scenes and visual review of the overview capture.
+- Final release `many-windows`, `sharp-preview`, `rounded-blur`, `live-miniatures`
+  in `target/animation-performance/release-overview-final/`, plus `fullscreen-held`
+  and `overview-exit` in `target/animation-performance/release-animations/`.
+
+The earlier `release-overview/` run is excluded: A/B snapshots initially shared
+Cargo artifacts, and package cleanup also interrupted that run's next process
+launch. Clear's release package was rebuilt after cleanup, and final release
+checks use an immutable copied binary. Keep baseline and current source builds in
+separate target directories for future comparisons; never assume shared Cargo
+artifacts represent the requested snapshot.
+
+Optimized comparison binaries are retained at
+`target/animation-performance/clear-before` (FPS-enabled baseline `d153851`) and
+`target/animation-performance/clear-after`. Use the same config, clients, host
+refresh, resolution and animation speed for both. Warm up caches before comparing,
+and measure first-use behavior separately. Both include the overlay; its reading
+is submission cadence rather than physical presentation or capped pose sampling.
+
+These checks establish geometry, alpha, source freshness and protocol correctness.
+They do not establish a numerical speedup, physical pointer latency, tile-zoom
+shell-fade pixels or actual monitor presentation timing. The improvements remove
+source-identified work; broader profiling/damage-cache work remains in the review.
+
 ### Live overview validation (2026-10-09)
 
 All seventeen overview GPU/protocol cases passed on a private local virtual
