@@ -93,6 +93,11 @@ pub struct TargetStore {
     records: Vec<Registration>,
 }
 impl TargetStore {
+    /// Earliest live lease deadline, in the caller's monotonic elapsed-time domain.
+    pub fn next_expiry(&self) -> Option<Duration> {
+        self.records.iter().map(|record| record.expires).min()
+    }
+
     /// Replace one live panel's records atomically after all ownership/bounds/ID checks.
     pub fn replace(
         &mut self,
@@ -422,6 +427,7 @@ mod tests {
     fn lease_renewal_and_empty_replace_release_registration() {
         let (d, panel, peer) = setup();
         let mut store = TargetStore::default();
+        assert_eq!(store.next_expiry(), None);
         store
             .replace(
                 ClientId(1),
@@ -433,6 +439,7 @@ mod tests {
                 Duration::ZERO,
             )
             .unwrap();
+        assert_eq!(store.next_expiry(), Some(TARGET_LEASE));
         store
             .replace(
                 ClientId(1),
@@ -444,6 +451,10 @@ mod tests {
                 Duration::from_secs(4),
             )
             .unwrap();
+        assert_eq!(
+            store.next_expiry(),
+            Some(Duration::from_secs(4) + TARGET_LEASE)
+        );
         assert!(
             store
                 .resolve(WindowId(1), &d, Duration::from_secs(8))
@@ -466,6 +477,7 @@ mod tests {
             )
             .unwrap();
         assert!(store.records.is_empty());
+        assert_eq!(store.next_expiry(), None);
         store
             .replace(
                 ClientId(2),

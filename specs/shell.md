@@ -204,6 +204,15 @@ replays reports across disconnection. No shell process is required for fallback.
 The nonblocking server is polled from the compositor event loop. It MUST NOT
 perform shell work in the renderer or create an unbounded background queue.
 
+The transport also exposes borrowed listener/stream descriptors, opaque live
+connection identities and readiness-driven dispatch. Such callers MUST preserve
+peer rotation and the budgets below, retain actionable budget exhaustion and
+complete buffered requests, and wait for new readiness after EAGAIN. Writable
+interest is needed only while output is queued; stale identities cannot target
+reused descriptors. The existing polling entry point remains available.
+The advisory target store exposes its earliest retained expiry without expiring
+records; the caller owns maintenance scheduling.
+
 | Resource/work | Limit |
 | --- | --- |
 | Connected clients, including idle peers | 32 |
@@ -269,7 +278,9 @@ another shell.
 
 - [Model, validation, serialization](../src/shell/mod.rs),
   [transport and inline tests](../src/shell/server.rs),
-  [adapter polling/reconciliation](../src/platform/smithay/shell.rs).
+  [adapter polling/reconciliation](../src/platform/smithay/shell.rs). Readiness
+  transport tests additionally cover buffered continuations, budget fairness,
+  write backpressure, half-close interests and stale connection identities.
 - [Hint store and inline tests](../src/shell/animation_targets.rs): strict
   selectors, connection/process ownership, atomic rejection, local/global clips,
   exact-window precedence, expiry, lifecycle pruning and provider limits.

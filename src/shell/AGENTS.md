@@ -10,7 +10,10 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
   command execution, and newline-terminated JSON response encoding.
 - `server.rs` owns nonblocking newline framing, connection/message/work budgets,
   subscriptions, socket ownership/permissions, backpressure, and identity-checked
-  cleanup. Never unlink arbitrary stale paths or grow buffers without limits.
+  cleanup. Expose borrowed descriptors/opaque identities and readiness-driven
+  progress; retain actionable budget exhaustion and complete buffered frames,
+  clear directions on EAGAIN, and never import an event-loop framework. Never
+  unlink arbitrary stale paths or grow buffers without limits.
 - `animation_targets.rs` owns bounded connection-owned advisory icon records,
   strict panel-local geometry/selector validation, expiry and pure resolution.
   Live mapped panel descriptors and Wayland ownership stay in the adapter; never

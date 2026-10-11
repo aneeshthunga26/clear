@@ -1,7 +1,7 @@
 //! Bounded, nonblocking Unix transport for the optional shell protocol.
 //!
-//! Call `poll` on each event-loop turn, including turns without shell requests:
-//! replies and publications are queued and flushed only by `poll`. JSON parsing,
+//! Readiness-driven adapters use `mark_ready`, `poll_ready`, and `needs_continuation`.
+//! Replies and publications are queued until a writable opportunity. JSON parsing,
 //! snapshot generation, and compositor reconciliation belong to the caller.
 
 use std::{
@@ -93,6 +93,7 @@ pub struct Server {
     paths: OwnedPaths,
     clients: VecDeque<Client>,
     next_id: u64,
+    listener_ready: bool,
 }
 
 impl Server {
@@ -151,6 +152,7 @@ impl Server {
             paths,
             clients: VecDeque::new(),
             next_id: 1,
+            listener_ready: true,
         })
     }
 
@@ -167,7 +169,21 @@ impl Server {
     /// An unterminated frame at EOF is discarded. A write-half-closed peer can
     /// still receive replies to its complete requests before being disconnected.
     pub fn poll(&mut self) -> Vec<(ClientId, Vec<u8>)> {
-        for _ in 0..ACCEPT_ATTEMPTS {
+        self.listener_ready = true;
+        for client in &mut self.clients {
+            client.read_ready = !client.read_closed;
+            client.write_ready = !client.outgoing.is_empty();
+        }
+        self.poll_ready()
+    }
+
+    /// Drain only signalled or buffered work, preserving budgets and peer rotation.
+    pub fn poll_ready(&mut self) -> Vec<(ClientId, Vec<u8>)> {
+        for _ in 0..if self.listener_ready {
+            ACCEPT_ATTEMPTS
+        } else {
+            0
+        } {
             match self.listener.accept() {
                 Ok((stream, _)) => {
                     if self.clients.len() == MAX_CLIENTS
@@ -180,9 +196,15 @@ impl Server {
                     self.next_id += 1;
                     self.clients.push_back(Client::new(id, stream));
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.listener_ready = false;
+                    break;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(_) => {
+                    self.listener_ready = false;
+                    break;
+                }
             }
         }
 
@@ -208,6 +230,48 @@ impl Server {
             self.clients.rotate_left(1);
         }
         requests
+    }
+
+    /// Listener descriptor for a backend's IO registration; transport retains ownership.
+    pub fn listener(&self) -> &UnixListener {
+        &self.listener
+    }
+
+    /// Bounded live descriptors and interests, identified independently of reused FD numbers.
+    pub fn interests(&self) -> impl Iterator<Item = (ClientId, &UnixStream, bool, bool)> {
+        self.clients.iter().map(|client| {
+            (
+                client.id,
+                &client.stream,
+                !client.read_closed,
+                !client.outgoing.is_empty(),
+            )
+        })
+    }
+
+    /// Record listener readiness. Budget exhaustion retains it until an EAGAIN.
+    pub fn mark_listener_ready(&mut self) {
+        self.listener_ready = true;
+    }
+
+    /// Record readiness for a live opaque identity; stale registrations are harmless.
+    pub fn mark_ready(&mut self, id: ClientId, readable: bool, writable: bool) {
+        if let Some(client) = self.clients.iter_mut().find(|client| client.id == id) {
+            client.read_ready |= readable && !client.read_closed;
+            client.write_ready |= writable && !client.outgoing.is_empty();
+        }
+    }
+
+    /// Work that can progress without new kernel readiness, including complete buffered frames.
+    /// EAGAIN clears its direction, so blocked peers do not create retry pings.
+    pub fn needs_continuation(&self) -> bool {
+        self.listener_ready
+            || self.clients.iter().any(|client| {
+                client.read_ready
+                    || client.write_ready
+                    || client.buffered_frame()
+                    || (client.read_closed && client.outgoing.is_empty())
+            })
     }
 
     /// Queue an already encoded response, including its newline, for one peer.
@@ -258,6 +322,8 @@ struct Client {
     outgoing: VecDeque<u8>,
     subscribed: bool,
     read_closed: bool,
+    read_ready: bool,
+    write_ready: bool,
 }
 
 impl Client {
@@ -271,6 +337,8 @@ impl Client {
             outgoing: VecDeque::new(),
             subscribed: false,
             read_closed: false,
+            read_ready: true,
+            write_ready: false,
         }
     }
 
@@ -280,8 +348,15 @@ impl Client {
         }
         // A byte queue also bounds metadata: millions of tiny/empty responses
         // must not allocate millions of per-message queue entries.
+        if self.outgoing.is_empty() && !frame.is_empty() {
+            self.write_ready = true;
+        }
         self.outgoing.extend(frame);
         true
+    }
+
+    fn buffered_frame(&self) -> bool {
+        self.incoming[self.scanned..].contains(&b'\n')
     }
 
     fn receive(
@@ -314,7 +389,8 @@ impl Client {
             if self.incoming.len() > MAX_REQUEST {
                 return false;
             }
-            if self.read_closed
+            if !self.read_ready
+                || self.read_closed
                 || emitted == REQUESTS_PER_CLIENT
                 || requests.len() == REQUESTS_PER_POLL
                 || attempts == IO_ATTEMPTS_PER_CLIENT
@@ -333,6 +409,7 @@ impl Client {
             match self.stream.read(&mut buffer[..length]) {
                 Ok(0) => {
                     self.read_closed = true;
+                    self.read_ready = false;
                     self.incoming.clear();
                     self.scanned = 0;
                     return true;
@@ -342,7 +419,10 @@ impl Client {
                     bytes_left -= count;
                     *read_budget -= count;
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return true,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.read_ready = false;
+                    return true;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => return false,
             }
@@ -350,6 +430,9 @@ impl Client {
     }
 
     fn flush(&mut self, write_budget: &mut usize) -> bool {
+        if !self.write_ready {
+            return true;
+        }
         let mut bytes_left = BYTES_PER_CLIENT;
         for _ in 0..IO_ATTEMPTS_PER_CLIENT {
             if self.outgoing.is_empty() || bytes_left == 0 || *write_budget == 0 {
@@ -364,10 +447,16 @@ impl Client {
                     bytes_left -= count;
                     *write_budget -= count;
                 }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.write_ready = false;
+                    break;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(_) => return false,
             }
+        }
+        if self.outgoing.is_empty() {
+            self.write_ready = false;
         }
         true
     }
@@ -522,6 +611,131 @@ mod tests {
             }
         }
         panic!("test read budget exceeded");
+    }
+
+    #[test]
+    fn buffered_frames_continue_without_additional_read_readiness() {
+        let temp = TempDir::new();
+        let mut server = Server::bind(&temp.0, "buffered").unwrap();
+        let (mut stream, id) = connect(&mut server);
+        assert!(!server.needs_continuation());
+        stream.write_all(&b"request\n".repeat(25)).unwrap();
+        server.mark_ready(id, true, false);
+        let first = server.poll_ready();
+        assert_eq!(first.len(), REQUESTS_PER_CLIENT);
+        let mut count = first.len();
+        for _ in 0..8 {
+            if !server.needs_continuation() {
+                break;
+            }
+            count += server.poll_ready().len();
+        }
+        assert_eq!(count, 25);
+        assert!(!server.needs_continuation());
+        // A queued reply after request dispatch is actionable even without another read.
+        server.reply(id, b"reply\n".to_vec());
+        assert!(server.needs_continuation());
+        server.poll_ready();
+        assert_eq!(available(&mut stream), b"reply\n");
+        assert!(!server.needs_continuation());
+    }
+
+    #[test]
+    fn write_eagain_waits_for_readiness_instead_of_continuing() {
+        let temp = TempDir::new();
+        let mut server = Server::bind(&temp.0, "blocked").unwrap();
+        let (mut stream, id) = connect(&mut server);
+        let frame: Vec<_> = (0..MAX_OUTGOING - 16)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        server.reply(id, frame.clone());
+        for _ in 0..128 {
+            server.poll_ready();
+            if !server.needs_continuation() {
+                break;
+            }
+        }
+        assert!(!server.needs_continuation());
+        let blocked = server.clients[0].outgoing.len();
+        assert!(blocked > 0, "must encounter real socket backpressure");
+        server.reply(id, b"tail\n".to_vec());
+        assert!(!server.needs_continuation());
+        assert!(
+            server
+                .interests()
+                .all(|(_, _, readable, writable)| readable && writable)
+        );
+        server.poll_ready();
+        assert_eq!(server.clients[0].outgoing.len(), blocked + 5);
+        let mut received = Vec::new();
+        for _ in 0..128 {
+            received.extend(available(&mut stream));
+            server.mark_ready(id, false, true);
+            server.poll_ready();
+            if received.len() == frame.len() + 5 {
+                break;
+            }
+        }
+        received.extend(available(&mut stream));
+        assert_eq!(&received[..frame.len()], frame);
+        assert_eq!(&received[frame.len()..], b"tail\n");
+        assert!(!server.needs_continuation());
+        assert!(
+            server
+                .interests()
+                .all(|(_, _, readable, writable)| readable && !writable)
+        );
+    }
+
+    #[test]
+    fn readiness_preserves_half_closed_replies_and_ignores_stale_ids() {
+        let temp = TempDir::new();
+        let mut server = Server::bind(&temp.0, "half-close").unwrap();
+        let (mut stream, id) = connect(&mut server);
+        stream.write_all(b"last\n").unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+        server.mark_ready(id, true, false);
+        assert_eq!(server.poll_ready(), vec![(id, b"last".to_vec())]);
+        assert!(
+            server
+                .interests()
+                .all(|(_, _, read, write)| !read && !write)
+        );
+        server.reply(id, b"final\n".to_vec());
+        assert!(server.interests().all(|(_, _, read, write)| !read && write));
+        server.poll_ready();
+        assert_eq!(available(&mut stream), b"final\n");
+        assert!(!server.is_connected(id));
+        server.mark_ready(id, true, true);
+        assert!(!server.needs_continuation());
+    }
+
+    #[test]
+    fn readiness_continuations_keep_global_budgets_and_competing_peers_fair() {
+        let temp = TempDir::new();
+        let mut server = Server::bind(&temp.0, "fair-ready").unwrap();
+        let mut streams = Vec::new();
+        for _ in 0..16 {
+            streams.push(connect(&mut server));
+        }
+        for (stream, id) in &mut streams {
+            stream.write_all(&b"request\n".repeat(24)).unwrap();
+            server.mark_ready(*id, true, false);
+        }
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..16 {
+            let requests = server.poll_ready();
+            assert!(requests.len() <= REQUESTS_PER_POLL);
+            for (id, _) in requests {
+                *counts.entry(id).or_insert(0) += 1;
+            }
+            if !server.needs_continuation() {
+                break;
+            }
+        }
+        assert_eq!(counts.len(), 16);
+        assert!(counts.values().all(|count| *count == 24));
+        assert!(!server.needs_continuation());
     }
 
     #[test]
