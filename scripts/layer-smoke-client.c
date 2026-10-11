@@ -20,6 +20,10 @@
 // remap NAME performs a fresh bufferless XDG handshake after unmap NAME.
 // title NAME TEXT changes the title (omitting TEXT clears it).
 // popup NAME PARENT X Y W H COLOR accepts layer or XDG toplevel parents.
+// callbacks NAME requests recurring frames without changing buffer/content state.
+// stop-frames NAME stops both pixel animation and callback-only requests.
+// empty-commit NAME applies pending synchronized child state without new pixels.
+// color/color-undamaged NAME HEX replaces the buffer, with/without damage.
 #define _GNU_SOURCE
 #include "server-decoration-client-protocol.h"
 #include "wlr-layer-shell-client-protocol.h"
@@ -53,7 +57,7 @@ struct view {
     int committed_w, committed_h, configure_w, configure_h, popup_x, popup_y;
     unsigned configure_count, commit_count;
     bool hold_commit;
-    bool animated, suspended, sharp_pattern;
+    bool animated, callbacks_only, suspended, sharp_pattern, skip_damage;
     unsigned frame_count;
     int outputs;
     struct wl_callback *frame;
@@ -118,11 +122,18 @@ static uint32_t premultiply(uint32_t color, uint32_t alpha) {
            ((color & 255) * alpha / 255);
 }
 static void draw(struct view *v);
+static void request_frame(struct view *v);
 static void frame_done(void *data, struct wl_callback *callback, uint32_t time) {
     (void)time;
     struct view *v = data;
     wl_callback_destroy(callback);
     v->frame = NULL;
+    if (v->callbacks_only && v->mapped && !v->suspended && v->outputs > 0) {
+        v->frame_count++;
+        request_frame(v);
+        wl_surface_commit(v->surface);
+        return;
+    }
     if (v->animated && v->mapped && !v->suspended && v->outputs > 0) {
         v->frame_count++;
         // Encode progress in the red channel for the GPU capture oracle.
@@ -131,6 +142,12 @@ static void frame_done(void *data, struct wl_callback *callback, uint32_t time) 
     }
 }
 static const struct wl_callback_listener frame_listener = {.done = frame_done};
+static void request_frame(struct view *v) {
+    if (!v->frame) {
+        v->frame = wl_surface_frame(v->surface);
+        wl_callback_add_listener(v->frame, &frame_listener, v);
+    }
+}
 static void draw(struct view *v) {
     int w = v->fixed ? v->requested_w : v->width;
     int h = v->fixed ? v->requested_h : v->height;
@@ -173,10 +190,11 @@ static void draw(struct view *v) {
     if (v->xdg)
         xdg_surface_set_window_geometry(v->xdg, v->offset, v->offset, w, h);
     wl_surface_attach(v->surface, buffer, 0, 0);
-    wl_surface_damage(v->surface, 0, 0, bw, bh);
+    if (!v->skip_damage)
+        wl_surface_damage(v->surface, 0, 0, bw, bh);
+    v->skip_damage = false;
     if (v->animated && !v->suspended && v->outputs > 0 && !v->frame) {
-        v->frame = wl_surface_frame(v->surface);
-        wl_callback_add_listener(v->frame, &frame_listener, v);
+        request_frame(v);
     }
     wl_surface_commit(v->surface);
     v->committed_fullscreen = v->fullscreen;
@@ -724,6 +742,28 @@ static void command(char *line) {
         if (!v->mapped || !v->configured)
             fail("animate requires mapped view");
         v->animated = true;
+        v->callbacks_only = false;
+        draw(v);
+    } else if (!strcmp(op, "callbacks") && sscanf(line, "%*s %31s", name) == 1) {
+        struct view *v = find(name);
+        if (!v->mapped || !v->configured)
+            fail("callbacks requires mapped view");
+        v->animated = false;
+        v->callbacks_only = true;
+        request_frame(v);
+        wl_surface_commit(v->surface);
+    } else if (!strcmp(op, "stop-frames") && sscanf(line, "%*s %31s", name) == 1) {
+        struct view *v = find(name);
+        v->animated = v->callbacks_only = false;
+    } else if (!strcmp(op, "empty-commit") && sscanf(line, "%*s %31s", name) == 1) {
+        wl_surface_commit(find(name)->surface);
+    } else if ((!strcmp(op, "color") || !strcmp(op, "color-undamaged")) &&
+               sscanf(line, "%*s %31s %x", name, &color) == 2) {
+        struct view *v = find(name);
+        if (!v->mapped || !v->configured)
+            fail("color requires mapped view");
+        v->color = color | 0xff000000;
+        v->skip_damage = !strcmp(op, "color-undamaged");
         draw(v);
     } else if (!strcmp(op, "alpha") &&
                sscanf(line, "%*s %31s %255s", name, alpha_text) == 2) {
@@ -738,7 +778,7 @@ static void command(char *line) {
         v->alpha = (uint32_t)alpha;
         v->hold_commit = false;
         draw(v);
-    } else if (!strcmp(op, "subsurface") &&
+    } else if ((!strcmp(op, "subsurface") || !strcmp(op, "subsurface-sync")) &&
                sscanf(line, "%*s %31s %31s %d %d %d %d %x", name, parent, &w,
                       &h, &x, &y, &color) == 7) {
         struct view *p = find(parent);
@@ -759,10 +799,11 @@ static void command(char *line) {
         v->subsurface = wl_subcompositor_get_subsurface(
             subcompositor, v->surface, p->surface);
         wl_subsurface_set_position(v->subsurface, x, y);
-        wl_subsurface_set_desync(v->subsurface);
+        if (!strcmp(op, "subsurface"))
+            wl_subsurface_set_desync(v->subsurface);
         draw(v);
         // Position is parent-commit state even for a desynchronized child.
-        // All fixture subsurface ancestors are also desynchronized.
+        // A synchronized child becomes effective at this parent commit.
         wl_surface_commit(p->surface);
     } else if ((!strcmp(op, "fullscreen") || !strcmp(op, "unfullscreen")) &&
                sscanf(line, "%*s %31s", name) == 1) {

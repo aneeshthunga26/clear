@@ -20,6 +20,7 @@ use std::{borrow::Cow, sync::Arc};
 pub(super) struct PointerFocus {
     pub surface: WlSurface,
     inverse_scale: Point<f64, Logical>,
+    origin: Point<f64, Logical>,
 }
 
 impl PointerFocus {
@@ -28,7 +29,20 @@ impl PointerFocus {
         Self {
             surface,
             inverse_scale: (1.0 / scale.x, 1.0 / scale.y).into(),
+            origin: (0.0, 0.0).into(),
         }
+    }
+
+    pub fn at_origin(mut self, origin: Point<f64, Logical>) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Presentation metadata is compared separately from Wayland focus identity.
+    pub fn same_presentation(&self, other: &Self) -> bool {
+        self.surface == other.surface
+            && self.origin == other.origin
+            && self.inverse_scale == other.inverse_scale
     }
 
     pub fn id(&self) -> ObjectId {

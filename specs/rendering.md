@@ -16,15 +16,62 @@ or claim host presentation feedback or the animation sampling rate. A long stall
 is included in the next reading. Disabling releases the texture and measurement;
 reenabling starts a fresh window.
 
+After 750 ms without nondiagnostic visual work, the HUD requests one frame to
+show `FPS: Idle`. Successful HUD-only submissions and callback-only deliveries
+MUST NOT restart that deadline. A new visual change resumes the normal reading
+and arms the next idle episode. With the HUD disabled, there is no diagnostic
+deadline. Quiet scenes with it enabled therefore have one additional submission
+per settled episode; the HUD MUST NOT sustain a render loop.
+
 A single 240×32 RGBA8 texture (30,720 bytes, excluding driver overhead and transient
 replacement allocation) is cached until the reading changes. Rasterization reuses
 prepared titlebar fonts, without per-frame filesystem access. The overlay draws
 once after backdrop filtering and overview composition; host bounds clip it on
 small framebuffers. It does not affect blur inputs or retained animation images.
 
-Evidence: [fps.rs](../src/platform/smithay/fps.rs) rate/stall/reset unit tests,
+Evidence: [fps.rs](../src/platform/smithay/fps.rs) rate/stall/reset and one-shot idle unit tests,
 `fps_setting_reloads_atomically` in [runtime tests](../tests/runtime.rs), and
 malformed-value coverage in [configuration tests](../tests/extensions.rs).
+
+## Incremental nested damage
+
+[Demand-driven scheduling](platform.md#demand-driven-scheduling) decides whether
+pixels need an opportunity. Ordinary unfiltered client updates then use Smithay's
+output damage tracker with the actual EGL window buffer age, queried after resize
+handling with that window surface/context current. Unknown age is zero. Submission
+uses the tracker’s repair damage, including damage needed by older backbuffers,
+with the pinned backend's single coordinate conversion.
+
+Initial rendering, exposure, resize, policy/reload changes, capture, uncertain
+replacement buffers without valid damage, active or unacknowledged terminal motion,
+blur and liquid glass MUST retain complete redraws. Filter dependency expansion
+and partial compositor-animation rendering are not implemented. Rounded bodies
+and selection shader elements retain conservative fresh identities/full clip damage.
+
+Immutable overview thumbnail bodies, labels and wallpaper roles have distinct
+identities per retained destination. Recomposition/reload changes identity;
+destination maps are pruned with their existing bounded owners. Sharing a texture
+MUST NOT merge the identities of a card, miniature, ghost or workspace canvas.
+Prepared window-image identity includes the effective committed tree revision,
+so buffer replacement without reported damage still refreshes cached previews.
+Titlebar and HUD cached texture replacements likewise change content identity.
+
+An empty damage result acknowledges only the serviced visual generation and
+delivers due callbacks. It MUST NOT count a submission, acknowledge animation
+poses, retire retained images or complete overview handoff. Outstanding terminal
+motion forces the submission path.
+
+For bounded GPU verification, `CLEAR_PARTIAL_FRAME_CAPTURE=PATH` writes the latest
+ordinary partial framebuffer before submission, at most 16 times per instance,
+without forcing full damage. A companion `PATH` with extension `uncertain.ppm`
+captures up to 16 uncertain-buffer recovery frames. It restores the host EGL
+target after each readback.
+This opt-in diagnostic changes frame cost and MUST NOT be used as a performance
+measurement. Normal capture retains its full-frame recovery behavior.
+
+Evidence: [backend](../src/platform/smithay/backend.rs),
+[render demand tests](../src/platform/smithay/render_demand.rs), and
+[idle/partial GPU fixture](../scripts/vm-idle-smoke.py).
 
 ## Theme
 

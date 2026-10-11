@@ -33,6 +33,7 @@ pub(super) const MAX_IMAGE_EDGE: i32 = 2048;
 pub(super) struct WindowImageIdentity {
     pub signature: Vec<(Id, CommitCounter)>,
     pub mappings: Vec<WindowImageMapping>,
+    pub effective_revision: u64,
     pub geometry_origin: (i32, i32),
     pub border_color: [f32; 4],
     pub source: Rect,
@@ -160,6 +161,7 @@ impl PreparedWindowImage {
             })
             .collect();
         let identity = WindowImageIdentity {
+            effective_revision: super::protocols::surface_visual_revision(top.wl_surface()),
             signature,
             mappings,
             geometry_origin: (geometry.loc.x, geometry.loc.y),
@@ -205,17 +207,17 @@ impl WindowImage {
         width as usize * height as usize * 4
     }
 
-    /// Scale the complete source, preserving fractional origin until pixel placement.
-    /// Smithay multiplies premultiplied RGB and alpha by the same opacity.
-    pub fn texture_element(
+    /// Reuse a destination identity only while this immutable image's content is unchanged.
+    pub fn texture_element_identified(
         &self,
+        id: Id,
         destination: Rectangle<f64, Logical>,
         alpha: f32,
     ) -> Option<TextureRenderElement<GlesTexture>> {
         let size = destination_size(destination, alpha)?;
         let (width, height) = self.size();
         Some(TextureRenderElement::from_static_texture(
-            Id::new(),
+            id,
             self.context_id.clone(),
             (destination.loc.x, destination.loc.y),
             self.texture.clone(),
@@ -238,8 +240,19 @@ impl WindowImage {
         alpha: f32,
         output_clip: Rect,
     ) -> Option<CropRenderElement<TextureRenderElement<GlesTexture>>> {
+        self.element_identified(Id::new(), destination, alpha, output_clip)
+    }
+
+    /// Crop a stable destination independently of other uses of the shared source image.
+    pub fn element_identified(
+        &self,
+        id: Id,
+        destination: Rectangle<f64, Logical>,
+        alpha: f32,
+        output_clip: Rect,
+    ) -> Option<CropRenderElement<TextureRenderElement<GlesTexture>>> {
         CropRenderElement::from_element(
-            self.texture_element(destination, alpha)?,
+            self.texture_element_identified(id, destination, alpha)?,
             1.0,
             logical(output_clip).to_physical_precise_round(1.0),
         )

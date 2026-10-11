@@ -320,7 +320,7 @@ mod tests {
             return;
         }
 
-        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
         let mut state = overview_input_fixture(&event_loop);
         let id = WindowId(1);
         let saved = Rect::new(31, 47, 280, 190);
@@ -334,6 +334,80 @@ mod tests {
             .command(Command::SetFullscreen(id, true));
         state.placements = state.runtime.placements();
         state.dirty = false;
+        state
+            .render_demand
+            .submitted(state.render_demand.generation());
+        state.motion((110.0, 85.0).into(), 1);
+        assert!(
+            !state.render_demand.visual_pending(),
+            "ordinary pointer forwarding does not repaint compositor pixels"
+        );
+        // Create a protocol surface through Smithay so focus leave has real
+        // compositor surface data. No buffers, GPU or physical input are involved.
+        use smithay::reexports::wayland_server::{
+            Resource,
+            protocol::{wl_compositor::WlCompositor, wl_surface::WlSurface},
+        };
+        use std::io::Write;
+        let (server_stream, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let client = state
+            .display_handle
+            .insert_client(
+                server_stream,
+                std::sync::Arc::new(super::super::state::ClientState::default()),
+            )
+            .unwrap();
+        let compositor = client
+            .create_resource::<WlCompositor, smithay::wayland::GlobalData, Compositor>(
+                &state.display_handle,
+                5,
+                smithay::wayland::GlobalData,
+            )
+            .unwrap();
+        for word in [compositor.id().protocol_id(), 12u32 << 16, 2] {
+            peer.write_all(&word.to_ne_bytes()).unwrap();
+        }
+        for _ in 0..4 {
+            event_loop
+                .dispatch(std::time::Duration::from_millis(1), &mut state)
+                .unwrap();
+            if client
+                .object_from_protocol_id::<WlSurface>(&state.display_handle, 2)
+                .is_ok()
+            {
+                break;
+            }
+        }
+        let surface: WlSurface = client
+            .object_from_protocol_id(&state.display_handle, 2)
+            .unwrap();
+        let pointer = state.seat.get_pointer().unwrap();
+        let focus = super::super::presentation_input::PointerFocus::new(surface, (1.0, 1.0).into())
+            .at_origin((0.0, 0.0).into());
+        let shifted = focus.clone().at_origin((1.0, 0.0).into());
+        assert_eq!(focus, shifted, "origin changes keep Wayland focus identity");
+        assert!(!focus.same_presentation(&shifted));
+        pointer.motion(
+            &mut state,
+            Some((focus.clone(), (0.0, 0.0).into())),
+            &MotionEvent {
+                location: (110.0, 85.0).into(),
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 1,
+            },
+        );
+        assert_eq!(pointer.current_focus(), Some(focus));
+        let generation = state.render_demand.generation();
+        assert!(
+            state.refresh_pointer_committed_focus(),
+            "an input-region miss clears stationary focus without waiting for paint"
+        );
+        assert!(pointer.current_focus().is_none());
+        assert_eq!(state.render_demand.generation(), generation);
+        assert!(
+            !state.refresh_pointer_committed_focus(),
+            "identical callback-only commits must not inject repeated motion"
+        );
         let original = state.runtime.desktop.window(id).unwrap().clone();
         let focused = state.runtime.desktop.focused_window();
         let output = state.runtime.desktop.focused_output();
@@ -1039,6 +1113,8 @@ impl Compositor {
             if matches!(action, Action::AltTab) {
                 self.runtime.advance_switcher();
                 self.dirty = true;
+                self.render_demand
+                    .invalidate(super::render_demand::Reason::Input);
                 self.reconcile();
             } else {
                 self.action(action);
@@ -1047,14 +1123,20 @@ impl Compositor {
         self.service_overview();
         if overview_changed {
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
         }
         if self.runtime.switcher.is_some() && !keyboard.modifier_state().alt {
             self.runtime.finish_switcher();
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
         } else if cancelled_switcher {
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
         }
         self.reconcile();
@@ -1077,6 +1159,8 @@ impl Compositor {
                 self.suppressed_buttons.remove(&button);
             }
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
             return;
         }
@@ -1158,6 +1242,8 @@ impl Compositor {
                 }
             }
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
             return;
         }
@@ -1175,6 +1261,8 @@ impl Compositor {
                 }
             }
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
             return;
         }
@@ -1226,6 +1314,8 @@ impl Compositor {
                 };
                 self.begin_drag(id, position, edges, button);
                 self.dirty = true;
+                self.render_demand
+                    .invalidate(super::render_demand::Reason::Input);
                 self.reconcile();
                 return;
             }
@@ -1243,6 +1333,8 @@ impl Compositor {
                         }
                     }
                     self.dirty = true;
+                    self.render_demand
+                        .invalidate(super::render_demand::Reason::Input);
                     self.reconcile();
                     return;
                 }
@@ -1250,10 +1342,14 @@ impl Compositor {
                     self.layer_focus = None;
                     self.runtime.desktop.command(Command::Focus(id));
                     self.dirty = true;
+                    self.render_demand
+                        .invalidate(super::render_demand::Reason::Input);
                 }
                 None => {
                     self.layer_focus = None;
                     self.dirty = true;
+                    self.render_demand
+                        .invalidate(super::render_demand::Reason::Input);
                     if let Some(region) = self
                         .outputs
                         .iter()
@@ -1263,6 +1359,8 @@ impl Compositor {
                             .desktop
                             .command(Command::FocusOutput(region.id));
                         self.dirty = true;
+                        self.render_demand
+                            .invalidate(super::render_demand::Reason::Input);
                     }
                 }
             }
@@ -1325,6 +1423,8 @@ impl Compositor {
                             );
                         }
                         self.dirty = true;
+                        self.render_demand
+                            .invalidate(super::render_demand::Reason::Input);
                         self.reconcile();
                     }
                     return;
@@ -1395,6 +1495,8 @@ impl Compositor {
             self.overview_press = None;
             self.take_overview_drag();
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
         }
     }
 
@@ -1464,8 +1566,15 @@ impl Compositor {
                     None
                 };
                 self.dirty = true;
+                self.render_demand
+                    .invalidate(super::render_demand::Reason::Input);
             } else if self.overview_press.is_none()
                 && let Some(target) = target
+                && self
+                    .runtime
+                    .overview
+                    .as_ref()
+                    .is_some_and(|session| session.selected != target)
                 && (matches!(target, OverviewTarget::Window(_))
                     || self.runtime.config.overview.preview_workspace_on_hover)
             {
@@ -1473,6 +1582,8 @@ impl Compositor {
                     session.select(&self.runtime.desktop, target);
                 }
                 self.dirty = true;
+                self.render_demand
+                    .invalidate(super::render_demand::Reason::Input);
             }
         }
         if let Some((id, origin)) = self.titlebar_drag
@@ -1515,6 +1626,8 @@ impl Compositor {
                     .command(Command::SetFloatingRect(id, rect));
             }
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
             self.reconcile();
         }
         let pointer = self.seat.get_pointer().expect("pointer initialized");
@@ -1595,6 +1708,8 @@ impl Compositor {
             button,
         });
         self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Input);
     }
 
     pub fn end_drag(&mut self) {
@@ -1611,6 +1726,8 @@ impl Compositor {
                 top.send_pending_configure();
             }
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
         }
     }
 }

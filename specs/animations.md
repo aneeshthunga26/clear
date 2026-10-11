@@ -294,8 +294,12 @@ motion rather than letting policy/input geometry compete with a retained image.
 Overview owns its card scene throughout opening/closing. Global disable and reduced
 motion release the ordinary animation cache and render final policy state on the
 next host redraw. Re-enabling an unchanged policy snapshot MUST NOT replay old
-operations. The backend continues requesting host redraws for client/layer content
-and exposure; animation completion does not suppress a required terminal redraw.
+operations. The backend requests host redraws while motion or a required terminal
+pose remains unsubmitted, and for independent visual changes/exposure. Callback-only work does
+not acknowledge animation poses. A finished transform waiting for an actual client
+commit retains its displayed image without continuing redraws; the effective commit
+wakes rendering. Closing overview acknowledgement may invalidate an additional
+ordinary scene handoff frame. See [platform scheduling](platform.md#demand-driven-scheduling).
 
 ## Reload
 

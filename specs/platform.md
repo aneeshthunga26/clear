@@ -45,7 +45,8 @@ compositor may allocate additional internal buffers, so this does not guarantee
 an exact two-buffer physical swapchain or a particular delivered frame rate.
 
 Each redraw captures one monotonic timestamp relative to compositor startup.
-Client frame callbacks share that timestamp. [Animation sampling](animations.md)
+Client frame callbacks use an independent monotonic delivery timestamp.
+[Animation sampling](animations.md)
 has a separate captured timestamp: fixed caps select host opportunities nearest
 absolute 30/60/120 Hz deadlines and hold that timestamp between samples, while
 refresh-rate sampling selects every redraw. Missed deadlines MUST be skipped,
@@ -68,14 +69,75 @@ times are redraw times, not predicted or confirmed presentation times. Monitor
 metadata is not a guarantee about host presentation. Interval-1 initialization
 and CPU scheduling tests alone do not establish physical synchronization.
 
-Continuous host redraw requests remain in place to preserve client/layer callback
-opportunities, overview preview throttling, captures, and content updates. The
-scheduler adds no animation timer or separate wakeup loop. It does not implement
-damage-driven idle scheduling or suspension handling. The event loop's 16 ms
-timeout remains for maintenance and bounded shutdown; it is not an animation
-sampling timer or a requested frame-rate ceiling. A scheduled capture still
-depends on a drawable host redraw opportunity; an occluded/suspended host can
-delay it. Explicit invalidation and capture timers are future work.
+## Demand-driven scheduling
+
+Clear MUST request host redraws only for visual invalidation, active compositor
+motion including an unsubmitted terminal pose, or host exposure. Visual generations
+are independent of policy dirty/reconciliation state. A successful submission
+acknowledges only the generation actually composed; later invalidation MUST survive.
+At most one Clear-requested host redraw is pending. Active motion continues using
+host opportunities and the sampling rules above. Completing motion MUST stop new
+requests once the final pose and any overview-to-desktop handoff are submitted.
+An unchanged scene with no eligible callbacks or deadlines sleeps indefinitely.
+
+Eligible committed frame callbacks MUST continue advancing without rebuilding or
+submitting identical pixels. Callback-only delivery uses absolute deadlines based
+on advertised host refresh, skipping missed opportunities without catch-up bursts.
+It does not count as a rendered frame, acknowledge animation poses, retire GPU
+images or claim presentation feedback. Visual demand delivers callbacks after a
+successful submission instead; an overdue callback timer MUST NOT spin while a
+host draw is pending. Overview retains its existing bounded/throttled eligibility.
+
+Protocol commits/lifecycle changes, compositor input/policy changes, reload and
+host exposure wake demand through a coalesced Calloop ping. Callback-only commits
+with unchanged effective visual state wake callback scheduling without repainting.
+When the compositor owns pointer routing, committed input-region-only changes
+MUST refresh stationary pointer ownership from last-submitted presentation
+geometry without requesting pixels. This refresh sends
+motion/frame only if surface identity, origin or inverse scale changed; repeated
+unchanged callbacks MUST NOT inject identical pointer motion. Submitted animation
+frames retain their unconditional pointer-coordinate refresh.
+New buffer assignment or an unknown change is conservatively visual. Animation
+startup uses current monotonic time, including after a long idle period.
+
+The event loop has one cancellable earliest-deadline timer for callbacks,
+[diagnostic idle indication](rendering.md#fps-overlay), capture, bounded shutdown
+and maintenance. Shell transport uses readiness as specified by [shell](shell.md).
+Children are reaped at one-second maintenance deadlines only while children exist;
+advisory targets schedule their nearest expiry. A blocked Wayland output flush
+uses a bounded 16 ms retry only while a per-client backend flush reports
+`WouldBlock`; the pin's bulk flush discards those errors.
+There is no blanket 16 ms maintenance timeout.
+
+Capture forces a full current frame at its own deadline and retains demand until
+a drawable host opportunity. Bounded shutdown is independent of successful
+rendering. Host suspension/occlusion is not exposed by the pin, so capture can still
+be delayed by missing drawable opportunities; host focus loss does not imply
+occlusion. Ordinary unfiltered client frames use actual current-window EGL buffer
+age and the damage tracker's returned backbuffer repair rectangles for submission.
+Unknown age, new buffer content without valid reported damage, initial draw,
+exposure, resize, capture, policy/reload changes, active
+compositor motion and enabled blur/glass force a complete redraw. The adapter MUST
+resize before making the window current and querying age; an offscreen target or
+stale EGL surface MUST NOT supply buffer age. Resize replaces damage history.
+Damage-free scenes MAY acknowledge their visual generation without swapping,
+counting FPS or acknowledging an animation pose. Active motion and terminal poses
+are forced complete frames so their submission acknowledgement cannot be skipped.
+[Rendering](rendering.md) owns generated element identities and content versions.
+
+When `CLEAR_RENDER_STATS=1` is present, shutdown emits one bounded JSON summary
+with redraw requests/events, successful submissions, callback-only deliveries,
+diagnostic frames, serviced loop turns, scene-work submissions, the last scene-work
+submission time, full/partial frames and damage-free skipped draws. Scene-work
+counters include compositor motion and Commit/UncertainCommit/Policy/Input/Metadata/Lifecycle
+reasons, excluding forced exposure, capture and diagnostic-only draws. The counters are test diagnostics,
+not physical presentation measurements; no per-frame log or publication is emitted.
+
+[Rendering](rendering.md#incremental-nested-damage) owns the bounded
+`CLEAR_PARTIAL_FRAME_CAPTURE=PATH` diagnostic, including uncertain-buffer recovery
+readbacks. Shutdown statistics include `partial_captures`, `uncertain_frames` and
+the last uncertain submission time. Readback/fence costs perturb these frames;
+they MUST NOT be treated as an active-frame performance benchmark.
 
 ## XDG window lifecycle and configures
 
@@ -202,14 +264,14 @@ it. Popup/layer geometry is not subjected to application body rounding.
 ## Current limitations
 
 Native DRM/KMS, physical monitor hotplug, XWayland, fractional scaling, IME,
-visual animation effects, full cursor-surface handling, and activation policy
+full cursor-surface handling, and activation policy
 are not implemented. Group editing exposes stretch-all and split, not arbitrary
 output subsets. Toplevel listing/capture protocols for live shell thumbnails are
 not exposed. Layer and popup support is intentionally limited to the implemented
 adapter paths; this is not a promise of every desktop protocol.
 
-The backend currently repaints continuously with buffer age zero, with the timing
-limitations described above. Rounded/blur coordinates assume one scale-1
+The backend uses demand and damage tracking with conservative complete-frame
+fallbacks and the timing limitations described above. Rounded/blur coordinates assume one scale-1
 framebuffer; a future native/scaled backend cannot
 reuse those assumptions without adaptation. Physical keyboard/pointer behavior
 is not established merely by CPU tests or protocol/capture fixtures.
@@ -222,7 +284,11 @@ is not established merely by CPU tests or protocol/capture fixtures.
   `missed_frames_do_not_replay_or_lower_the_target`,
   `callbacks_can_redraw_between_animation_samples`,
   `source_and_config_changes_reset_phase_without_stale_samples`,
-  `redraw_requests_coalesce_until_the_host_opportunity`),
+  `redraw_requests_coalesce_until_the_host_opportunity`,
+  `callback_deadlines_skip_late_ticks_without_immediate_reentry`),
+  [visual generation bookkeeping](../src/platform/smithay/render_demand.rs)
+  (`later_invalidation_survives_submission_of_earlier_scene`,
+  `diagnostic_work_does_not_restart_visual_activity`),
   [protocols](../src/platform/smithay/protocols.rs),
   [layers](../src/platform/smithay/layers.rs),
   [scene and clip tests](../src/platform/smithay/scene.rs).

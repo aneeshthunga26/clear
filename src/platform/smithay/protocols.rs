@@ -5,7 +5,10 @@ use super::{
 };
 use crate::core::{Command, OutputId, WindowId};
 use smithay::{
-    backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state},
+    backend::renderer::utils::{
+        CommitCounter, RendererSurfaceStateUserData, SurfaceView, on_commit_buffer_handler,
+        with_renderer_surface_state,
+    },
     desktop::{
         PopupKeyboardGrab, PopupKind, PopupPointerGrab, Window, find_popup_root_surface,
         get_popup_toplevel_coords,
@@ -19,15 +22,17 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             Client, Resource,
+            backend::ObjectId,
             protocol::{wl_buffer, wl_output::WlOutput, wl_seat, wl_surface::WlSurface},
         },
     },
-    utils::Serial,
+    utils::{Logical, Point, Rectangle, Serial, Size},
     wayland::{
         buffer::BufferHandler,
         compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface, with_states,
+            BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
+            RectangleKind, SubsurfaceCachedState, SurfaceAttributes, TraversalAction, get_parent,
+            is_sync_subsurface, with_states, with_surface_tree_upward,
         },
         output::OutputHandler,
         selection::{
@@ -36,13 +41,238 @@ use smithay::{
                 DataDeviceHandler, DataDeviceState, WaylandDndGrabHandler, set_data_device_focus,
             },
         },
+        shell::wlr_layer::{Anchor, ExclusiveZone, KeyboardInteractivity, Layer},
         shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
+            PopupState, PopupSurface, PositionerState, SurfaceCachedState, ToplevelSurface,
+            XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
         },
         shm::{ShmHandler, ShmState},
     },
 };
+
+/// Only effective pixel state is remembered; callback/input-region changes are excluded.
+#[derive(Default)]
+struct CommittedVisual(std::sync::Mutex<CommittedVisualState>);
+
+#[derive(Default)]
+struct CommittedVisualState {
+    fingerprint: Option<TreeVisual>,
+    revision: u64,
+}
+
+/// A committed tree's appearance revision also changes for attachments with no reported damage.
+pub(super) fn surface_visual_revision(surface: &WlSurface) -> u64 {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<CommittedVisual>()
+            .map_or(0, |visual| visual.0.lock().unwrap().revision)
+    })
+}
+
+#[derive(PartialEq)]
+struct TreeVisual {
+    surfaces: Vec<SurfaceVisual>,
+    geometry: Option<Rectangle<i32, Logical>>,
+    decoration: Option<(bool, bool)>,
+    layer: Option<LayerVisual>,
+    popup: Option<PopupState>,
+}
+
+#[derive(PartialEq)]
+struct SurfaceVisual {
+    id: ObjectId,
+    buffer: Option<ObjectId>,
+    damage: Option<CommitCounter>,
+    view: Option<SurfaceView>,
+    location: Point<i32, Logical>,
+    scale: i32,
+    transform: smithay::reexports::wayland_server::protocol::wl_output::Transform,
+    opaque: Vec<(bool, Rectangle<i32, Logical>)>,
+}
+
+#[derive(PartialEq)]
+struct LayerVisual {
+    size: Size<i32, Logical>,
+    anchor: Anchor,
+    zone: ExclusiveZone,
+    edge: Option<Anchor>,
+    margin: (i32, i32, i32, i32),
+    keyboard: KeyboardInteractivity,
+    layer: Layer,
+}
+
+struct AssignedBuffer {
+    surface: WlSurface,
+    damage: CommitCounter,
+}
+
+fn tree_buffer_assignments(surface: &WlSurface) -> (bool, Vec<AssignedBuffer>) {
+    let mut assigned = false;
+    let mut buffers = Vec::new();
+    with_surface_tree_upward(
+        surface,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |surface, states, _| {
+            let (has_assignment, new_buffer) = {
+                let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                match &attrs.current().buffer {
+                    Some(BufferAssignment::NewBuffer(_)) => (true, true),
+                    Some(BufferAssignment::Removed) => (true, false),
+                    None => (false, false),
+                }
+            };
+            assigned |= has_assignment;
+            if new_buffer {
+                let damage = states
+                    .data_map
+                    .get::<RendererSurfaceStateUserData>()
+                    .map_or_else(CommitCounter::default, |data| {
+                        data.lock().unwrap().current_commit()
+                    });
+                buffers.push(AssignedBuffer {
+                    surface: surface.clone(),
+                    damage,
+                });
+            }
+        },
+        |_, _, _| true,
+    );
+    (assigned, buffers)
+}
+
+fn assigned_buffer_damage_uncertain(buffers: &[AssignedBuffer]) -> bool {
+    buffers.iter().any(|assignment| {
+        // For an accepted buffer, Smithay advances this counter only for nonempty
+        // damage after viewport conversion and clipping. Failed-buffer resets also
+        // advance it, so those remain uncertain. An undamaged attachment clears the
+        // import texture without advancing the damage counter.
+        with_renderer_surface_state(&assignment.surface, |state| {
+            state.buffer().is_none() || state.current_commit() == assignment.damage
+        })
+        .unwrap_or(true)
+    })
+}
+
+impl Compositor {
+    fn surface_tree_visual(&self, root: &WlSurface) -> TreeVisual {
+        let mut surfaces = Vec::new();
+        with_surface_tree_upward(
+            root,
+            (),
+            |_, _, _| TraversalAction::DoChildren(()),
+            |surface, states, _| {
+                // Tree traversal already owns the compositor surface lock.
+                // Calling with_renderer_surface_state here would lock it recursively.
+                let renderer = states
+                    .data_map
+                    .get::<RendererSurfaceStateUserData>()
+                    .map(|data| {
+                        let state = data.lock().unwrap();
+                        (
+                            state.buffer().map(|buffer| buffer.id()),
+                            state.current_commit(),
+                            state.view(),
+                        )
+                    });
+                let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                let attrs = attrs.current();
+                surfaces.push(SurfaceVisual {
+                    id: surface.id(),
+                    buffer: renderer.as_ref().and_then(|r| r.0.clone()),
+                    damage: renderer.as_ref().map(|r| r.1),
+                    view: renderer.and_then(|r| r.2),
+                    location: states
+                        .cached_state
+                        .get::<SubsurfaceCachedState>()
+                        .current()
+                        .location,
+                    scale: attrs.buffer_scale,
+                    transform: attrs.buffer_transform,
+                    opaque: attrs
+                        .opaque_region
+                        .as_ref()
+                        .map_or_else(Vec::new, |region| {
+                            region
+                                .rects
+                                .iter()
+                                .map(|(kind, rect)| (matches!(kind, RectangleKind::Add), *rect))
+                                .collect()
+                        }),
+                });
+            },
+            |_, _, _| true,
+        );
+        let geometry = with_states(root, |states| {
+            states
+                .cached_state
+                .get::<SurfaceCachedState>()
+                .current()
+                .geometry
+        });
+        let decoration = self
+            .window_id(root)
+            .and_then(|id| self.windows.get(&id))
+            .map(|entry| (entry.uses_ssd(), entry.committed_fullscreen));
+        let layer = self
+            .layers
+            .iter()
+            .find(|entry| entry.surface.wl_surface() == root)
+            .map(|entry| {
+                let state = entry.surface.cached_state();
+                LayerVisual {
+                    size: state.size,
+                    anchor: state.anchor,
+                    zone: state.exclusive_zone,
+                    edge: state.exclusive_edge,
+                    margin: (
+                        state.margin.top,
+                        state.margin.right,
+                        state.margin.bottom,
+                        state.margin.left,
+                    ),
+                    keyboard: state.keyboard_interactivity,
+                    layer: state.layer,
+                }
+            });
+        let popup = self.popups.find_popup(root).and_then(|popup| match popup {
+            PopupKind::Xdg(popup) => popup.with_committed_state(|state| state.copied()),
+            _ => None,
+        });
+        TreeVisual {
+            surfaces,
+            geometry,
+            decoration,
+            layer,
+            popup,
+        }
+    }
+
+    fn surface_contributes_pixels(&self, root: &WlSurface) -> bool {
+        if let Some(id) = self.window_id(root) {
+            return self
+                .placements
+                .iter()
+                .any(|placement| placement.window == id)
+                || self.overview_live_windows().contains(&id);
+        }
+        if self
+            .layers
+            .iter()
+            .any(|entry| entry.surface.wl_surface() == root)
+        {
+            return true; // An effective null-buffer commit erases its old mapped tree.
+        }
+        if let Some(popup) = self.popups.find_popup(root)
+            && let Ok(owner) = find_popup_root_surface(&popup)
+        {
+            return self.surface_contributes_pixels(&owner);
+        }
+        // Unsupported trees have no scene ownership; later mapping invalidates policy.
+        false
+    }
+}
 
 impl CompositorHandler for Compositor {
     fn compositor_state(&mut self) -> &mut CompositorState {
@@ -55,7 +285,21 @@ impl CompositorHandler for Compositor {
             .compositor_state
     }
     fn commit(&mut self, surface: &WlSurface) {
+        let was_dirty = self.dirty;
+        let effective = !is_sync_subsurface(surface);
+        let mut tree_root = surface.clone();
+        while let Some(parent) = get_parent(&tree_root) {
+            tree_root = parent;
+        }
+        // Applied synchronized child updates are inspected with their parent's tree;
+        // cached child commits must neither paint nor service unapplied callbacks.
+        let (assigned_buffer, new_buffers) = if effective {
+            tree_buffer_assignments(&tree_root)
+        } else {
+            (false, Vec::new())
+        };
         on_commit_buffer_handler::<Self>(surface);
+        let uncertain_damage = assigned_buffer_damage_uncertain(&new_buffers);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -164,7 +408,52 @@ impl CompositorHandler for Compositor {
             }
         }
         self.layer_commit(surface);
+        self.dirty = was_dirty;
+        if effective {
+            let visual = self.surface_tree_visual(&tree_root);
+            let changed = with_states(&tree_root, |states| {
+                states
+                    .data_map
+                    .insert_if_missing_threadsafe(CommittedVisual::default);
+                let mut previous = states
+                    .data_map
+                    .get::<CommittedVisual>()
+                    .unwrap()
+                    .0
+                    .lock()
+                    .unwrap();
+                let changed = assigned_buffer || previous.fingerprint.as_ref() != Some(&visual);
+                if changed {
+                    previous.revision = previous
+                        .revision
+                        .checked_add(1)
+                        .expect("committed visual revision exhausted");
+                }
+                previous.fingerprint = Some(visual);
+                changed
+            });
+            self.dirty |= changed;
+            if changed && self.surface_contributes_pixels(&tree_root) {
+                self.render_demand.invalidate(if uncertain_damage {
+                    super::render_demand::Reason::UncertainCommit
+                } else {
+                    super::render_demand::Reason::Commit
+                });
+            } else {
+                if !changed {
+                    self.refresh_pointer_committed_focus();
+                }
+                self.render_demand.wake();
+            }
+        }
+    }
+
+    fn destroyed(&mut self, _: &WlSurface) {
+        // Child and popup deletion can erase pixels without another parent commit.
+        // The protocol teardown order on disconnect is unspecified.
         self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Lifecycle);
     }
 }
 impl BufferHandler for Compositor {
@@ -252,6 +541,8 @@ impl XdgShellHandler for Compositor {
             }
             self.runtime.desktop.remove_window(id);
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Lifecycle);
             eprintln!("clear: destroyed window {}", id.0);
         }
     }
@@ -260,6 +551,11 @@ impl XdgShellHandler for Compositor {
     }
     fn title_changed(&mut self, surface: ToplevelSurface) {
         self.metadata_changed(surface.wl_surface());
+    }
+    fn popup_destroyed(&mut self, _: PopupSurface) {
+        self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Lifecycle);
     }
     fn new_popup(&mut self, surface: PopupSurface, _: PositionerState) {
         self.unconstrain_popup(&surface);
@@ -329,6 +625,8 @@ impl XdgShellHandler for Compositor {
                 .desktop
                 .command(Command::SetMinimized(id, true));
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Policy);
             self.reconcile();
         }
     }
@@ -425,6 +723,8 @@ impl Compositor {
                     .command(Command::SetFullscreen(id, fullscreen));
             }
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Policy);
             self.reconcile();
             surface.send_configure();
         } else {
@@ -446,6 +746,8 @@ impl Compositor {
                 .desktop
                 .command(Command::SetMaximized(id, maximized));
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Policy);
             self.reconcile();
             // XDG requires a configure response even when the requested state is unchanged.
             surface.send_configure();
@@ -465,6 +767,8 @@ impl Compositor {
                 .update_window_metadata(id, title, app_id.clone());
             self.runtime.classify_window(id, &app_id);
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Metadata);
         }
     }
     fn client_drag(

@@ -140,6 +140,11 @@ Prefer an isolated VM for compositor integration tests:
   real-client policy/configure and intermediate GPU checks for all eight effects,
   restore, overview exit/wallpaper scaling, fading blur coverage and held fullscreen
   buffers. No physical input or delivered presentation cadence is measured.
+- `python3 -B scripts/vm-idle-smoke.py --binary target/debug/clear`: bounded
+  submission/callback counters, quiet-loop behavior, idle IPC/lifecycle wakeups,
+  HUD settlement, and partial/recovery pixel readbacks. The `partial-damage` case
+  needs EGL buffer-age support; diagnostic readbacks are not a performance run.
+  No physical input or actual presentation timing is measured.
 - `python3 -B scripts/vm-rounded-smoke.py --binary target/debug/clear`: GPU checks
   for configurable rounded outlines, transparency, subsurfaces, geometry offsets,
   and unchanged layer/popup shapes.

@@ -12,8 +12,9 @@ Notifications and tray services remain outside the compositor. The optional
 When enabled and successfully bound, the endpoint is
 `XDG_RUNTIME_DIR/clear-<WAYLAND_DISPLAY>/shell.sock`. The actual absolute path is
 reported at startup and exported as `CLEAR_SOCKET` to children. Each instance uses
-its own endpoint. `--no-shell-ipc` disables it; binding failure warns and leaves
-the compositor running. An unavailable bridge MUST NOT leak an inherited
+its own endpoint. `--no-shell-ipc` disables it; binding or readiness-registration
+failure warns and leaves the compositor running with the bridge disabled.
+An unavailable bridge MUST NOT leak an inherited
 `CLEAR_SOCKET` into spawned clients.
 
 The runtime directory MUST be absolute, nonsymlinked, owned by the effective user,
@@ -201,17 +202,23 @@ replays reports across disconnection. No shell process is required for fallback.
 
 ## Transport bounds
 
-The nonblocking server is polled from the compositor event loop. It MUST NOT
-perform shell work in the renderer or create an unbounded background queue.
+The nonblocking transport exposes live listener/stream descriptors and opaque
+connection identities to the adapter. The adapter registers listener/read
+readiness and writable readiness only while that peer has queued output. It
+removes disconnected registrations and read interest after a peer write-half
+closes. Descriptor-number reuse MUST NOT apply an old readiness event to a new
+connection. Transport IO, framing and budgets remain backend-independent; shell
+work MUST NOT run in the renderer or create an unbounded background queue.
 
-The transport also exposes borrowed listener/stream descriptors, opaque live
-connection identities and readiness-driven dispatch. Such callers MUST preserve
-peer rotation and the budgets below, retain actionable budget exhaustion and
-complete buffered requests, and wait for new readiness after EAGAIN. Writable
-interest is needed only while output is queued; stale identities cannot target
-reused descriptors. The existing polling entry point remains available.
-The advisory target store exposes its earliest retained expiry without expiring
-records; the caller owns maintenance scheduling.
+A signalled direction is drained within the budgets below. Reaching a work budget
+retains actionable demand; complete buffered requests and newly queued replies
+or publications schedule one coalesced next-turn continuation, even if no further
+socket read event occurs. An EAGAIN clears that direction's actionable demand and
+waits for kernel readiness; appending output to an already blocked queue MUST NOT
+create a retry loop. Peer rotation still applies to readiness-driven dispatch,
+including competing busy peers. Read-only requests and advisory icon reports wake
+transport processing without invalidating unchanged pixels. Lease expiry uses the
+nearest live registration deadline; an empty advisory store needs no expiry timer.
 
 | Resource/work | Limit |
 | --- | --- |
@@ -278,9 +285,11 @@ another shell.
 
 - [Model, validation, serialization](../src/shell/mod.rs),
   [transport and inline tests](../src/shell/server.rs),
-  [adapter polling/reconciliation](../src/platform/smithay/shell.rs). Readiness
-  transport tests additionally cover buffered continuations, budget fairness,
-  write backpressure, half-close interests and stale connection identities.
+  [adapter dispatch/reconciliation](../src/platform/smithay/shell.rs),
+  [readiness registrations](../src/platform/smithay/shell_readiness.rs). Transport
+  inline tests cover already-buffered request continuations, global-budget
+  fairness, real socket write backpressure without immediate retry, queued replies,
+  half-close interest changes and stale connection identities.
 - [Hint store and inline tests](../src/shell/animation_targets.rs): strict
   selectors, connection/process ownership, atomic rejection, local/global clips,
   exact-window precedence, expiry, lifecycle pruning and provider limits.

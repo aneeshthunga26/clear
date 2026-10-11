@@ -3,7 +3,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
-    time::Instant,
 };
 
 use super::{
@@ -281,9 +280,18 @@ fn frame_matches(
 }
 
 impl Compositor {
+    /// Whether motion or an unacknowledged current terminal pose requires another submit.
+    pub fn has_animation_demand(&self) -> bool {
+        let now = self.animation_mutation_time();
+        self.window_animations
+            .planner
+            .is_animating(now, &self.runtime.animations)
+            || self.overview_animation_needs_render(now)
+            || self.overview_drag_needs_render(now)
+    }
     /// Reconcile full normal-window policy once, after placements and shell targets are refreshed.
     pub fn reconcile_window_animations(&mut self) {
-        let now = self.runtime.animation_time_at(Instant::now());
+        let now = self.animation_mutation_time();
         let snapshot = self.window_animation_snapshot();
         let enabled = self.runtime.config.animations.enabled
             && !self.runtime.config.animations.reduced_motion;

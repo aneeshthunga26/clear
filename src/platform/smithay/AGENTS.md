@@ -5,21 +5,30 @@ only directory allowed to depend on Smithay and Wayland types.
 
 ## File ownership
 
-- `mod.rs`: adapter wiring and protocol delegation, including the XDG decoration
-  destruction notification absent from the pinned Smithay handler.
+- `mod.rs`: adapter wiring, one cancellable earliest-deadline timer, and protocol
+  delegation, including the XDG decoration destruction notification absent from
+  the pinned Smithay handler.
 - `state.rs`: compositor resources, managed client handles, output regions,
   effect execution, and runtime bridge.
 - `backend.rs`: nested winit lifecycle, virtual outputs, rendering loop, bounded
-  shutdown, and framebuffer capture. Insert tile-zoom overview beneath revealed
-  shell trees before backdrop filtering so their blur samples the live preview.
+  shutdown, and framebuffer capture. Read buffer age from the current window
+  target before offscreen work; submit actual repair damage once. Keep motion,
+  uncertain commits and filtered scenes on complete frames. Empty damage must not
+  acknowledge animation poses or retained-image cleanup. Insert tile-zoom overview
+  beneath revealed shell trees before backdrop filtering so their blur samples the live preview.
   Skip ordinary scene preparation only after a complete overview backing exists,
   retaining renderer cache housekeeping. Filter only scenes with masked trees.
 - `fps.rs`: optional submitted-frame diagnostics with a single cached texture,
-  drawn after filtering/overview. Measure successful submission intervals without
-  affecting pacing; [rendering](../../../specs/rendering.md#fps-overlay) owns semantics.
+  drawn after filtering/overview, with one idle indication per quiet episode.
+  Measure successful submission intervals without affecting pacing;
+  [rendering](../../../specs/rendering.md#fps-overlay) owns semantics.
+- `render_demand.rs`: visual generations/reasons independent of policy dirtiness;
+  acknowledge only the generation actually submitted. Wake callback/maintenance
+  work without forcing pixels.
 - `frame_scheduler.rs`: coalesced host redraw requests, monotonic frame capture,
-  absolute capped animation sampling, and explicitly identified host metadata or
-  nominal timing. Keep animation sampling separate from client callback pacing.
+  absolute capped animation sampling, explicit callback-only deadlines, and
+  identified host metadata or nominal timing. Keep animation sampling separate
+  from client callback pacing.
 - `protocols.rs`: XDG surface lifecycle, metadata, popups, seat/selection handling,
   and client move/resize requests.
 - `decorations.rs`: XDG/KDE negotiation and committed-versus-pending SSD mode.
@@ -55,6 +64,8 @@ only directory allowed to depend on Smithay and Wayland types.
   preserving Wayland surface identity, popup focus and client grab ownership.
   Resolve through last submitted animation geometry; inverse-map body, SSD,
   popup and DnD coordinates before client input-region checks.
+  Compare presentation metadata separately from surface identity when refreshing
+  stationary focus after a nonpainting commit.
 - `window_image.rs`: shared committed GPU body/SSD/border/mask composition for
   previews and owned snapshots. One backend composer owns scratch; callers own
   bounded retained textures. Mask directly into owned native-size results; retain
@@ -67,6 +78,9 @@ only directory allowed to depend on Smithay and Wayland types.
   mapping/geometry changes and prune registrations on disconnect/unmap/expiry.
   Hint requests do not reconcile desktop policy; animation snapshots consume
   live target/fallback helpers for minimize motion. See [shell](../../../specs/shell.md#advisory-panel-icon-targets).
+- `shell_readiness.rs`: Calloop listener/live-stream registration, queued-only
+  writable interests, and coalesced buffered-work continuations. Unix transport
+  remains in `src/shell/`.
 - `animations.rs`: bridge complete normal-window snapshots to the runtime planner;
   capture committed images before lifecycle loss, enforce image ownership/bounds,
   and retire only sources acknowledged by successful submission.
@@ -239,8 +253,8 @@ only directory allowed to depend on Smithay and Wayland types.
 - Alt-Tab is selected in runtime and committed on physical Alt release; Escape
   cancels. Keep keyboard ownership and final focus in the compositor.
 - Shell state is published after reconciliation, using a dirty flag and snapshot
-  comparison rather than running scripts or serializing from the renderer. Poll
-  the nonblocking transport each event-loop turn to flush replies. Export this
+  comparison rather than running scripts or serializing from the renderer. Service
+  transport readiness and bounded buffered continuations to flush replies. Export this
   instance's `CLEAR_SOCKET` to children, removing inherited values if disabled.
   Optional IPC bind failures must not prevent compositor startup.
 - Framebuffer texture mapping can change the EGL target. Preserve the backend's
@@ -250,9 +264,12 @@ only directory allowed to depend on Smithay and Wayland types.
   pinned `GlAttributes::vsync` only selects a compatible config. Do not change
   interval or configured sampling target in response to lateness. Host redraw
   metadata is not presentation feedback; follow the timing limitations in
-  [platform](../../../specs/platform.md#nested-frame-timing). Continuous redraw
-  remains necessary until all client/layer/exposure/callback invalidations and
-  capture deadlines have explicit wakeups.
+  [platform](../../../specs/platform.md#nested-frame-timing). Request pixels for
+  visual demand and active/terminal motion; callback-only opportunities never
+  acknowledge animation poses. Capture, shutdown, blocked flush, child reaping
+  and advisory expiry use explicit deadlines rather than blanket polling.
+  Start transitions using current monotonic time after idle, preserving submitted
+  geometry for retargeting and input.
 
 ## Verification
 

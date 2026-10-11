@@ -17,6 +17,34 @@ use std::time::Duration;
 const WIDTH: i32 = 240;
 const HEIGHT: i32 = 32;
 const UPDATE_INTERVAL: Duration = Duration::from_millis(500);
+const IDLE_INTERVAL: Duration = Duration::from_millis(750);
+
+#[derive(Default)]
+struct IdleStatus {
+    last_visual_work: Option<Duration>,
+    idle: bool,
+}
+
+impl IdleStatus {
+    fn visual_work(&mut self, now: Duration) {
+        self.last_visual_work = Some(now);
+        self.idle = false;
+    }
+
+    fn next_deadline(&self) -> Option<Duration> {
+        (!self.idle)
+            .then(|| self.last_visual_work.map(|now| now + IDLE_INTERVAL))
+            .flatten()
+    }
+
+    fn deadline(&mut self, now: Duration) -> bool {
+        if self.next_deadline().is_some_and(|deadline| now >= deadline) {
+            self.idle = true;
+            return true;
+        }
+        false
+    }
+}
 
 #[derive(Default)]
 struct FrameRate {
@@ -57,7 +85,8 @@ impl FrameRate {
 pub(super) struct FpsOverlay {
     enabled: bool,
     rate: FrameRate,
-    cached: Option<(Option<(f64, f64)>, GlesTexture, Id)>,
+    idle: IdleStatus,
+    cached: Option<(String, GlesTexture, Id)>,
 }
 
 impl FpsOverlay {
@@ -77,6 +106,31 @@ impl FpsOverlay {
         }
     }
 
+    /// Anchor one idle indication to real scene work, never to a HUD-only draw.
+    pub fn visual_work(&mut self, now: Duration) {
+        if self.enabled {
+            self.idle.visual_work(now);
+        }
+    }
+
+    /// The one pending diagnostic deadline, disarmed after its idle indication.
+    pub fn next_deadline(&self, _now: Duration) -> Option<Duration> {
+        self.enabled.then(|| self.idle.next_deadline()).flatten()
+    }
+
+    /// Returns true once per quiet episode when the label needs a new frame.
+    pub fn deadline(&mut self, now: Duration) -> bool {
+        self.enabled && self.idle.deadline(now)
+    }
+
+    fn label(&self) -> String {
+        if self.idle.idle {
+            "FPS: Idle".into()
+        } else {
+            self.rate.label()
+        }
+    }
+
     pub fn element(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -86,12 +140,8 @@ impl FpsOverlay {
         if !self.enabled {
             return Ok(None);
         }
-        if self
-            .cached
-            .as_ref()
-            .is_none_or(|(old, _, _)| old != &self.rate.reading)
-        {
-            let label = self.rate.label();
+        let label = self.label();
+        if self.cached.as_ref().is_none_or(|(old, _, _)| old != &label) {
             let mut pixels = titlebars.overview_label(&label, WIDTH, None, [245, 248, 255, 255]);
             for pixel in pixels.chunks_exact_mut(4) {
                 // Text is premultiplied; put a dark backing behind it once on upload.
@@ -102,7 +152,7 @@ impl FpsOverlay {
             }
             let texture =
                 renderer.import_memory(&pixels, Fourcc::Abgr8888, (WIDTH, HEIGHT).into(), false)?;
-            self.cached = Some((self.rate.reading, texture, Id::new()));
+            self.cached = Some((label, texture, Id::new()));
         }
         Ok(Some(SceneElement::Wallpaper(
             TextureRenderElement::from_static_texture(
@@ -163,5 +213,43 @@ mod tests {
         overlay.submitted(Duration::from_secs(21));
         assert!(overlay.rate.reading.is_none());
         assert_eq!(overlay.rate.start, Some(Duration::from_secs(21)));
+    }
+
+    #[test]
+    fn idle_indication_is_once_per_episode_and_hud_submission_cannot_rearm_it() {
+        let mut overlay = FpsOverlay::default();
+        overlay.set_enabled(true);
+        overlay.visual_work(Duration::from_secs(1));
+        assert_eq!(
+            overlay.next_deadline(Duration::ZERO),
+            Some(Duration::from_millis(1750))
+        );
+        assert!(!overlay.deadline(Duration::from_millis(1749)));
+        assert!(overlay.deadline(Duration::from_millis(1750)));
+        overlay.submitted(Duration::from_millis(1751));
+        assert_eq!(overlay.label(), "FPS: Idle");
+        assert_eq!(overlay.next_deadline(Duration::from_secs(10)), None);
+        assert!(!overlay.deadline(Duration::from_secs(10)));
+        overlay.visual_work(Duration::from_secs(11));
+        assert_ne!(overlay.label(), "FPS: Idle");
+        assert_eq!(
+            overlay.next_deadline(Duration::ZERO),
+            Some(Duration::from_millis(11750))
+        );
+    }
+
+    #[test]
+    fn disabled_overlay_has_no_idle_deadline_and_discards_old_idle_state() {
+        let mut overlay = FpsOverlay::default();
+        overlay.visual_work(Duration::ZERO);
+        assert_eq!(overlay.next_deadline(Duration::ZERO), None);
+        assert!(!overlay.deadline(Duration::from_secs(10)));
+        overlay.set_enabled(true);
+        overlay.visual_work(Duration::ZERO);
+        assert!(overlay.deadline(IDLE_INTERVAL));
+        overlay.set_enabled(false);
+        overlay.set_enabled(true);
+        assert_eq!(overlay.next_deadline(Duration::ZERO), None);
+        assert_ne!(overlay.label(), "FPS: Idle");
     }
 }

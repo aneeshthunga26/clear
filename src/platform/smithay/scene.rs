@@ -26,7 +26,7 @@ use smithay::{
     },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::wl_surface::WlSurface,
+        wayland_server::{Resource, protocol::wl_surface::WlSurface},
     },
     utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER},
     wayland::shell::wlr_layer::Layer,
@@ -177,6 +177,40 @@ pub(super) struct SurfaceHit {
     pub origin: Point<f64, Logical>,
     pub owner: HitOwner,
     pub scale: Point<f64, Logical>,
+}
+
+#[derive(Default)]
+struct OverviewCallbackClock(std::sync::Mutex<Option<Duration>>);
+
+fn pending_callbacks(surface: &WlSurface) -> usize {
+    let mut pending = 0;
+    smithay::wayland::compositor::with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, _| smithay::wayland::compositor::TraversalAction::DoChildren(()),
+        |_, states, _| {
+            pending += states
+                .cached_state
+                .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                .current()
+                .frame_callbacks
+                .len();
+        },
+        |_, _, _| true,
+    );
+    pending
+}
+
+fn overview_callback_due(surface: &WlSurface, now: Duration) -> Duration {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<OverviewCallbackClock>()
+            .and_then(|clock| *clock.0.lock().unwrap())
+            .map_or(now, |previous| {
+                previous.saturating_add(Duration::from_millis(33)).max(now)
+            })
+    })
 }
 
 impl Compositor {
@@ -345,6 +379,10 @@ impl Compositor {
                 .map_element(window.clone(), (content.x, content.y), false);
             self.space.raise_element(window, false);
         }
+        if self.placements != placements {
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Policy);
+        }
         self.placements = placements;
         self.refresh_animation_targets();
         self.sync_overview_animation();
@@ -420,10 +458,43 @@ impl Compositor {
     ) -> Option<(super::presentation_input::PointerFocus, Point<f64, Logical>)> {
         self.hit_test(point).and_then(|hit| {
             (!matches!(hit.owner, HitOwner::Decoration(..))).then_some((
-                super::presentation_input::PointerFocus::new(hit.surface, hit.scale),
+                super::presentation_input::PointerFocus::new(hit.surface, hit.scale)
+                    .at_origin(hit.origin),
                 hit.origin,
             ))
         })
+    }
+
+    /// Committed input-region changes can update stationary focus without repainting.
+    pub fn refresh_pointer_committed_focus(&mut self) -> bool {
+        if !self.host_focused || self.drag.is_some() {
+            return false;
+        }
+        let pointer = self.seat.get_pointer().expect("pointer initialized");
+        if pointer.is_grabbed() {
+            return false;
+        }
+        let location = pointer.current_location();
+        let target = self.surface_under(location);
+        let unchanged = match (pointer.current_focus(), target.as_ref()) {
+            (Some(current), Some((next, _))) => current.same_presentation(next),
+            (None, None) => true,
+            _ => false,
+        };
+        if unchanged {
+            return false;
+        }
+        pointer.motion(
+            self,
+            target,
+            &smithay::input::pointer::MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.start.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+        true
     }
 
     /// Update stationary pointer focus from the last successfully submitted scene.
@@ -1257,7 +1328,15 @@ impl Compositor {
         }
     }
 
-    pub fn frame_callbacks(&self) {
+    fn callback_trees(&self) -> Vec<(WlSurface, smithay::output::Output, bool)> {
+        let mut trees = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut append =
+            |surface: &WlSurface, output: &smithay::output::Output, throttled: bool| {
+                if seen.insert(surface.id()) {
+                    trees.push((surface.clone(), output.clone(), throttled));
+                }
+            };
         let mut ordinary_live = BTreeSet::new();
         for placement in &self.placements {
             let Some(entry) = self.windows.get(&placement.window) else {
@@ -1271,12 +1350,12 @@ impl Compositor {
                         .any(|clip| logical(o.rect).overlaps(logical(*clip)))
             }) {
                 ordinary_live.insert(placement.window);
-                entry.window.send_frame(
-                    &region.output,
-                    self.frame_time,
-                    Some(Duration::ZERO),
-                    |_, _| Some(region.output.clone()),
-                );
+                if let Some(top) = entry.window.toplevel() {
+                    append(top.wl_surface(), &region.output, false);
+                    for (popup, _) in PopupManager::popups_for_surface(top.wl_surface()) {
+                        append(popup.wl_surface(), &region.output, false);
+                    }
+                }
             }
         }
         if let Some(session) = self.overview_render_session()
@@ -1286,26 +1365,65 @@ impl Compositor {
                 if let Some(top) = self.windows[id].window.toplevel() {
                     // Includes offscreen placements and visible desktop miniatures;
                     // None honors the throttle without pretending to be scanout.
-                    send_frames_surface_tree(
-                        top.wl_surface(),
-                        &region.output,
-                        self.frame_time,
-                        Some(Duration::from_millis(33)),
-                        |_, _| None,
-                    );
+                    append(top.wl_surface(), &region.output, true);
                 }
             }
         }
         for region in &self.outputs {
             for layer in layer_map_for_output(&region.output).layers() {
-                layer.send_frame(
-                    &region.output,
-                    self.frame_time,
-                    Some(Duration::ZERO),
-                    |_, _| Some(region.output.clone()),
-                );
+                append(layer.wl_surface(), &region.output, false);
+                for (popup, _) in PopupManager::popups_for_surface(layer.wl_surface()) {
+                    append(popup.wl_surface(), &region.output, false);
+                }
             }
         }
+        trees
+    }
+
+    /// Overview-only callback trees need no timer opportunities before their throttle expires.
+    pub fn next_frame_callback_deadline(&self, now: Duration) -> Option<Duration> {
+        self.callback_trees()
+            .iter()
+            .filter(|(surface, _, _)| pending_callbacks(surface) != 0)
+            .map(|(surface, _, throttled)| {
+                if *throttled {
+                    overview_callback_due(surface, now)
+                } else {
+                    now
+                }
+            })
+            .min()
+    }
+
+    /// Deliver due committed callbacks; report only callbacks actually removed from their lists.
+    pub fn frame_callbacks(&self, now: Duration) -> usize {
+        let mut delivered = 0;
+        for (surface, output, throttled) in self.callback_trees() {
+            let before = pending_callbacks(&surface);
+            if before == 0 || (throttled && overview_callback_due(&surface, now) > now) {
+                continue;
+            }
+            send_frames_surface_tree(&surface, &output, now, Some(Duration::ZERO), |_, _| {
+                (!throttled).then(|| output.clone())
+            });
+            let count = before.saturating_sub(pending_callbacks(&surface));
+            delivered += count;
+            if throttled && count != 0 {
+                smithay::wayland::compositor::with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .insert_if_missing_threadsafe(OverviewCallbackClock::default);
+                    *states
+                        .data_map
+                        .get::<OverviewCallbackClock>()
+                        .unwrap()
+                        .0
+                        .lock()
+                        .unwrap() = Some(now);
+                });
+            }
+        }
+        delivered
     }
 }
 

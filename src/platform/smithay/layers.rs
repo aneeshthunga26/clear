@@ -88,6 +88,8 @@ impl WlrLayerShellHandler for Compositor {
             layer_map_for_output(&entry.output).unmap_layer(&entry.surface);
         }
         self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Lifecycle);
     }
 }
 
@@ -200,6 +202,8 @@ impl Compositor {
             self.layer_focus = Some(surface.clone());
         }
         self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Input);
     }
 }
 

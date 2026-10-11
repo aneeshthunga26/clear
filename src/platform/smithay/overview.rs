@@ -5,7 +5,7 @@ use super::{
     scene::{SceneElement, logical, premultiply},
     state::Compositor,
     titlebar::TitlebarCache,
-    wallpaper::WallpaperCache,
+    wallpaper::{WallpaperCache, WallpaperDestination},
     window_image::{PreparedWindowImage, WindowImage, WindowImageComposer, WindowImageIdentity},
 };
 use crate::{
@@ -345,15 +345,30 @@ struct ThumbnailAppearance {
     size: (i32, i32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PreviewDestination {
+    Card,
+    Miniature(WorkspaceId),
+    Ghost,
+    Zoom,
+}
+
+struct DestinationIds {
+    body: Id,
+    generation: u64,
+}
+
 struct Thumbnail {
     image: WindowImage,
     appearance: ThumbnailAppearance,
     last_use: u64,
     bytes: usize,
+    destinations: BTreeMap<PreviewDestination, DestinationIds>,
 }
 
 struct CachedLabel {
     texture: GlesTexture,
+    destinations: BTreeMap<(u8, u64), (Id, u64)>,
     // Hold prepared identity so allocator address reuse cannot alias an old label.
     _icon: Option<Arc<crate::runtime::titlebar::TitlebarImage>>,
 }
@@ -380,6 +395,7 @@ impl OverviewCache {
         renderer: &mut GlesRenderer,
         titlebars: &mut TitlebarCache,
         text: &str,
+        destination: Option<OverviewTarget>,
         rect: Rect,
         icon: Option<&Arc<crate::runtime::titlebar::TitlebarImage>>,
         opacity: f32,
@@ -414,16 +430,28 @@ impl OverviewCache {
                 key.clone(),
                 CachedLabel {
                     texture,
+                    destinations: BTreeMap::new(),
                     _icon: icon.cloned(),
                 },
             );
         }
+        let destination = match destination {
+            Some(OverviewTarget::Window(id)) => (0, id.0),
+            Some(OverviewTarget::Workspace(id)) => (1, id.0),
+            None => (2, 0),
+        };
+        let cached = self.labels.get_mut(&key).expect("prepared label");
+        let identity = cached
+            .destinations
+            .entry(destination)
+            .or_insert_with(|| (Id::new(), self.generation));
+        identity.1 = self.generation;
         Ok(Some(SceneElement::Wallpaper(
             TextureRenderElement::from_static_texture(
-                Id::new(),
+                identity.0.clone(),
                 renderer.context_id(),
                 (rect.x as f64, rect.y as f64),
-                self.labels[&key].texture.clone(),
+                cached.texture.clone(),
                 1,
                 Transform::Normal,
                 Some(opacity),
@@ -443,6 +471,7 @@ impl OverviewCache {
         renderer: &mut GlesRenderer,
         titlebars: &mut TitlebarCache,
         id: WindowId,
+        destination: PreviewDestination,
         dest: Rect,
         sizes: &PreviewSizes,
         shaders: &RoundedShaders,
@@ -510,6 +539,7 @@ impl OverviewCache {
                         appearance,
                         last_use: self.generation,
                         bytes,
+                        destinations: BTreeMap::new(),
                     },
                 );
             }
@@ -517,6 +547,15 @@ impl OverviewCache {
         let theme = &state.runtime.config.theme;
         let thumbnail = self.thumbnails.get_mut(&id).expect("prepared thumbnail");
         thumbnail.last_use = self.generation;
+        let identities = thumbnail
+            .destinations
+            .entry(destination)
+            .or_insert_with(|| DestinationIds {
+                body: Id::new(),
+                generation: self.generation,
+            });
+        identities.generation = self.generation;
+        let body_id = identities.body.clone();
         let dest = fit(thumbnail.image.source, dest);
         let outline = thumbnail.image.outline;
         let selected = state
@@ -528,9 +567,11 @@ impl OverviewCache {
                 .is_some_and(|drag| drag.active && drag.window == id);
         let mut elements = Vec::with_capacity(if selected { 2 } else { 1 });
         if selected
-            && let Some(body) = thumbnail
-                .image
-                .texture_element(logical(dest).to_f64(), opacity)
+            && let Some(body) = thumbnail.image.texture_element_identified(
+                Id::new(),
+                logical(dest).to_f64(),
+                opacity,
+            )
         {
             elements.push(SceneElement::RoundedSurface(shaders.outline_texture(
                 body,
@@ -539,10 +580,12 @@ impl OverviewCache {
                 state.host_size.h,
             )));
         }
-        if let Some(body) = thumbnail
-            .image
-            .element(logical(dest).to_f64(), opacity, output_clip)
-        {
+        if let Some(body) = thumbnail.image.element_identified(
+            body_id,
+            logical(dest).to_f64(),
+            opacity,
+            output_clip,
+        ) {
             elements.push(SceneElement::Titlebar(body));
         }
         Ok(elements)
@@ -577,6 +620,7 @@ impl OverviewCache {
             self.output = Some((session.output, layout.output));
         }
         self.generation = self.generation.wrapping_add(1);
+        wallpapers.begin_previews();
         self.thumbnails.retain(|id, cached| {
             state.windows.get(id).is_some_and(|entry| {
                 if !entry.mapped {
@@ -682,6 +726,7 @@ impl OverviewCache {
                     renderer,
                     titlebars,
                     *id,
+                    PreviewDestination::Zoom,
                     *rect,
                     &sizes,
                     shaders,
@@ -700,6 +745,7 @@ impl OverviewCache {
                 state,
                 &region.output.name(),
                 layout.output,
+                WallpaperDestination::Zoom,
                 zoom.canvas,
                 zoom.opacity,
             );
@@ -732,6 +778,7 @@ impl OverviewCache {
                 renderer,
                 titlebars,
                 drag.window,
+                PreviewDestination::Ghost,
                 rect,
                 &sizes,
                 shaders,
@@ -773,6 +820,7 @@ impl OverviewCache {
                                 renderer,
                                 titlebars,
                                 window,
+                                PreviewDestination::Miniature(id),
                                 dest,
                                 &sizes,
                                 shaders,
@@ -794,6 +842,7 @@ impl OverviewCache {
                             state,
                             &region.output.name(),
                             layout.output,
+                            WallpaperDestination::Miniature(id),
                             preview,
                             state.overview_progress() as f32,
                         );
@@ -827,6 +876,7 @@ impl OverviewCache {
                             renderer,
                             titlebars,
                             id,
+                            PreviewDestination::Card,
                             preview,
                             &sizes,
                             shaders,
@@ -891,6 +941,7 @@ impl OverviewCache {
                     renderer,
                     titlebars,
                     &label,
+                    Some(item.target),
                     label_rect,
                     icon,
                     state.overview_progress() as f32,
@@ -929,6 +980,7 @@ impl OverviewCache {
                     renderer,
                     titlebars,
                     &status,
+                    None,
                     rect,
                     None,
                     state.overview_progress() as f32,
@@ -949,6 +1001,7 @@ impl OverviewCache {
             state,
             &region.output.name(),
             layout.output,
+            WallpaperDestination::Canvas,
             layout.canvas,
             1.0,
         );
@@ -976,9 +1029,21 @@ impl OverviewCache {
                 state,
                 &region.output.name(),
                 region.rect,
+                WallpaperDestination::Background,
                 region.rect,
                 1.0,
             );
+        }
+        wallpapers.finish_previews();
+        for label in self.labels.values_mut() {
+            label
+                .destinations
+                .retain(|_, (_, generation)| *generation == self.generation);
+        }
+        for thumbnail in self.thumbnails.values_mut() {
+            thumbnail
+                .destinations
+                .retain(|_, ids| ids.generation == self.generation);
         }
         Ok(elements)
     }
@@ -1009,6 +1074,7 @@ fn desktop_backing(
     state: &Compositor,
     output: &str,
     source: Rect,
+    destination: WallpaperDestination,
     dest: Rect,
     opacity: f32,
 ) {
@@ -1020,6 +1086,7 @@ fn desktop_backing(
         &state.runtime.wallpapers,
         output,
         source,
+        destination,
         dest,
         opacity,
     ) {
@@ -1461,10 +1528,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn fullscreen_root_commit_invalidates_preview_without_buffer_damage() {
-        let ordinary = ThumbnailAppearance {
+    fn unchanged_damage_preview() -> ThumbnailAppearance {
+        ThumbnailAppearance {
             image: WindowImageIdentity {
+                effective_revision: 1,
                 signature: vec![(Id::new(), CommitCounter::default())],
                 mappings: Vec::new(),
                 geometry_origin: (0, 0),
@@ -1475,7 +1542,23 @@ mod tests {
                 committed_fullscreen: false,
             },
             size: (320, 240),
-        };
+        }
+    }
+
+    #[test]
+    fn newly_attached_undamaged_buffer_invalidates_preview_effective_revision() {
+        let previous = unchanged_damage_preview();
+        let mut replaced = previous.clone();
+        replaced.image.effective_revision += 1;
+        assert_eq!(previous.image.signature, replaced.image.signature);
+        assert_eq!(previous.image.mappings, replaced.image.mappings);
+        assert_eq!(previous.image.source, replaced.image.source);
+        assert_ne!(previous, replaced);
+    }
+
+    #[test]
+    fn fullscreen_root_commit_invalidates_preview_without_buffer_damage() {
+        let ordinary = unchanged_damage_preview();
         let mut fullscreen = ordinary.clone();
         fullscreen.image.committed_fullscreen = true;
         // A CSD root can accept fullscreen while keeping its current buffer.

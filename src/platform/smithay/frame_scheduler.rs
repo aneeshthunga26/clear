@@ -81,6 +81,10 @@ impl FrameScheduler {
         true
     }
 
+    pub fn redraw_pending(&self) -> bool {
+        self.redraw_requested
+    }
+
     /// Capture once per host opportunity; late frames skip expired deadlines.
     pub fn redraw(&mut self, now: Duration) -> FrameTiming {
         self.redraw_requested = false;
@@ -105,6 +109,44 @@ impl FrameScheduler {
             now,
             animation_sample: self.sample,
         }
+    }
+}
+
+/// Absolute callback opportunities, independent from capped animation samples.
+pub(super) struct CallbackClock {
+    host: HostTiming,
+    next: Duration,
+}
+
+impl CallbackClock {
+    pub fn new(host: HostTiming) -> Self {
+        Self {
+            host,
+            next: Duration::ZERO,
+        }
+    }
+
+    pub fn update(&mut self, host: HostTiming, now: Duration) {
+        if host != self.host {
+            self.host = host;
+            self.delivered(now);
+        }
+    }
+
+    pub fn deadline(&self, now: Duration) -> Duration {
+        self.next.max(now)
+    }
+
+    pub fn due(&self, now: Duration) -> bool {
+        now >= self.next
+    }
+
+    pub fn delivered(&mut self, now: Duration) {
+        let rate = u128::from(self.host.refresh_millihertz);
+        let tick = now.as_nanos() * rate / 1_000_000_000_000 + 1;
+        self.next = Duration::from_nanos(
+            (tick * 1_000_000_000_000 / rate + 1).min(u128::from(u64::MAX)) as u64,
+        );
     }
 }
 
@@ -230,5 +272,18 @@ mod tests {
         scheduler.redraw(Duration::ZERO);
         assert!(scheduler.request_redraw());
         assert!(!scheduler.request_redraw());
+    }
+
+    #[test]
+    fn callback_deadlines_skip_late_ticks_without_immediate_reentry() {
+        let mut clock = CallbackClock::new(HostTiming::from_monitor(Some((1, 144_000))));
+        assert!(clock.due(Duration::ZERO));
+        clock.delivered(Duration::ZERO);
+        assert!(!clock.due(Duration::ZERO));
+        let late = Duration::from_millis(950);
+        assert!(clock.due(late));
+        clock.delivered(late);
+        assert!(!clock.due(late));
+        assert!(clock.deadline(late) - late <= Duration::from_millis(7));
     }
 }

@@ -1,5 +1,9 @@
 //! Optional shell transport integration; policy and wire types remain backend-neutral.
 
+#[path = "shell_readiness.rs"]
+mod readiness;
+pub(super) use readiness::ShellReadiness;
+
 use super::state::Compositor;
 use crate::shell::{self, RequestKind, server::Server};
 use std::path::PathBuf;
@@ -26,12 +30,17 @@ impl Compositor {
         }
     }
 
+    /// Nearest lease expiry; an empty advisory store requires no maintenance wakeup.
+    pub fn shell_maintenance_deadline(&self) -> Option<std::time::Duration> {
+        self.animation_targets.store.next_expiry()
+    }
+
     pub fn dispatch_shell(&mut self) {
         self.refresh_animation_targets();
         let Some(mut server) = self.shell_server.take() else {
             return;
         };
-        let requests = server.poll();
+        let requests = server.poll_ready();
         self.prune_animation_connections(&server);
         for (client, bytes) in requests {
             let request = match shell::parse_request(&bytes) {
@@ -114,6 +123,8 @@ impl Compositor {
                 _ => {
                     // Reconcile before acknowledging so a subsequent snapshot
                     // includes settled geometry/reservations and policy focus.
+                    self.render_demand
+                        .invalidate(super::render_demand::Reason::Policy);
                     self.dirty = true;
                     self.reconcile();
                     server.reply(client, shell::encode_ok(request.id));

@@ -2,7 +2,7 @@
 
 use crate::{
     config::WallpaperMode,
-    core::Rect,
+    core::{Rect, WorkspaceId},
     runtime::wallpaper::{WallpaperImage, Wallpapers},
 };
 use smithay::{
@@ -21,6 +21,15 @@ use smithay::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+/// A presentation role, independent of its changing animated pixel bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum WallpaperDestination {
+    Canvas,
+    Miniature(WorkspaceId),
+    Zoom,
+    Background,
+}
+
 struct CachedImage {
     image: Arc<WallpaperImage>,
     // Remember failed imports too: warn once, retry only after resource reload.
@@ -28,15 +37,30 @@ struct CachedImage {
     // Each output needs a distinct element identity for damage tracking, even
     // when several output buffers share one GPU texture.
     outputs: BTreeMap<String, TextureBuffer<GlesTexture>>,
+    previews: BTreeMap<(String, WallpaperDestination), (Id, u64)>,
 }
 
 /// Lives with the backend renderer, not compositor/protocol state.
 #[derive(Default)]
 pub(super) struct WallpaperCache {
     images: Vec<CachedImage>,
+    preview_generation: u64,
 }
 
 impl WallpaperCache {
+    /// One bounded overview generation; roles are pruned after all destinations are gathered.
+    pub fn begin_previews(&mut self) {
+        self.preview_generation = self.preview_generation.wrapping_add(1);
+    }
+
+    pub fn finish_previews(&mut self) {
+        for image in &mut self.images {
+            image
+                .previews
+                .retain(|_, (_, generation)| *generation == self.preview_generation);
+        }
+    }
+
     /// Keep a source wallpaper's crop while sliding through another output in its group.
     pub fn workspace_elements_for_clip(
         &mut self,
@@ -113,7 +137,7 @@ impl WallpaperCache {
                     None
                 }
             };
-            self.images.push(CachedImage { image: prepared.image.clone(), texture, outputs: BTreeMap::new() });
+            self.images.push(CachedImage { image: prepared.image.clone(), texture, outputs: BTreeMap::new(), previews: BTreeMap::new() });
             self.images.len() - 1
         });
         let cached = &mut self.images[index];
@@ -140,6 +164,7 @@ impl WallpaperCache {
         wallpapers: &Wallpapers,
         output: &str,
         source_output: Rect,
+        destination: WallpaperDestination,
         preview: Rect,
         opacity: f32,
     ) -> Option<TextureRenderElement<GlesTexture>> {
@@ -150,21 +175,26 @@ impl WallpaperCache {
         let prepared = wallpapers.for_output(output)?;
         let cached = self
             .images
-            .iter()
+            .iter_mut()
             .find(|i| Arc::ptr_eq(&i.image, &prepared.image))?;
         let texture = cached.texture.as_ref()?;
-        let (source, destination) =
+        let (source, dest) =
             preview_placement(prepared.image.size(), source_output, prepared.mode, preview);
+        let identity = cached
+            .previews
+            .entry((output.to_owned(), destination))
+            .or_insert_with(|| (Id::new(), self.preview_generation));
+        identity.1 = self.preview_generation;
         Some(TextureRenderElement::from_static_texture(
-            Id::new(),
+            identity.0.clone(),
             renderer.context_id(),
-            (destination.x as f64, destination.y as f64),
+            (dest.x as f64, dest.y as f64),
             texture.clone(),
             1,
             Transform::Normal,
             Some(opacity),
             Some(source),
-            Some((destination.width, destination.height).into()),
+            Some((dest.width, dest.height).into()),
             None,
             Kind::Unspecified,
         ))

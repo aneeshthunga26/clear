@@ -251,6 +251,7 @@ impl Compositor {
             top.send_configure();
         }
         self.dirty = true;
+        self.render_demand.wake();
     }
 
     /// Smithay's pinned XdgDecorationHandler has no object-destruction callback.

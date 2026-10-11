@@ -173,6 +173,10 @@ point to the pickup pointer position. Pointer translation MUST follow the latest
 input directly on every rendered frame, including frames between capped animation
 samples; pointer movement alone MUST NOT retarget the animation or add easing lag.
 Only size changes retarget from the last successfully submitted size/offset pose.
+After a stationary drag has settled, a later size change MUST start its transition
+at current monotonic time; time spent idle MUST NOT instantly consume the new
+transition. While pickup/scale is still moving, retargeting continues from the
+preceding submitted opportunity so continuous pointer updates advance.
 Continuous pointer updates MUST allow pickup to advance between submitted frames
 rather than restarting at zero progress each refresh. Global speed, sampling caps
 and reduced-motion/effect-disable settings apply to the size/offset track.
@@ -311,7 +315,16 @@ on tree commits at most once per presented frame. Hidden pages may
 retain still textures, evicting least recently used entries under pressure.
 Overview-only visible clients receive throttled frame callbacks (33 ms), including
 windows with offscreen ordinary placements; ordinary scene clients retain their
-existing callback policy without duplicate preview callbacks. Visible preview trees
+existing callback policy without duplicate preview callbacks. Discovery MUST inspect
+committed callback lists using the same bounded eligible trees as delivery. A
+callback-only opportunity uses an explicit monotonic timestamp and MUST NOT
+rebuild previews, submit unchanged host pixels or acknowledge animation state.
+Unapplied synchronized-subsurface callbacks MUST NOT be delivered before their
+parent applies them. Once a current overview or drag track's terminal pose is
+successfully submitted, retaining the stationary session/gesture/track MUST NOT
+create ongoing render demand. A new effective visible tree commit or compositor
+input change wakes rendering; hidden source commits remain available for later
+visibility. Visible preview trees
 receive output enter/leave notifications for the interactive output, restricted
 to committed XDG geometry and excluding popups. Minimized windows represented by
 visible cards MUST be temporarily unsuspended at the protocol level, while their
@@ -359,7 +372,12 @@ hot corners and touchpad progress remain future work.
   full-output/card endpoints and midpoint geometry, reversal from a submitted
   phase across speed reload, interrupted activation rebased to new desktop
   endpoints without a first-frame jump, outer-border endpoint geometry, and
-  terminal-frame/current-revision retirement.
+  terminal-frame/current-revision retirement and stationary-open demand cessation.
+  `open_overview_demand_tracks_terminal_acknowledgement_and_retarget_revision`
+  checks that a retargeted terminal revision cannot reuse an old acknowledgement.
+  [Drag motion tests](../src/platform/smithay/overview_drag.rs), including
+  `stationary_drag_stops_only_after_its_terminal_revision_is_submitted`, cover idle
+  scale retargeting and terminal acknowledgement while a gesture remains active.
   These CPU tests do not establish frame cadence, compositor input handoff or
   GPU intermediate pixels.
 - `workspace_selection_expands_the_clicked_tile_and_its_live_windows` in that

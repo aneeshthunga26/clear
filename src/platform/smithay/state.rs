@@ -92,6 +92,7 @@ pub(super) struct Compositor {
     pub shell_dirty: bool,
     pub host_size: Size<i32, Logical>,
     pub dirty: bool,
+    pub render_demand: super::render_demand::RenderDemand,
     pub host_focused: bool,
     pub children: Vec<Child>,
     pub suppressed_keys: BTreeSet<u32>,
@@ -194,6 +195,7 @@ impl Compositor {
             shell_dirty: true,
             host_size: (1, 1).into(),
             dirty: true,
+            render_demand: Default::default(),
             host_focused: true,
             children: Vec::new(),
             suppressed_keys: BTreeSet::new(),
@@ -207,6 +209,12 @@ impl Compositor {
             titlebar_drag: None,
             popups: PopupManager::default(),
         })
+    }
+
+    /// Mutation uses current monotonic time, never an idle scene's last redraw time.
+    pub fn animation_mutation_time(&self) -> Duration {
+        self.runtime
+            .animation_time_at(self.start + self.frame_time.max(self.start.elapsed()))
     }
 
     pub fn fail(&mut self, message: String) {
@@ -244,6 +252,8 @@ impl Compositor {
         }
         self.service_overview();
         self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Policy);
         self.reconcile();
         eprintln!(
             "clear: desktop groups={:?} focus={:?}",

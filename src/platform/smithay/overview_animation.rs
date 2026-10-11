@@ -32,6 +32,7 @@ pub(super) struct OverviewAnimation {
     displayed_phase: f64,
     sampled_revision: Option<u64>,
     finished: bool,
+    submitted_revision: Option<(u64, bool)>,
     workspace_zoom: Option<WorkspaceZoom>,
 }
 
@@ -108,6 +109,21 @@ impl WorkspaceZoom {
 }
 
 impl OverviewAnimation {
+    fn needs_render(
+        &self,
+        engine: &crate::runtime::animation::AnimationEngine,
+        now: std::time::Duration,
+    ) -> bool {
+        self.track.is_some_and(|id| {
+            engine
+                .sample(id, now)
+                .is_some_and(|sample| !sample.finished)
+                || engine
+                    .revision(id)
+                    .is_some_and(|revision| self.submitted_revision != Some((revision, true)))
+        })
+    }
+
     fn window_opacity_at(&self, id: WindowId, progress: f64) -> f32 {
         let target = if self.open || self.desktop.contains_key(&id) {
             1.0
@@ -124,6 +140,11 @@ impl OverviewAnimation {
 }
 
 impl Compositor {
+    /// Demand includes the terminal pose until its current track revision was submitted.
+    pub fn overview_animation_needs_render(&self, now: std::time::Duration) -> bool {
+        self.overview_animation
+            .needs_render(&self.runtime.animations, now)
+    }
     /// Include the retained closing scene in render and protocol input ownership.
     pub fn overview_present(&self) -> bool {
         self.runtime.overview.is_some() || self.overview_animation.session.is_some()
@@ -279,7 +300,7 @@ impl Compositor {
             self.clear_overview_animation();
             return;
         }
-        let now = self.runtime.animation_time_at(self.start + self.frame_time);
+        let now = self.animation_mutation_time();
         let session = self.runtime.overview.clone();
         if session.is_none()
             && self.overview_animation.session.as_ref().is_some_and(|old| {
@@ -514,9 +535,14 @@ impl Compositor {
             .overview_animation
             .track
             .and_then(|id| self.runtime.animations.revision(id));
+        self.overview_animation.submitted_revision = current
+            .filter(|revision| Some(*revision) == self.overview_animation.sampled_revision)
+            .map(|revision| (revision, self.overview_animation.finished));
         if self.overview_animation.closing_frame_complete(current) {
             self.clear_overview_animation();
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Policy);
         }
     }
     /// Renderer/topology/host teardown releases the one engine track and retained geometry.
@@ -529,6 +555,8 @@ impl Compositor {
         self.overview_animation = OverviewAnimation::default();
         if was_present {
             self.dirty = true;
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Policy);
         }
     }
 }
@@ -635,6 +663,54 @@ mod tests {
     use super::*;
     use crate::{config::AnimationsConfig, runtime::animation::AnimationEngine};
     use std::time::Duration;
+
+    #[test]
+    fn open_overview_demand_tracks_terminal_acknowledgement_and_retarget_revision() {
+        let mut config = AnimationsConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        config.overview.kind = crate::config::AnimationKind::Easing {
+            duration_ms: 100,
+            curve: crate::config::AnimationCurve::Linear,
+        };
+        let mut engine = AnimationEngine::new(config, Duration::ZERO).unwrap();
+        engine
+            .retarget_presented(
+                1,
+                1,
+                AnimationEffect::Overview,
+                progress_pose(0.0),
+                progress_pose(1.0),
+                Duration::ZERO,
+                1.0,
+                0.0,
+            )
+            .unwrap();
+        let mut state = OverviewAnimation {
+            open: true,
+            track: Some(1),
+            ..Default::default()
+        };
+        let terminal = Duration::from_secs(2);
+        assert!(state.needs_render(&engine, terminal));
+        state.submitted_revision = Some((engine.revision(1).unwrap(), true));
+        assert!(!state.needs_render(&engine, terminal));
+        engine
+            .retarget_presented(
+                1,
+                1,
+                AnimationEffect::Overview,
+                progress_pose(1.0),
+                progress_pose(0.0),
+                terminal,
+                1.0,
+                engine.clock.sample(terminal),
+            )
+            .unwrap();
+        assert!(state.needs_render(&engine, terminal));
+        assert!(state.needs_render(&engine, Duration::from_secs(3)));
+    }
 
     #[test]
     fn workspace_selection_expands_the_clicked_tile_and_its_live_windows() {

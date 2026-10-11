@@ -40,6 +40,7 @@ pub(super) struct DragMotion {
     pickup_offset: Option<(f64, f64)>,
     presented_time: Option<Duration>,
     presented_phase: f64,
+    submitted_revision: Option<(u64, bool)>,
 }
 
 impl OverviewDrag {
@@ -166,7 +167,15 @@ impl OverviewDrag {
             });
             // Start at the preceding submitted frame, so a target changing every
             // refresh still advances by this frame's elapsed time instead of freezing.
-            let retarget_time = self.motion.presented_time.unwrap_or(now);
+            let retarget_time = self
+                .motion
+                .presented_time
+                .filter(|previous| {
+                    engine
+                        .sample(track, *previous)
+                        .is_some_and(|sample| !sample.finished)
+                })
+                .unwrap_or(now);
             let shown_phase = if fresh && self.motion.presented_pose.is_none() {
                 engine.clock.sample(retarget_time)
             } else {
@@ -198,7 +207,20 @@ impl OverviewDrag {
         self.motion.sampled = Some(self.anchored_rect(pose));
     }
 
+    fn needs_render(&self, engine: &AnimationEngine, now: Duration) -> bool {
+        self.motion.track.is_some_and(|id| {
+            engine.sample(id, now).is_some_and(|s| !s.finished)
+                || engine.revision(id).is_some_and(|revision| {
+                    self.motion.submitted_revision != Some((revision, true))
+                })
+        })
+    }
+
     fn mark_presented(&mut self, engine: &AnimationEngine, now: Duration) {
+        self.motion.submitted_revision = self
+            .motion
+            .track
+            .and_then(|id| Some((engine.revision(id)?, engine.sample(id, now)?.finished)));
         self.motion.presented_pose = self.motion.sampled_pose;
         self.motion.presented_time = Some(now);
         self.motion.presented_phase = engine.clock.sample(now);
@@ -224,10 +246,19 @@ fn drag_pose(rect: Rect) -> AnimationPose {
 }
 
 impl Compositor {
+    pub fn overview_drag_needs_render(&self, now: Duration) -> bool {
+        self.overview_drag
+            .as_ref()
+            .is_some_and(|drag| drag.active && drag.needs_render(&self.runtime.animations, now))
+    }
     /// Drop/cancellation removes the gesture's engine track as well as its input state.
     pub fn take_overview_drag(&mut self) -> Option<OverviewDrag> {
         let mut drag = self.overview_drag.take()?;
         drag.clear_track(&mut self.runtime.animations);
+        if drag.active {
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
+        }
         Some(drag)
     }
 
@@ -316,6 +347,32 @@ mod tests {
             curve: AnimationCurve::Linear,
         };
         AnimationEngine::new(config, Duration::ZERO).unwrap()
+    }
+
+    #[test]
+    fn stationary_drag_stops_only_after_its_terminal_revision_is_submitted() {
+        let mut drag = drag();
+        let mut engine = engine();
+        let target = drag.target(&layout(drag.output_rect), drag.preview, drag.output_rect);
+        drag.sample(&mut engine, Duration::ZERO, target);
+        assert!(drag.needs_render(&engine, Duration::from_secs(1)));
+        drag.sample(&mut engine, Duration::from_secs(1), target);
+        assert!(drag.needs_render(&engine, Duration::from_secs(1)));
+        drag.mark_presented(&engine, Duration::from_secs(1));
+        assert!(!drag.needs_render(&engine, Duration::from_secs(5)));
+        assert!(drag.active && drag.motion.track.is_some());
+        let smaller = Rect::new(target.x, target.y, target.width / 2, target.height / 2);
+        let displayed = drag.ghost(drag.output_rect).unwrap();
+        drag.sample(&mut engine, Duration::from_secs(5), smaller);
+        assert_eq!(
+            drag.ghost(drag.output_rect),
+            Some(displayed),
+            "retarget after idle starts now from displayed size"
+        );
+        assert!(drag.needs_render(&engine, Duration::from_secs(5)));
+        drag.sample(&mut engine, Duration::from_millis(5100), smaller);
+        let halfway = drag.ghost(drag.output_rect).unwrap();
+        assert!(halfway.width < displayed.width && halfway.width > smaller.width);
     }
 
     #[test]
