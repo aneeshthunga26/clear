@@ -428,7 +428,11 @@ hot corners and touchpad progress remain future work.
   wallpaper-backed transparency, desktop miniatures, layer coverage and
   bottom-corner content that detects accidental texture cropping. `sharp-preview`
   preserves one-pixel client content and SSD control stripes at native preview
-  size, detecting low-resolution capture/upscale blur. `rounded-previews` checks
+  size, detecting low-resolution capture/upscale blur. `sharp-optics` repeats that
+  check with blur and glass enabled. The four `translucent-*` cases compare main
+  cards and desktop miniatures against independent Gaussian, Kawase and glass
+  pixel oracles, including glass with zero blur radius, sharp opaque subsurfaces
+  and clear corners. `rounded-previews` checks
   proportional source corners in both main and miniature SSD destinations.
   `rounded-asymmetric` checks rounded/square corner order and source-buffer
   orientation. Callback-driven

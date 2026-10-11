@@ -1184,3 +1184,46 @@ pixels, protocol lifecycle, callback delivery and bounded quiet submissions.
 They do not automate physical input or measure CPU use, idle power, monitor
 presentation cadence or a percentage speedup. Animations and blur/glass retain
 conservative complete-frame rendering while active.
+
+### Overview backdrop blur and glass (2026-10-12)
+
+Overview previews now use the shared backdrop renderer at each destination;
+see the [overview rendering contract](../specs/overview.md#rendering-and-resource-bounds).
+After building, run the independent translucent card/miniature pixel checks:
+
+```sh
+python3 -B scripts/vm-overview-smoke.py --binary target/release/clear --seconds 10 \
+  --case translucent-gaussian --case translucent-kawase \
+  --case translucent-glass --case translucent-glass-blur --case sharp-optics \
+  --artifacts target/overview-optics-release
+```
+
+The four translucent cases use a striped wallpaper, a half-transparent real XDG
+client and an opaque subsurface. Expected pixels come from independent Gaussian,
+Dual Kawase and liquid-glass CPU oracles, including wallpaper resampling into
+both destinations. They check miniature viewport clamping, unchanged opaque
+foreground and clear source corners. Each case compared 189 card/miniature
+samples with a maximum per-channel error of one. The fixture's expected filtered
+pixels differ from plain alpha blending by at least 57 color values in every
+case, so plain translucency cannot pass. Glass alone is tested with radius zero.
+`sharp-optics` preserves native-size one-pixel client and SSD-control stripes
+with both blur and glass enabled.
+
+All five checks passed in optimized release mode under
+`target/overview-optics-release/`; the four translucent debug checks passed in
+`target/overview-optics/`. Nine debug regressions passed under
+`target/overview-optics-regressions/`: `sharp-optics`, `rounded-blur`,
+`sharp-preview`, `alpha-subsurface`, `wallpaper`, `odd-outputs`, `cards`,
+`live-miniatures` and `rounded-asymmetric`. Release overview entry and ordinary
+exit passed their intermediate geometry/opacity checks under
+`target/overview-optics-release-animations/`, with optical effects disabled in
+those animation scenarios.
+
+Cargo fmt/check/test and the optimized release build passed, including 159
+library tests and the integration suites. All 18 compositor-free blur oracle
+harness tests passed. Rust Analyzer diagnostics had no error/warning-level
+findings in the changed renderer files. These GPU runs used a private **local
+virtual KWin host, not a VM**. They do not test physical input, animated optical
+pixels during dragging or desktop-tile activation, presentation cadence, or
+performance. The existing CPU transition tests cover those gesture geometries;
+they do not establish GPU or physical-input behavior.

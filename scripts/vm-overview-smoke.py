@@ -24,17 +24,21 @@ def load(name, filename):
 LAYER = load("overview_layer", "vm-layer-smoke.py")
 SHELL = load("overview_shell", "vm-shell-smoke.py")
 WALLPAPER = load("overview_wallpaper", "vm-wallpaper-smoke.py")
-CASES = ("cards", "minimized", "cancelled", "exclusive-deferred", "alpha-subsurface", "ssd", "odd-outputs", "many-windows", "hidden-live", "rounded-blur", "wallpaper", "scaled-content", "live-cards", "live-minimized", "live-miniatures", "live-offscreen", "live-subsurface", "sharp-preview", "rounded-previews", "rounded-asymmetric")
+BLUR = load("overview_blur", "vm-blur-smoke.py")
+OPTICAL_CASES = ("translucent-gaussian", "translucent-kawase", "translucent-glass", "translucent-glass-blur")
+CASES = ("cards", "minimized", "cancelled", "exclusive-deferred", "alpha-subsurface", "ssd", "odd-outputs", "many-windows", "hidden-live", "rounded-blur", "wallpaper", "scaled-content", "live-cards", "live-minimized", "live-miniatures", "live-offscreen", "live-subsurface", "sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") + OPTICAL_CASES
 
 
 def check_frame(path, case):
     width, height, pixels = LAYER.read_ppm(path)
-    assert (width, height) == ((1400, 900) if case in ("sharp-preview", "rounded-previews", "rounded-asymmetric") else (641, 481) if case == "odd-outputs" else (640, 480))
+    assert (width, height) == ((1400, 900) if case in ("sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") else (641, 481) if case == "odd-outputs" else (640, 480))
 
     def pixel(x, y):
         offset = (y * width + x) * 3
         return tuple(pixels[offset:offset + 3])
 
+    if case in OPTICAL_CASES:
+        return check_optical_frame(pixel, case)
     if case in ("rounded-previews", "rounded-asymmetric"):
         # Locate complete uniformly colored SSD frames independently of layout.
         for top, bottom in ((5, 80), (100, height)):
@@ -62,7 +66,7 @@ def check_frame(path, case):
                     else: assert max(pixel(x, y)) > 80, ("square corner was rounded", (x, y), pixel(x, y))
             assert pixel((left + right) // 2, (upper + lower) // 2) == (48, 176, 80)
         return
-    if case == "sharp-preview":
+    if case in ("sharp-preview", "sharp-optics"):
         def alternating_run(y):
             longest = run = 0
             previous = None
@@ -133,13 +137,60 @@ def check_frame(path, case):
         assert pixel(275, 375) == (32, 192, 208), "thumbnail cropped the texture instead of scaling its full source"
 
 
+def optical_pattern(x, y):
+    return (240, 240, 240) if x // 16 % 2 else (16, 16, 16)
+
+
+def check_optical_frame(pixel, case):
+    """Independent backdrop oracle; expected colors never come from a capture."""
+    glass = "glass" in case
+    radius = 12 if case == "translucent-gaussian" else 2 if case in ("translucent-kawase", "translucent-glass-blur") else 0
+    # Fixed fixture geometry: a 640x448 CSD source, one centered card, nine tiles.
+    destinations = (((111, 110, 417, 292), (0, 0, 640, 480), (44, 84, 552, 384)),
+                    ((69, 8, 45, 32), (69, 6, 45, 34), (69, 6, 45, 34)))
+    errors = []
+    effect_deltas = []
+    for box, clip, wallpaper in destinations:
+        wx, wy, ww, wh = wallpaper
+        def source(x, y):
+            if wx <= x < wx + ww and wy <= y < wy + wh:
+                sx = (x + 0.5 - wx) * 640 / ww - 0.5
+                value = BLUR.glass_sample(optical_pattern, (0, 0, 640, 480), sx, 0)
+                return tuple(round(c) for c in value)
+            # Main-card samples and their filter support stay inside its canvas.
+            # Outer dim backing is provided for the full-viewport pyramid only.
+            return tuple(round(c * 0.35 + d * 255 * 0.65) for c, d in zip(optical_pattern(x, y), (0.015, 0.02, 0.035)))
+        filtered = BLUR.gaussian(source, clip, radius) if case == "translucent-gaussian" else BLUR.kawase(source, clip, radius, 3)
+        if glass:
+            filtered = BLUR.glass_filter(filtered, clip, box, 24 * min(box[2] / 640, box[3] / 448))
+        points = ([(x, y) for y in range(200, 291, 15) for x in range(160, 261, 5)]
+                  if box[2] > 100 else [(x, y) for y in range(14, 35, 4) for x in range(72, 86, 2)])
+        for x, y in points:
+            expected = tuple(round(f + c * (127 / 255)) for f, c in zip((24, 88, 40), filtered(x, y)))
+            actual = pixel(x, y)
+            error = max(abs(a - b) for a, b in zip(actual, expected))
+            assert error <= 4, (case, box, (x, y), actual, expected)
+            errors.append(error)
+            plain = tuple(round(f + c * (127 / 255)) for f, c in zip((24, 88, 40), source(x, y)))
+            effect_deltas.append(max(abs(a - b) for a, b in zip(expected, plain)))
+    assert max(effect_deltas) > 15, "fixture must distinguish filtering from plain alpha"
+    # An opaque subsurface remains sharp despite optical filtering of its parent.
+    assert pixel(310, 240) == (32, 192, 208), (case, "foreground was filtered", pixel(310, 240))
+    # Fully transparent source corner must expose the unmodified canvas.
+    corner_x, corner_y = 111, 110
+    sx = (corner_x + 0.5 - 44) * 640 / 552 - 0.5
+    expected = tuple(round(c) for c in BLUR.glass_sample(optical_pattern, (0, 0, 640, 480), sx, 0))
+    assert max(abs(a - b) for a, b in zip(pixel(corner_x, corner_y), expected)) <= 2, (case, "corner leaked optics")
+    return {"samples": len(errors), "maximum_error": max(errors), "maximum_effect_delta": max(effect_deltas)}
+
+
 def run_case(args, fixture, artifacts, env, runtime, host_name, case):
     directory = artifacts / case
     directory.mkdir(parents=True, exist_ok=True)
     config_text = LAYER.CONFIG
-    if case in ("sharp-preview", "rounded-previews", "rounded-asymmetric"):
+    if case in ("sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric"):
         config_text = config_text.replace('width = 640\nheight = 480', 'width = 1400\nheight = 900')
-    if case == "sharp-preview":
+    if case in ("sharp-preview", "sharp-optics"):
         stripes = ''.join(f'<rect x="{x}" y="0" width="1" height="20" fill="{"white" if x % 2 else "black"}"/>' for x in range(20))
         (directory / "stripes.svg").write_text(f'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20">{stripes}</svg>')
         config_text += '\n[theme.titlebar.controls]\nminimize = "stripes.svg"\nmaximize = "stripes.svg"\nclose = "stripes.svg"\n'
@@ -148,6 +199,17 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
         if case == "rounded-asymmetric": config_text = config_text.replace("corner_radius = 24", "corner_radius = [48, 0, 32, 0]")
         color = [48 / 255, 176 / 255, 80 / 255, 1.0]
         config_text += '\n[theme.titlebar]\nshow_title = false\n' + ''.join(f'{name} = {color}\n' for name in ("active_background", "inactive_background", "active_foreground", "inactive_foreground"))
+    if case == "sharp-optics":
+        config_text = config_text.replace("border_width = 0", "border_width = 0\nblur_method = 'kawase'\nblur_radius = 2\nblur_passes = 3")
+        config_text += "\n[theme.liquid_glass]\nenabled = true\n"
+    if case in OPTICAL_CASES:
+        WALLPAPER.png(directory / "wallpaper.png", 640, 480, optical_pattern)
+        radius = 12 if case == "translucent-gaussian" else 2 if case in ("translucent-kawase", "translucent-glass-blur") else 0
+        method = "gaussian" if case == "translucent-gaussian" else "kawase"
+        config_text = config_text.replace("border_width = 0", f"border_width = 0\ncorner_radius = 24\nblur_method = '{method}'\nblur_radius = {radius}\nblur_passes = 3")
+        config_text += '\n[wallpaper]\npath = "wallpaper.png"\nmode = "fill"\n'
+        if "glass" in case:
+            config_text += '\n[theme.liquid_glass]\nenabled = true\n'
     if case == "wallpaper":
         WALLPAPER.png(directory / "wallpaper.png", 640, 480, lambda x, y: (120, 90, 60))
         config_text += '\n[wallpaper]\npath = "wallpaper.png"\nmode = "fill"\n'
@@ -178,11 +240,11 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                 client.command("layer panel 2 0 32 32 0 e04030")
                 client.expect("panel configure", configured=("panel",))
                 client.command("map panel")
-                client.expect("panel mapped", sizes={"panel": (1400 if case in ("sharp-preview", "rounded-previews", "rounded-asymmetric") else 640, 32)})
-            operation = "app-xdg" if case in ("ssd", "sharp-preview", "rounded-previews", "rounded-asymmetric") else "app"
-            client.command(f"{operation} app 640 480 {1 if case in ('sharp-preview', 'rounded-previews', 'rounded-asymmetric') else 0} 7 30b050" + (" server" if operation == "app-xdg" else ""))
+                client.expect("panel mapped", sizes={"panel": (1400 if case in ("sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") else 640, 32)})
+            operation = "app-xdg" if case in ("ssd", "sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") else "app"
+            client.command(f"{operation} app 640 480 {1 if case in ('sharp-preview', 'sharp-optics', 'rounded-previews', 'rounded-asymmetric') else 0} 7 30b050" + (" server" if operation == "app-xdg" else ""))
             client.expect("first app mapped", focus="app")
-            if case not in ("odd-outputs", "sharp-preview", "rounded-previews", "rounded-asymmetric"):
+            if case not in ("odd-outputs", "sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") and case not in OPTICAL_CASES:
                 client.command("app other 640 480 0 0 3060e0")
                 client.expect("second app mapped", focus="other")
             if case == "many-windows":
@@ -225,6 +287,9 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
 
                 client.command("minimize app")
                 client.expect("minimized window retained", focus="other")
+            if case in OPTICAL_CASES:
+                client.command("subsurface child app 40 160 290 120 20c0d0")
+                client.expect("opaque sharp foreground committed", sizes={"child": (40, 160)})
             if case == "alpha-subsurface":
                 client.command("subsurface child app 60 60 20 20 20c0d0")
                 client.expect("subsurface committed", sizes={"child": (60, 60)})
@@ -232,7 +297,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                 size = client.command("state")["views"]["app"]
                 client.command(f"subsurface child app 60 60 {size['width'] - 60} {size['height'] - 60} 20c0d0")
                 client.expect("bottom corner committed", sizes={"child": (60, 60)})
-            if case == "sharp-preview":
+            if case in ("sharp-preview", "sharp-optics"):
                 client.command("pattern app")
                 client.expect("sharp content committed", focus="app")
             if case not in ("odd-outputs", "many-windows"):
@@ -260,7 +325,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
             client.expect("overview removes protocol keyboard focus", focus="none")
             for extra in extra_clients:
                 extra.expect("overview removes other clients' focus", focus="none")
-            if case in ("alpha-subsurface", "wallpaper"):
+            if case in ("alpha-subsurface", "wallpaper") or case in OPTICAL_CASES:
                 # Commit new content after entry to exercise live cache invalidation.
                 client.command("alpha app 128")
                 client.expect("new frame remains overview-owned", focus="none")
@@ -342,6 +407,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                 metrics["animation_at_capture"] = latest
             assert clear.wait(timeout=args.seconds + 5) == 0
             captured = check_frame(frame, case)
+            if case in OPTICAL_CASES: metrics["optical_oracle"] = captured
             if case.startswith("live-"):
                 expected = {16 + (n // 4 % 96) * 2 for n in range(max(0, latest["frame_count"] - 12), latest["frame_count"] + 13)}
                 assert captured & expected, ("GPU preview lagged behind live callbacks", case, captured, latest)
