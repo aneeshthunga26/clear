@@ -491,15 +491,19 @@ mod tests {
         );
         assert!(state.overview_present());
         assert_eq!(state.overview_workspace_zoom().unwrap().canvas, tile);
+        assert_eq!(state.overview_shell_reveal(), Some((OutputId(1), 0.0)));
         state.animation_sample_time = base + std::time::Duration::from_millis(350);
         state.sample_overview_animation();
         let middle = state.overview_workspace_zoom().unwrap().canvas;
+        let reveal = state.overview_shell_reveal().unwrap().1;
+        assert!(reveal > 0.0 && reveal < 1.0);
         assert!(middle.width > tile.width && middle.width < layout.output.width);
         state.frame_time = state.animation_sample_time;
         state.mark_overview_presented();
         state.runtime.toggle_overview();
         state.reconcile();
         assert_eq!(state.overview_workspace_zoom().unwrap().canvas, middle);
+        assert_eq!(state.overview_shell_reveal().unwrap().1, reveal);
         assert_eq!(
             state.runtime.desktop.workspace_for_output(OutputId(1)),
             Some(WorkspaceId(3))
@@ -514,6 +518,7 @@ mod tests {
             state.overview_workspace_zoom().unwrap().canvas,
             layout.output
         );
+        assert_eq!(state.overview_shell_reveal(), Some((OutputId(1), 1.0)));
         assert!(
             state.overview_present(),
             "sampling cannot hand input back before submission"
@@ -521,6 +526,7 @@ mod tests {
         state.mark_overview_presented();
         assert!(!state.overview_present());
         assert!(state.overview_workspace_zoom().is_none());
+        assert!(state.overview_shell_reveal().is_none());
         assert!(state.suppressed_buttons.is_empty());
     }
 

@@ -52,9 +52,22 @@ from the resulting visible desktop fade out. Desktop endpoints are bounded to
 the selected workspace's first overview page (at most twelve windows). Additional
 visible windows return with the ordinary desktop at terminal handoff.
 
+During this tile zoom, mapped top/overlay layer-shell trees and their popups on
+the interactive output MUST fade in at their ordinary output-local positions as
+the tile's expansion amount increases, reaching full opacity at handoff. A reopen
+reverses this reveal with the same submitted expansion amount. Overlay layers
+retain priority; top layers MUST NOT be revealed above a fullscreen desktop.
+Bottom/background layers and other outputs remain covered until ordinary handoff.
+Each revealed tree replaces its hidden ordinary-scene copy. Its backdrop effects
+sample the composited live overview/zoom beneath it; explicit glass outlines fade
+their geometric coverage with the tree's opacity. This reveal changes presentation
+only: keyboard/pointer ownership, reservations, configure sizes and mapping
+lifecycle MUST NOT change before the existing terminal-frame handoff. Entry,
+steady overview and ordinary window-card/cancel exits keep their existing coverage.
+
 The underlying overview cards, strip and labels fade behind the expanding
 desktop; the selected tile MUST NOT render a second stationary miniature copy.
-Empty desktops expand their wallpaper/background alone. Global overview effect,
+Empty desktops expand their wallpaper/background without window previews. Global overview effect,
 speed, sampling and reduced-motion/disable behavior apply without another engine
 track or screenshots. Reopening during this zoom shrinks it from its submitted
 expansion amount while the new overview opens; it MUST NOT roll back the already
@@ -215,8 +228,11 @@ armed card click.
 
 ## Rendering and resource bounds
 
-Overview is the final compositor pass above wallpapers, applications, popups and
-all ordinary layers, after any desktop blur/glass composition. Cards themselves
+Overview ordinarily renders as the final compositor pass above wallpapers,
+applications, popups and ordinary layers, after desktop blur/glass composition.
+Desktop-tile activation inserts the live overview beneath the revealed shell
+trees as described in [presentation transitions](#presentation-transitions).
+Cards themselves
 MUST NOT invoke optical filtering or recursively capture the overview. No public
 screencopy protocol, CPU window readback, image encoding or shell thumbnail
 transport is used.
@@ -257,8 +273,8 @@ texture rather than allocating a texture for each destination size.
 The canvas, miniature desktops and dimmed outer backdrop reuse renderer-owned
 wallpaper textures. Preview placement MUST scale the full-output wallpaper crop
 and letterboxing, including `center` and `fit`, rather than recomputing a crop for
-the small destination. The outer backdrop covers normal windows and layers with
-wallpaper/theme background before dimming it. Other outputs show that dimmed
+the small destination. The outer backdrop covers normal windows and unrevealed
+layers with wallpaper/theme background before dimming it. Other outputs show that dimmed
 backdrop; only the interactive output shows the strip and window canvas.
 
 The renderer-local thumbnail cache MUST retain at most 128 RGBA8 textures and
@@ -329,6 +345,9 @@ hot corners and touchpad progress remain future work.
   module checks tile/window endpoints, midpoint, missing representatives and empty
   desktops. `workspace_zoom_reverses_from_submitted_progress_without_rolling_back_policy`
   checks interrupted reopen/close geometry.
+- [Shell reveal and scene ordering tests](../src/platform/smithay/scene.rs) check
+  output-local eligibility, fullscreen top/overlay priority, and blur group ranges
+  when the revealed shell and unfiltered overview precede the ordinary scene.
 - [Drag presentation and unit tests](../src/platform/smithay/overview_drag.rs):
   pickup starts at the card, retargets start at submitted geometry, proximity
   uses the same fitted miniature dimensions, moving away reverses sizing, output
@@ -344,7 +363,8 @@ hot corners and touchpad progress remain future work.
   These are compositor seat tests, not physical device tests.
   `overview_workspace_click_expands_the_submitted_tile_until_terminal_submit`
   commits an empty desktop through synthetic clicks, checks tile/midpoint/full
-  bounds and retains input ownership until successful terminal submission.
+  bounds and shell-reveal opacity, and retains input ownership until successful
+  terminal submission.
   `overview_hover_click_and_drag_without_shell_ipc` checks default/opt-in hover,
   workspace clicks, threshold/drop/cancel behavior, frozen source preview,
   independent-transfer invalidation and matching releases.

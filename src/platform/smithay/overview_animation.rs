@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     config::AnimationEffect,
-    core::{Rect, WindowId, WorkspaceId},
+    core::{OutputId, Rect, WindowId, WorkspaceId},
     runtime::{
         OverviewSession, OverviewTarget,
         animation::{AnimationPose, AnimationRect},
@@ -199,6 +199,19 @@ impl Compositor {
                 animation.progress,
                 animation.transition_start,
             ),
+        ))
+    }
+    /// Reveal shell layers as the selected desktop expands, reversing with a reopen.
+    pub fn overview_shell_reveal(&self) -> Option<(OutputId, f32)> {
+        let animation = &self.overview_animation;
+        let zoom = animation.workspace_zoom.as_ref()?;
+        Some((
+            animation.session.as_ref()?.output,
+            zoom.amount(
+                animation.open,
+                animation.progress,
+                animation.transition_start,
+            ) as f32,
         ))
     }
     fn overview_desktop_frames(

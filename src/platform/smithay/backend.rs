@@ -3,8 +3,8 @@ use super::{
     frame_scheduler::{FrameScheduler, HostTiming},
     overview::OverviewCache,
     rounded::RoundedShaders,
-    scene::SceneElement,
     scene::premultiply,
+    scene::{SceneElement, SceneGroup},
     state::{Compositor, OutputRegion},
     titlebar::TitlebarCache,
     wallpaper::WallpaperCache,
@@ -172,7 +172,7 @@ pub(super) fn init(
                             )
                             .map_err(|e| format!("prepare window animations: {e}"))?;
                     }
-                    let scene = state
+                    let mut scene = state
                         .scene_elements(
                             renderer,
                             &mut wallpapers,
@@ -197,6 +197,19 @@ pub(super) fn init(
                         overview.clear();
                         Vec::new()
                     };
+                    if state.overview_shell_reveal().is_some() {
+                        let mut revealed = state.overview_shell_scene(renderer);
+                        let start = revealed.elements.len();
+                        revealed.elements.append(&mut final_elements);
+                        revealed.groups.push(SceneGroup {
+                            elements: start..revealed.elements.len(),
+                            clip: Rectangle::from_size(size),
+                            mask: None,
+                        });
+                        // Shell blur must sample the live zoom beneath it, not
+                        // the ordinary scene hidden behind the retained overview.
+                        scene.prepend(revealed);
+                    }
                     if radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled {
                         if blur.is_none() {
                             blur = Some(

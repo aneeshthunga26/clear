@@ -35,7 +35,7 @@ pub(super) enum BlurMask {
     /// No protocol blur region: weight blur by tree alpha, preserving transparent holes.
     ClientAlpha(crate::core::Rect),
     /// Glass layer uses its namespace outline as independent geometric coverage.
-    GlassLayer(RoundedShape),
+    GlassLayer { shape: RoundedShape, alpha: f32 },
 }
 
 fn rect_uniform(rect: crate::core::Rect) -> [f32; 4] {
@@ -275,7 +275,7 @@ impl BackdropBlur {
             let shape = match mask {
                 BlurMask::Window(shape)
                 | BlurMask::SquareWindow(shape)
-                | BlurMask::GlassLayer(shape) => shape,
+                | BlurMask::GlassLayer { shape, .. } => shape,
                 BlurMask::AnimatedWindow {
                     source,
                     destination,
@@ -305,7 +305,8 @@ impl BackdropBlur {
                 Uniform::new(
                     "coverage_alpha",
                     match mask {
-                        BlurMask::AnimatedWindow { alpha, .. } => alpha.clamp(0.0, 1.0),
+                        BlurMask::AnimatedWindow { alpha, .. }
+                        | BlurMask::GlassLayer { alpha, .. } => alpha.clamp(0.0, 1.0),
                         _ => 1.0_f32,
                     },
                 ),
@@ -355,7 +356,7 @@ impl BackdropBlur {
                         BlurMask::Window(_) => 0.0_f32,
                         BlurMask::AnimatedWindow { .. } => 4.0_f32,
                         BlurMask::ClientAlpha(_) => 1.0,
-                        BlurMask::GlassLayer(_) => 3.0,
+                        BlurMask::GlassLayer { .. } => 3.0,
                         BlurMask::SquareWindow(_) => 2.0,
                     },
                 ),

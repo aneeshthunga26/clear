@@ -950,6 +950,30 @@ Existing GPU/protocol regressions passed on private local virtual KWin, not a VM
 entry/ordinary exit under `target/overview-desktop-zoom/animation-regression/`.
 These fixtures do not activate workspace tiles or validate the new zoom's pixels.
 
+### Shell reveal during desktop-tile zoom (2026-10-11)
+
+Cargo fmt/check/test/build passed (139 library tests); Rust Analyzer reported no
+error/warning-level diagnostics. Scene tests check output-local layer eligibility,
+fullscreen top/overlay ordering and the element ranges of prepended shell,
+unfiltered overview and ordinary blur groups. The synthetic workspace-click seat
+test checks zero/intermediate/full shell opacity, reversal continuity, terminal
+cleanup and retained overview input ownership.
+
+For manual review, click desktop tiles with a live panel mapped. Check the panel
+fades in while the tile expands, then reopen overview mid-transition to reverse
+the fade. Compare a fullscreen destination (top panel stays behind it; overlays
+retain priority), and repeat with a glass panel to check sharp foreground and
+blurred live overview beneath it. This is a manual procedure, not an automated
+GPU/input-latency pass. See the [overview contract](../specs/overview.md#presentation-transitions).
+
+Existing GPU/protocol cases passed on private local virtual KWin, not a VM:
+overview `cards`/`rounded-blur`, layer `panel-mapped`/`layer-popup`/`priority-overlay`,
+fullscreen `ssd-held`, and Kawase radius 2/passes 3 with liquid glass
+`layer-top`/`glass-corner`. Artifacts are under
+`target/overview-shell-reveal/{overview,layer,fullscreen,glass}-regression/`.
+These fixtures check existing layer/popup/blur/fullscreen pixels, not animated
+shell-reveal pixels or physical input.
+
 ### Live overview validation (2026-10-09)
 
 All seventeen overview GPU/protocol cases passed on a private local virtual

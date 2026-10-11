@@ -10,7 +10,8 @@ only directory allowed to depend on Smithay and Wayland types.
 - `state.rs`: compositor resources, managed client handles, output regions,
   effect execution, and runtime bridge.
 - `backend.rs`: nested winit lifecycle, virtual outputs, rendering loop, bounded
-  shutdown, and framebuffer capture.
+  shutdown, and framebuffer capture. Insert tile-zoom overview beneath revealed
+  shell trees before backdrop filtering so their blur samples the live preview.
 - `frame_scheduler.rs`: coalesced host redraw requests, monotonic frame capture,
   absolute capped animation sampling, and explicitly identified host metadata or
   nominal timing. Keep animation sampling separate from client callback pacing.
@@ -65,7 +66,10 @@ only directory allowed to depend on Smithay and Wayland types.
   activation through `finish_overview_selection` before committing selection;
   the optional live tile zoom shares the overview track and bounded image cache.
 - `scene.rs`: reconciliation, configure requests, ordered rendering/hit-testing,
-  shared visibility clips, and frame callbacks.
+  shared visibility clips, and frame callbacks. Tile zoom reveals live top/overlay
+  shell trees with presentation opacity; omit their ordinary copies and preserve
+  fullscreen ordering and overview input ownership. Remap blur group ranges when
+  prepending scene trees.
 - `wallpaper.rs`: renderer-owned immutable texture cache, per-output image
   placement and scaled overview placement preserving the full-output crop.
   Resource decoding and filesystem access stay in runtime.

@@ -306,7 +306,10 @@ Client-alpha layer trees may opt into geometric glass outlines with the
 fits those opt-in radii to the original tree bounds before applying the optical
 maps. For these explicit glass layers, the fitted outline supplies independent
 backdrop coverage across the whole panel, including transparent interior pixels;
-client alpha still composites foreground text and controls sharply. Other
+client alpha still composites foreground text and controls sharply. When an
+[overview shell reveal](overview.md#presentation-transitions) fades a layer tree,
+its independent geometric coverage MUST be multiplied by the same opacity, so
+invisible panels cannot leave a frosted/glass footprint. Other
 layer-shell surfaces continue using alpha-derived backdrop coverage and square
 optical bounds because their protocol does not expose client corner radii.
 
@@ -345,6 +348,12 @@ state restored, and the window framebuffer restored before presentation/capture.
 [Overview rendering](overview.md#rendering-and-resource-bounds) is a final
 compositor-owned pass after desktop filtering, with independently bounded GPU
 thumbnails and labels. Cards reuse committed buffers without client resizes.
+During desktop-tile activation, the live overview is instead inserted as an
+unfiltered tree below the revealed top/overlay shell trees and above the ordinary
+scene. Existing shell popup/tree blur groups then sample the live expanding
+desktop beneath them, with valid remapped element ranges. The ordinary scene MUST
+omit those revealed trees to avoid drawing them twice. The shell reveal's
+eligibility, opacity and input ownership follow the [overview contract](overview.md#presentation-transitions).
 
 ## Implementation and evidence
 

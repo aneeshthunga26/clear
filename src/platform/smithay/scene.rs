@@ -49,6 +49,30 @@ pub(super) struct Scene {
     pub groups: Vec<SceneGroup>,
 }
 
+impl Scene {
+    /// Add front-to-back trees while keeping every blur group's element range valid.
+    pub fn prepend(&mut self, mut front: Scene) {
+        let offset = front.elements.len();
+        for group in &mut self.groups {
+            group.elements = group.elements.start + offset..group.elements.end + offset;
+        }
+        front.elements.append(&mut self.elements);
+        front.groups.append(&mut self.groups);
+        *self = front;
+    }
+}
+
+fn shell_reveal_alpha(
+    reveal: Option<(OutputId, f32)>,
+    output: OutputId,
+    layer: Layer,
+    fullscreen: bool,
+) -> Option<f32> {
+    let (selected, alpha) = reveal?;
+    (selected == output && (layer == Layer::Overlay || (layer == Layer::Top && !fullscreen)))
+        .then_some(alpha)
+}
+
 pub(super) struct SceneGroup {
     pub elements: std::ops::Range<usize>,
     pub clip: Rectangle<i32, Physical>,
@@ -663,13 +687,31 @@ impl Compositor {
         let mut drawn_workspaces = BTreeSet::new();
         titlebars.retain(|id| self.windows.get(&id).is_some_and(|entry| entry.uses_ssd()));
         let full_outputs = self.fullscreen_outputs();
-        self.layer_elements(renderer, &[Layer::Overlay], &mut elements, &mut groups);
+        let reveal = self.overview_shell_reveal();
+        self.layer_elements_filtered(
+            renderer,
+            &[Layer::Overlay],
+            &mut elements,
+            &mut groups,
+            |output| {
+                shell_reveal_alpha(
+                    reveal,
+                    output,
+                    Layer::Overlay,
+                    full_outputs.contains(&output),
+                )
+                .is_none()
+            },
+        );
         self.layer_elements_filtered(
             renderer,
             &[Layer::Top],
             &mut elements,
             &mut groups,
-            |output| !full_outputs.contains(&output),
+            |output| {
+                !full_outputs.contains(&output)
+                    && shell_reveal_alpha(reveal, output, Layer::Top, false).is_none()
+            },
         );
 
         for elevated in [true, false] {
@@ -1075,6 +1117,47 @@ impl Compositor {
         groups: &mut Vec<SceneGroup>,
         include: impl Fn(OutputId) -> bool,
     ) {
+        self.layer_elements_with_opacity(renderer, kinds, elements, groups, 1.0, include);
+    }
+
+    /// Live panels/popups appear during tile expansion, without changing protocol focus.
+    pub fn overview_shell_scene(&self, renderer: &mut GlesRenderer) -> Scene {
+        let mut scene = Scene {
+            elements: Vec::new(),
+            groups: Vec::new(),
+        };
+        let Some(reveal @ (_, alpha)) = self.overview_shell_reveal() else {
+            return scene;
+        };
+        if alpha <= 0.0 {
+            return scene;
+        }
+        let fullscreen = self.fullscreen_outputs();
+        for layer in [Layer::Overlay, Layer::Top] {
+            self.layer_elements_with_opacity(
+                renderer,
+                &[layer],
+                &mut scene.elements,
+                &mut scene.groups,
+                alpha,
+                |output| {
+                    shell_reveal_alpha(Some(reveal), output, layer, fullscreen.contains(&output))
+                        .is_some()
+                },
+            );
+        }
+        scene
+    }
+
+    fn layer_elements_with_opacity(
+        &self,
+        renderer: &mut GlesRenderer,
+        kinds: &[Layer],
+        elements: &mut Vec<SceneElement>,
+        groups: &mut Vec<SceneGroup>,
+        alpha: f32,
+        include: impl Fn(OutputId) -> bool,
+    ) {
         for kind in kinds {
             for region in &self.outputs {
                 if !include(region.id) {
@@ -1110,7 +1193,7 @@ impl Compositor {
                                 &surface,
                                 location,
                                 1.0,
-                                1.0,
+                                alpha,
                                 Kind::Unspecified,
                             );
                         let shape = client_tree_shape(&surfaces);
@@ -1124,8 +1207,10 @@ impl Compositor {
                         );
                         let root = surface == *layer.wl_surface();
                         let mask = shape.map(|rect| {
-                            glass_layer_shape(rect, layer.namespace(), root)
-                                .map_or(BlurMask::ClientAlpha(rect), BlurMask::GlassLayer)
+                            glass_layer_shape(rect, layer.namespace(), root).map_or(
+                                BlurMask::ClientAlpha(rect),
+                                |shape| BlurMask::GlassLayer { shape, alpha },
+                            )
                         });
                         groups.push(SceneGroup {
                             elements: start..elements.len(),
@@ -1278,6 +1363,118 @@ fn square_border_regions(
 mod tests {
     use super::*;
     use crate::core::{Command, WorkspaceId};
+
+    #[test]
+    fn shell_reveal_follows_zoom_only_on_its_output_and_preserves_fullscreen_priority() {
+        let output = OutputId(1);
+        for alpha in [0.0, 0.4, 1.0] {
+            let reveal = Some((output, alpha));
+            assert_eq!(
+                shell_reveal_alpha(reveal, output, Layer::Top, false),
+                Some(alpha)
+            );
+            assert_eq!(
+                shell_reveal_alpha(reveal, output, Layer::Overlay, true),
+                Some(alpha)
+            );
+            assert_eq!(shell_reveal_alpha(reveal, output, Layer::Top, true), None);
+            assert_eq!(
+                shell_reveal_alpha(reveal, OutputId(2), Layer::Overlay, false),
+                None
+            );
+            assert_eq!(
+                shell_reveal_alpha(reveal, output, Layer::Bottom, false),
+                None
+            );
+            assert_eq!(
+                shell_reveal_alpha(reveal, output, Layer::Background, false),
+                None
+            );
+        }
+        assert_eq!(
+            shell_reveal_alpha(None, output, Layer::Overlay, false),
+            None
+        );
+    }
+
+    #[test]
+    fn prepended_shell_and_overview_keep_front_to_back_blur_groups() {
+        let element = || {
+            SceneElement::Border(SolidColorRenderElement::from_buffer(
+                &SolidColorBuffer::new((8, 8), [1.0, 0.0, 0.0, 1.0]),
+                (0, 0),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            ))
+        };
+        let clip = Rectangle::from_size((100, 100).into());
+        let mut scene = Scene {
+            elements: vec![element(), element()],
+            groups: vec![
+                SceneGroup {
+                    elements: 0..1,
+                    clip,
+                    mask: None,
+                },
+                SceneGroup {
+                    elements: 1..2,
+                    clip,
+                    mask: None,
+                },
+            ],
+        };
+        let underlying_ids = scene
+            .elements
+            .iter()
+            .map(|element| element.id().clone())
+            .collect::<Vec<_>>();
+        let front = Scene {
+            elements: vec![element(), element(), element()],
+            groups: vec![
+                SceneGroup {
+                    elements: 0..1,
+                    clip,
+                    mask: Some(BlurMask::ClientAlpha(Rect::new(0, 0, 8, 8))),
+                },
+                SceneGroup {
+                    elements: 1..3,
+                    clip,
+                    mask: None,
+                },
+            ],
+        };
+        let front_ids = front
+            .elements
+            .iter()
+            .map(|element| element.id().clone())
+            .collect::<Vec<_>>();
+        scene.prepend(front);
+        assert_eq!(
+            scene
+                .groups
+                .iter()
+                .map(|group| group.elements.clone())
+                .collect::<Vec<_>>(),
+            vec![0..1, 1..3, 3..4, 4..5]
+        );
+        assert_eq!(
+            scene
+                .elements
+                .iter()
+                .map(|element| element.id().clone())
+                .collect::<Vec<_>>(),
+            front_ids
+                .into_iter()
+                .chain(underlying_ids)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            scene.groups[0].mask.is_some(),
+            "shell blur remains above the unfiltered overview group"
+        );
+        assert!(scene.groups[1].mask.is_none());
+    }
 
     #[test]
     fn animated_hits_inverse_map_original_rounding_ssd_and_surface_offsets() {
