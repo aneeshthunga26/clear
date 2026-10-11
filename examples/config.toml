@@ -5,6 +5,8 @@
 # leader+w toggles the compositor overview.
 # leader+Up toggles maximize; leader+Down minimizes. Alt+Tab/dock focus restores.
 # Relative script paths resolve against the directory containing config.toml.
+# Set true to display compositor FPS; see specs/rendering.md#fps-overlay.
+show_fps = false
 gaps = 8
 script = "columns.rhai"
 

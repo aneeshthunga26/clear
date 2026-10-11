@@ -2,6 +2,8 @@
 # Run: target/debug/clear --config examples/liquid-glass.toml --command foot -o colors-dark.alpha=0.55 -o colors-dark.background=232834
 # For a timed test, add --exit-after 120 before --command; it closes Clear after two minutes.
 # Glass panels: dbus-run-session -- target/debug/clear --config examples/liquid-glass.toml --command quickshell -p examples/quickshell/liquid-glass.qml
+# Set true to display compositor FPS; see specs/rendering.md#fps-overlay.
+show_fps = false
 gaps = 24
 
 [[outputs]]

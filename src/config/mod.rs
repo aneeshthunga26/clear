@@ -1,6 +1,6 @@
 //! TOML configuration with deterministic defaults and all-or-default startup loading.
 //!
-//! `gaps` and `script` are top-level keys. Arrays use `[[outputs]]`,
+//! `gaps`, `show_fps`, and `script` are top-level keys. Arrays use `[[outputs]]`,
 //! `[[workspaces]]`, and `[[bindings]]`; each supplied array replaces its default.
 //! Bindings use a flattened snake-case `action` tag and action-specific fields.
 
@@ -78,6 +78,8 @@ pub struct Config {
     pub bindings: Vec<Binding>,
     /// Layout gap in logical pixels.
     pub gaps: i32,
+    /// Show submitted-frame FPS and average interval on the nested host framebuffer.
+    pub show_fps: bool,
     /// Optional Rhai extension file; relative paths are resolved when loading a file.
     pub script: Option<PathBuf>,
     /// Static renderer styling.
@@ -112,6 +114,7 @@ impl Default for Config {
                 .collect(),
             bindings: input::default_bindings(),
             gaps: 8,
+            show_fps: false,
             script: None,
             theme: Theme::default(),
             wallpaper: WallpaperConfig::default(),
@@ -129,6 +132,7 @@ struct Source {
     workspaces: Vec<WorkspaceConfig>,
     bindings: Vec<Binding>,
     gaps: i32,
+    show_fps: bool,
     script: Option<PathBuf>,
     theme: Theme,
     wallpaper: WallpaperConfig,
@@ -146,6 +150,7 @@ impl Default for Source {
             workspaces: config.workspaces,
             bindings: config.bindings,
             gaps: config.gaps,
+            show_fps: config.show_fps,
             script: config.script,
             theme: config.theme,
             wallpaper: config.wallpaper,
@@ -228,6 +233,7 @@ impl Config {
             workspaces: source.workspaces,
             bindings: source.bindings,
             gaps: source.gaps,
+            show_fps: source.show_fps,
             script: source.script.filter(|p| !p.as_os_str().is_empty()),
             theme: source.theme,
             wallpaper: source.wallpaper,

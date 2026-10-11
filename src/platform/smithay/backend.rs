@@ -1,5 +1,6 @@
 use super::{
     blur::BackdropBlur,
+    fps::FpsOverlay,
     frame_scheduler::{FrameScheduler, HostTiming},
     overview::OverviewCache,
     rounded::RoundedShaders,
@@ -85,6 +86,7 @@ pub(super) fn init(
     let mut wallpapers = WallpaperCache::default();
     let mut titlebars = TitlebarCache::default();
     let mut overview = OverviewCache::default();
+    let mut fps = FpsOverlay::default();
     let mut window_images = WindowImageComposer::default();
     let mut rounded = None;
     let mut blur = None;
@@ -124,6 +126,7 @@ pub(super) fn init(
             }
             WinitEvent::Redraw => {
                 let now = state.start.elapsed();
+                fps.set_enabled(state.runtime.config.show_fps);
                 let current_timing = self::host_timing(backend.window());
                 if current_timing != host_timing {
                     host_timing = current_timing;
@@ -235,6 +238,12 @@ pub(super) fn init(
                     } else {
                         final_elements.extend(scene.elements);
                     }
+                    if let Some(element) = fps
+                        .element(renderer, &mut titlebars, size)
+                        .map_err(|e| format!("prepare FPS overlay: {e}"))?
+                    {
+                        final_elements.insert(0, element);
+                    }
                     // Restore the window target after all thumbnail/blur offscreen work.
                     damage
                         .render_output(renderer, &mut framebuffer, 0, &final_elements, background)
@@ -290,6 +299,7 @@ pub(super) fn init(
                     state.fail(format!("submit frame: {error}"));
                     return;
                 }
+                fps.submitted(state.start.elapsed());
                 state.acknowledge_window_animations();
                 state.mark_overview_presented();
                 state.mark_overview_drag_presented();

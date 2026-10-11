@@ -1,5 +1,7 @@
 # Nested VM demo. Ctrl+Alt avoids most of the host desktop's Super shortcuts.
 # This binding list replaces the defaults and exposes workspaces 1–3.
+# Set true to display compositor FPS; see specs/rendering.md#fps-overlay.
+show_fps = false
 gaps = 12
 
 # Bundled procedural aurora wallpaper; no shell process required.

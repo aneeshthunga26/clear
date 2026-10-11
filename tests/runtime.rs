@@ -129,6 +129,22 @@ fn reload_keeps_last_good_config_on_parse_script_or_topology_failure() {
 }
 
 #[test]
+fn fps_setting_reloads_atomically() {
+    let fixture = Fixture::new();
+    let mut runtime = Runtime::load(Some(fixture.config(""))).unwrap();
+    assert!(!runtime.config.show_fps);
+    fixture.config("show_fps = true");
+    runtime.reload().unwrap();
+    assert!(runtime.config.show_fps);
+    fixture.config("show_fps = 'false'");
+    assert!(runtime.reload().is_err());
+    assert!(runtime.config.show_fps);
+    fixture.config("show_fps = false");
+    runtime.reload().unwrap();
+    assert!(!runtime.config.show_fps);
+}
+
+#[test]
 fn overview_hover_reload_is_atomic_and_preserves_an_open_preview() {
     let fixture = Fixture::new();
     let mut runtime = Runtime::load(Some(

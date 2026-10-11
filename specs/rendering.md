@@ -1,5 +1,31 @@
 # Theme and rendering
 
+## FPS overlay
+
+Top-level `show_fps = true` enables a compositor-owned diagnostic overlay at the
+host framebuffer's top-right, above windows, fullscreen clients, shell layers and
+overview. Its strict boolean defaults to false and follows atomic config reload.
+It owns no input, reservations or client protocol state.
+
+The overlay MUST measure intervals between successful nested backend submissions
+using monotonic elapsed time, including rendering, swap waiting and missed frames.
+It reports FPS and the average submission interval in milliseconds over successive
+windows of at least 500 ms. The first reading is `--` until a measurement window
+completes. It MUST NOT quantize the reading to refresh-rate divisors, change pacing,
+or claim host presentation feedback or the animation sampling rate. A long stall
+is included in the next reading. Disabling releases the texture and measurement;
+reenabling starts a fresh window.
+
+A single 240×32 RGBA8 texture (30,720 bytes, excluding driver overhead and transient
+replacement allocation) is cached until the reading changes. Rasterization reuses
+prepared titlebar fonts, without per-frame filesystem access. The overlay draws
+once after backdrop filtering and overview composition; host bounds clip it on
+small framebuffers. It does not affect blur inputs or retained animation images.
+
+Evidence: [fps.rs](../src/platform/smithay/fps.rs) rate/stall/reset unit tests,
+`fps_setting_reloads_atomically` in [runtime tests](../tests/runtime.rs), and
+malformed-value coverage in [configuration tests](../tests/extensions.rs).
+
 ## Theme
 
 The backend-independent theme describes appearance; GPU objects belong to the

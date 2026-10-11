@@ -1,5 +1,7 @@
 # Single-output nested session. Ctrl+Alt avoids most host Super shortcuts.
 # This binding list replaces the defaults and exposes workspaces 1–3.
+# Set true to display compositor FPS; see specs/rendering.md#fps-overlay.
+show_fps = false
 gaps = 12
 
 # Explicitly replace the two default virtual outputs with one full-window output.

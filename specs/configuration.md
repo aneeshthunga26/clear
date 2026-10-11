@@ -14,6 +14,7 @@ default configuration rather than partly applying invalid declarations.
 | `workspaces`             | IDs 1–9, names `1`–`9`, mode `columns`          | 1–256 declarations; unique positive IDs; nonblank names             |
 | Workspace `mode`         | `columns`                                       | Nonblank mode string, at most 256 bytes                             |
 | Workspace `output_modes` | Empty                                           | Configured output names mapped to mode strings                      |
+| `show_fps` | `false` | Strict boolean; [FPS overlay](rendering.md#fps-overlay) |
 | `gaps`                   | 8                                               | Integer logical pixels, 0–4096                                      |
 | `script`                 | Absent                                          | Optional Rhai path; empty path disables extensions                  |
 | `keys.leader`            | `Super`                                         | Explicit modifier combination; see [input](input.md)                |

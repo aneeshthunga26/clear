@@ -12,6 +12,9 @@ only directory allowed to depend on Smithay and Wayland types.
 - `backend.rs`: nested winit lifecycle, virtual outputs, rendering loop, bounded
   shutdown, and framebuffer capture. Insert tile-zoom overview beneath revealed
   shell trees before backdrop filtering so their blur samples the live preview.
+- `fps.rs`: optional submitted-frame diagnostics with a single cached texture,
+  drawn after filtering/overview. Measure successful submission intervals without
+  affecting pacing; [rendering](../../../specs/rendering.md#fps-overlay) owns semantics.
 - `frame_scheduler.rs`: coalesced host redraw requests, monotonic frame capture,
   absolute capped animation sampling, and explicitly identified host metadata or
   nominal timing. Keep animation sampling separate from client callback pacing.

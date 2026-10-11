@@ -223,6 +223,8 @@ fn config_rejects_malformed_or_ambiguous_values() {
         "unknown = 1",
         "gaps = -1",
         "gaps = 1.5",
+        "show_fps = 60",
+        "show_fps = 'true'",
         "outputs = []",
         "workspaces = []",
         "[keys]\nleader = 'leader'",

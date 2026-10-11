@@ -4,6 +4,7 @@ mod animations;
 mod backend;
 mod blur;
 mod decorations;
+mod fps;
 mod frame_scheduler;
 mod input;
 mod layers;
