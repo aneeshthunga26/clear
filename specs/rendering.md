@@ -423,14 +423,14 @@ state restored, and the window framebuffer restored before presentation/capture.
 
 ## Overview pass
 
-[Overview rendering](overview.md#rendering-and-resource-bounds) is a final
-compositor-owned pass after desktop filtering, with independently bounded GPU
-thumbnails and labels. Cards reuse committed buffers without client resizes.
-During desktop-tile activation, the live overview is instead inserted as an
-unfiltered tree below the revealed top/overlay shell trees and above the ordinary
-scene. Existing shell popup/tree blur groups then sample the live expanding
-desktop beneath them, with valid remapped element ranges. The ordinary scene MUST
-omit those revealed trees to avoid drawing them twice. The shell reveal's
+[Overview rendering](overview.md#rendering-and-resource-bounds) supplies a complete
+compositor-owned scene with independently bounded GPU thumbnails and labels.
+Cards reuse committed buffers without client resizes. Its window bodies use
+separate destination-local backdrop groups; shared client images stay free of
+optical filtering. During desktop-tile activation, revealed top/overlay shell
+trees prepend their own groups to that live overview scene with remapped element
+ranges. Shell blur then samples the expanding desktop and its filtered previews.
+The opaque overview backing replaces ordinary scene gathering/filtering. The shell reveal's
 eligibility, opacity and input ownership follow the [overview contract](overview.md#presentation-transitions).
 
 ## Implementation and evidence

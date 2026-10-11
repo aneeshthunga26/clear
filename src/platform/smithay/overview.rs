@@ -1,8 +1,9 @@
 //! Compositor-owned card layout, hits, and bounded renderer-local resources.
 
 use super::{
+    blur::BlurMask,
     rounded::RoundedShaders,
-    scene::{SceneElement, logical, premultiply},
+    scene::{Scene, SceneElement, SceneGroup, logical, premultiply},
     state::Compositor,
     titlebar::TitlebarCache,
     wallpaper::{WallpaperCache, WallpaperDestination},
@@ -22,7 +23,7 @@ use smithay::{
             gles::{GlesError, GlesRenderer, GlesTexture},
         },
     },
-    utils::Transform,
+    utils::{Physical, Rectangle, Transform},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -478,6 +479,8 @@ impl OverviewCache {
         composer: &mut WindowImageComposer,
         output_clip: Rect,
         opacity: f32,
+        offset: usize,
+        filters: &mut Vec<SceneGroup>,
     ) -> Result<Vec<SceneElement>, GlesError> {
         if opacity <= 0.0 {
             return Ok(Vec::new());
@@ -586,12 +589,29 @@ impl OverviewCache {
             opacity,
             output_clip,
         ) {
+            // Filter this destination's lower scene, never the shared client image.
+            // Keep selection rings outside the optical coverage of the body.
+            if theme.blur_radius > 0.0 || theme.liquid_glass.enabled {
+                let start = offset + elements.len();
+                filters.push(SceneGroup {
+                    elements: start..start + 1,
+                    clip: Rectangle::new(
+                        (output_clip.x, output_clip.y).into(),
+                        (output_clip.width, output_clip.height).into(),
+                    ),
+                    mask: Some(BlurMask::AnimatedWindow {
+                        source: outline.outer,
+                        destination: logical(dest).to_f64(),
+                        alpha: opacity,
+                    }),
+                });
+            }
             elements.push(SceneElement::Titlebar(body));
         }
         Ok(elements)
     }
 
-    /// Final compositor pass, front-to-back, covering all ordinary layer clients.
+    /// Complete overview scene, with destination-local backdrop groups.
     pub fn elements(
         &mut self,
         state: &Compositor,
@@ -600,17 +620,23 @@ impl OverviewCache {
         shaders: &RoundedShaders,
         wallpapers: &mut WallpaperCache,
         composer: &mut WindowImageComposer,
-    ) -> Result<Vec<SceneElement>, GlesError> {
+    ) -> Result<Scene, GlesError> {
         let Some(session) = state.overview_render_session() else {
             self.clear();
-            return Ok(Vec::new());
+            return Ok(Scene {
+                elements: Vec::new(),
+                groups: Vec::new(),
+            });
         };
         let Some(layout) = state
             .overview_sampled_layout()
             .or_else(|| state.overview_layout())
         else {
             self.clear();
-            return Ok(Vec::new());
+            return Ok(Scene {
+                elements: Vec::new(),
+                groups: Vec::new(),
+            });
         };
         if self.theme.as_ref() != Some(&state.runtime.config.theme)
             || self.output != Some((session.output, layout.output))
@@ -714,6 +740,7 @@ impl OverviewCache {
                 .is_none_or(|size| cached.image.size() == *size)
         });
         let mut elements = Vec::new();
+        let mut filters = Vec::new();
         let region = state
             .outputs
             .iter()
@@ -733,6 +760,8 @@ impl OverviewCache {
                     composer,
                     zoom.canvas,
                     *opacity,
+                    elements.len(),
+                    &mut filters,
                 ) {
                     Ok(preview) => elements.extend(preview),
                     Err(error) => tracing_fallback(error),
@@ -785,6 +814,8 @@ impl OverviewCache {
                 composer,
                 layout.output,
                 state.overview_window_opacity(drag.window),
+                elements.len(),
+                &mut filters,
             ) {
                 Ok(preview) => elements.extend(preview),
                 Err(error) => tracing_fallback(error),
@@ -825,8 +856,12 @@ impl OverviewCache {
                                 &sizes,
                                 shaders,
                                 composer,
-                                layout.output,
+                                preview
+                                    .intersection(layout.output)
+                                    .expect("visible miniature"),
                                 state.overview_progress() as f32,
+                                elements.len(),
+                                &mut filters,
                             ) {
                                 Ok(preview) => elements.extend(preview),
                                 Err(error) => {
@@ -883,6 +918,8 @@ impl OverviewCache {
                             composer,
                             layout.output,
                             state.overview_window_opacity(id),
+                            elements.len(),
+                            &mut filters,
                         ) {
                             Ok(preview) => elements.extend(preview),
                             Err(error) => {
@@ -1045,8 +1082,42 @@ impl OverviewCache {
                 .destinations
                 .retain(|_, ids| ids.generation == self.generation);
         }
-        Ok(elements)
+        Ok(overview_scene(
+            elements,
+            filters,
+            Rectangle::from_size((state.host_size.w, state.host_size.h).into()),
+        ))
     }
+}
+
+// Cover all unfiltered spans as well: backdrop composition walks groups in reverse.
+fn overview_scene(
+    elements: Vec<SceneElement>,
+    filters: Vec<SceneGroup>,
+    clip: Rectangle<i32, Physical>,
+) -> Scene {
+    let mut groups = Vec::with_capacity(filters.len() * 2 + 1);
+    let mut start = 0;
+    for filter in filters {
+        debug_assert!(filter.elements.start >= start && filter.elements.end <= elements.len());
+        if start < filter.elements.start {
+            groups.push(SceneGroup {
+                elements: start..filter.elements.start,
+                clip,
+                mask: None,
+            });
+        }
+        start = filter.elements.end;
+        groups.push(filter);
+    }
+    if start < elements.len() {
+        groups.push(SceneGroup {
+            elements: start..elements.len(),
+            clip,
+            mask: None,
+        });
+    }
+    Scene { elements, groups }
 }
 
 fn tracing_fallback(error: GlesError) {
@@ -1256,6 +1327,62 @@ mod tests {
         }
         let s = OverviewSession::new(&d).unwrap();
         (d, s)
+    }
+
+    #[test]
+    fn overview_filter_groups_preserve_unfiltered_spans_and_destination_masks() {
+        let clip = Rectangle::from_size((640, 480).into());
+        let miniature_clip = Rectangle::new((70, 6).into(), (45, 34).into());
+        let source = super::super::rounded::RoundedShape {
+            rect: Rect::new(0, 32, 640, 448),
+            radii: [24.0, 0.0, 16.0, 0.0],
+        };
+        let mut elements = Vec::new();
+        for _ in 0..7 {
+            solid(&mut elements, Rect::new(0, 0, 1, 1), [1.0; 4]);
+        }
+        let filters = vec![
+            SceneGroup {
+                elements: 1..2,
+                clip,
+                mask: Some(BlurMask::AnimatedWindow {
+                    source,
+                    destination: logical(Rect::new(100, 110, 417, 292)).to_f64(),
+                    alpha: 0.4,
+                }),
+            },
+            SceneGroup {
+                elements: 4..5,
+                clip: miniature_clip,
+                mask: Some(BlurMask::AnimatedWindow {
+                    source,
+                    destination: logical(Rect::new(70, 8, 45, 32)).to_f64(),
+                    alpha: 1.0,
+                }),
+            },
+        ];
+        let scene = overview_scene(elements, filters, clip);
+        assert_eq!(
+            scene
+                .groups
+                .iter()
+                .map(|g| g.elements.clone())
+                .collect::<Vec<_>>(),
+            vec![0..1, 1..2, 2..4, 4..5, 5..7]
+        );
+        assert_eq!(scene.groups[3].clip, miniature_clip);
+        assert!(matches!(
+            scene.groups[1].mask,
+            Some(BlurMask::AnimatedWindow { alpha: 0.4, .. })
+        ));
+        for index in [0, 2, 4] {
+            assert!(scene.groups[index].mask.is_none());
+        }
+        // Disabled optics still cover every backing/label/ring in one group.
+        let plain = overview_scene(scene.elements, Vec::new(), clip);
+        assert_eq!(plain.groups.len(), 1);
+        assert_eq!(plain.groups[0].elements, 0..7);
+        assert!(plain.groups[0].mask.is_none());
     }
 
     #[test]

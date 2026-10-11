@@ -48,7 +48,10 @@ only directory allowed to depend on Smithay and Wayland types.
   desktop corner masks to the composited content/SSD source before resizing the
   complete image. Radii/insets scale with that source. A separate selection ring
   follows its silhouette without masking the client image again.
-  Render as a final pass, with no hidden placement reconciliation or thumbnail-sized
+  Return a complete Scene with destination-local window-body backdrop groups;
+  keep labels/rings unfiltered, scale/fade source coverage with the image, and
+  clamp miniature optics to its desktop viewport. Never bake blur/glass into
+  shared thumbnail textures. No hidden placement reconciliation or thumbnail-sized
   configures. Share visible preview candidates with callback/suspension and output
   membership handling; synchronize preview output notifications after Space refresh
   and restore ordinary ownership on cleanup. Follow [overview](../../../specs/overview.md) bounds and cleanup.

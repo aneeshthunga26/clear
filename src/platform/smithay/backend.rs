@@ -6,7 +6,7 @@ use super::{
     render_demand::Reason,
     rounded::RoundedShaders,
     scene::premultiply,
-    scene::{Scene, SceneElement, SceneGroup},
+    scene::{Scene, SceneElement},
     state::{Compositor, OutputRegion},
     titlebar::TitlebarCache,
     wallpaper::WallpaperCache,
@@ -335,7 +335,7 @@ pub(super) fn init(
                             wallpapers.retain(&state.runtime.wallpapers);
                         }
                         let background = premultiply(state.runtime.config.theme.background);
-                        let mut final_elements = if let Some(shaders) = rounded.as_ref() {
+                        let overview_scene = if let Some(shaders) = rounded.as_ref() {
                             overview
                                 .elements(
                                     state,
@@ -348,15 +348,15 @@ pub(super) fn init(
                                 .map_err(|e| format!("compose overview: {e}"))?
                         } else {
                             overview.clear();
-                            Vec::new()
-                        };
-                        // Overview supplies opaque backing for every output. Preparing
-                        // hidden desktop trees would import and filter invisible pixels.
-                        let mut scene = if !final_elements.is_empty() {
                             Scene {
                                 elements: Vec::new(),
                                 groups: Vec::new(),
                             }
+                        };
+                        // Overview supplies opaque backing for every output. Preparing
+                        // hidden desktop trees would import and filter invisible pixels.
+                        let mut scene = if !overview_scene.elements.is_empty() {
+                            overview_scene
                         } else {
                             state
                                 .scene_elements(
@@ -369,18 +369,11 @@ pub(super) fn init(
                                 .map_err(|e| format!("compose scene: {e}"))?
                         };
                         if state.overview_shell_reveal().is_some() {
-                            let mut revealed = state.overview_shell_scene(renderer);
-                            let start = revealed.elements.len();
-                            revealed.elements.append(&mut final_elements);
-                            revealed.groups.push(SceneGroup {
-                                elements: start..revealed.elements.len(),
-                                clip: Rectangle::from_size(size),
-                                mask: None,
-                            });
-                            // Shell blur must sample the live zoom beneath it, not
-                            // the ordinary scene hidden behind the retained overview.
-                            scene.prepend(revealed);
+                            // Shell filters sample the live overview scene, whose own
+                            // preview filters have already composited their backdrops.
+                            scene.prepend(state.overview_shell_scene(renderer));
                         }
+                        let mut final_elements = Vec::new();
                         if (radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled)
                             && scene.groups.iter().any(|group| group.mask.is_some())
                         {

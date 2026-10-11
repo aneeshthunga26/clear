@@ -232,13 +232,21 @@ armed card click.
 
 ## Rendering and resource bounds
 
-Overview ordinarily renders as the final compositor pass above wallpapers,
-applications, popups and ordinary layers, after desktop blur/glass composition.
-Desktop-tile activation inserts the live overview beneath the revealed shell
+Overview supplies a complete compositor-owned scene above wallpapers,
+applications, popups and ordinary layers. Desktop-tile activation inserts the live overview beneath the revealed shell
 trees as described in [presentation transitions](#presentation-transitions).
-Cards themselves
-MUST NOT invoke optical filtering or recursively capture the overview. No public
-screencopy protocol, CPU window readback, image encoding or shell thumbnail
+Window bodies in cards, desktop miniatures, drag ghosts and desktop zoom MUST
+apply the configured backdrop blur and liquid-glass effects to the already
+composited lower overview scene at their current destination. They MUST NOT
+filter foreground content or bake backdrop effects into the shared source image.
+Selection accents and metadata labels remain unfiltered. Coverage follows the
+original source outline transformed into the destination and multiplied by its
+presentation opacity, preserving clear corners during motion and fades. Sampling
+clamps to the interactive output for cards/ghosts, to the miniature desktop for
+miniatures, and to the expanding desktop canvas during tile zoom. Glass remains
+available with blur radius zero. Preview groups and revealed shell groups reuse
+the existing backdrop renderer and its bounded scratch/pyramid resources.
+Previews MUST NOT recursively capture the overview. No public screencopy protocol, CPU window readback, image encoding or shell thumbnail
 transport is used.
 
 Visible cards, desktop miniatures and drag ghosts MUST remain live: clients
@@ -284,8 +292,8 @@ beneath a successfully constructed overview. Keep renderer cache retention and
 protocol/callback ownership independent of this shortcut. If no complete overview
 elements are produced, use the ordinary scene fallback. Tile zoom still gathers
 only the eligible revealed shell trees and filters them over the live overview;
-plain overview frames need no backdrop filtering. Other outputs show that dimmed
-backdrop; only the interactive output shows the strip and window canvas.
+overview window bodies also filter their own lower preview scene when either
+backdrop effect is enabled. Other outputs show that dimmed backdrop; only the interactive output shows the strip and window canvas.
 
 The renderer-local thumbnail cache MUST retain at most 128 RGBA8 textures and
 64 MiB of texture storage, each at most 2048×2048 pixels. Before compositing,
@@ -386,7 +394,10 @@ hot corners and touchpad progress remain future work.
   checks interrupted reopen/close geometry.
 - [Shell reveal and scene ordering tests](../src/platform/smithay/scene.rs) check
   output-local eligibility, fullscreen top/overlay priority, and blur group ranges
-  when the revealed shell and unfiltered overview precede the ordinary scene.
+  when revealed shell trees prepend the complete overview scene.
+- `overview_filter_groups_preserve_unfiltered_spans_and_destination_masks` in
+  [overview renderer tests](../src/platform/smithay/overview.rs) checks complete
+  group coverage, unfiltered accents/backings, miniature clips and faded masks.
 - [Drag presentation and unit tests](../src/platform/smithay/overview_drag.rs):
   pickup starts at the card, retargets start at submitted geometry, proximity
   uses the same fitted miniature dimensions, moving away reverses sizing, output
@@ -413,7 +424,7 @@ hot corners and touchpad progress remain future work.
 - [Protocol/GPU fixture](../scripts/vm-overview-smoke.py): real clients, size-hint
   stability, focus ownership, layer coverage, minimized buffers, cancellation,
   deferred exclusive layers, hidden live updates, alpha/subsurfaces, SSD and odd
-  output boundaries, plus a rounded-thumbnail pass above a blurred desktop and
+  output boundaries, plus rounded thumbnails with backdrop effects and
   wallpaper-backed transparency, desktop miniatures, layer coverage and
   bottom-corner content that detects accidental texture cropping. `sharp-preview`
   preserves one-pixel client content and SSD control stripes at native preview
