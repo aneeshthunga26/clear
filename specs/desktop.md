@@ -98,12 +98,14 @@ Saved floating rectangles are independent of tile placements and client-committe
 sizes. They MUST survive mode changes, temporary output shrinkage, and panel
 reservations. Floating rectangles can extend offscreen or across outputs; they
 MUST NOT be fitted back into the usable area. `SetFloatingRect` normalizes geometry
-without changing the floating flag. See [surface clipping](platform.md#scene-and-hit-testing)
+without changing the floating flag. Explicit rectangle edits also clear any
+[half/quadrant snap override](snapping.md); that override otherwise preserves free
+geometry independently of its current output placement. See [surface clipping](platform.md#scene-and-hit-testing)
 for the limits on their visible/input regions.
 
 Floating exceptions do not consume tiles or scrolling content in tiled modes.
-Launcher roles and maximized/minimized/fullscreen windows are also excluded from
-normal layout inputs. Placement order is back-to-front: tiles, normal floats,
+Launcher roles, snapped windows and maximized/minimized/fullscreen windows are
+also excluded from normal layout inputs. Placement order is back-to-front: tiles, normal floats,
 maximized windows, fullscreen windows, then launchers. A focused normal window
 may rise above a maximized neighbor on its output; fullscreen remains above that
 window. Launchers remain above all normal windows, including fullscreen.
@@ -128,7 +130,8 @@ other suitable focus exists. Explicit focus or accepting Alt-Tab restores and
 focuses the selected window.
 
 Launchers reject maximize/minimize/fullscreen. Late classification as a launcher
-clears all three flags while preserving ownership, order, and saved floating state. Launcher
+clears all three flags and any [snap override](snapping.md) while preserving
+ownership, order, and saved floating state. Launcher
 classification and sizing are specified in [configuration](configuration.md#shell-rules)
 and [platform](platform.md#launcher-geometry).
 

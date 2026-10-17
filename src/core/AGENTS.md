@@ -12,6 +12,9 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 - `resize.rs`: opaque baseline resize sessions, region lifecycle validation, and
   persistent per-workspace/output/mode sizing. Floating gestures edit only saved
   rectangles; tiled gestures edit only layout proportions.
+- `snapping.rs`: output-local snap partitions and provisional targets, saved free
+  geometry, and opaque move baselines with revision validation and rollback.
+  See [snapping](../../specs/snapping.md); preview/input ownership stays in the adapter.
 - `mod.rs`: module exports.
 
 ## Invariants
@@ -48,7 +51,9 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 - Maximize/minimize are independent window flags, not modes or client unmaps.
   Fullscreen is an independent third flag preserving underlying maximize state.
   All exclude normal layout inputs without erasing saved geometry, order, or
-  proportions. Maximized rectangles use only the home output's usable area;
+  proportions. Half/quadrant snap overrides also bypass layouts without changing
+  saved free geometry; invalidate resize baselines when overrides change.
+  Maximized rectangles use only the home output's usable area;
   fullscreen uses only its full bounds, never a stretched group's bounds.
   Minimized windows have no placements, focus-cycle entries, or remembered-focus
   eligibility. Explicit focus restores them; workspace switching does not.

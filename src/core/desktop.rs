@@ -224,6 +224,7 @@ impl Desktop {
                 role: WindowRole::default(),
                 committed_size: None,
                 floating: false,
+                snapped: None,
                 maximized: false,
                 fullscreen: false,
                 minimized: false,
@@ -275,6 +276,7 @@ impl Desktop {
             if window.role != role {
                 window.role = role;
                 if role == WindowRole::Launcher {
+                    window.snapped = None;
                     window.maximized = false;
                     window.fullscreen = false;
                     window.minimized = false;
@@ -446,6 +448,7 @@ impl Desktop {
             Command::ToggleFloating => {
                 if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
                     window.floating = !window.floating;
+                    window.snapped = None;
                 }
             }
             Command::ToggleMaximized => {
@@ -512,6 +515,7 @@ impl Desktop {
             Command::SetFloatingRect(id, rect) => {
                 reveal = false;
                 if let Some(window) = self.windows.get_mut(&id) {
+                    window.snapped = None;
                     window.floating_rect = rect.normalized();
                 }
             }
@@ -568,8 +572,16 @@ impl Desktop {
                 self.region_windows(workspace, output)
                     .filter(|window| !window.fullscreen || !metadata.bounds.is_empty())
                     .filter(|window| {
+                        window.maximized
+                            || window.fullscreen
+                            || window
+                                .snapped
+                                .is_none_or(|t| t.rect(metadata.area).is_some())
+                    })
+                    .filter(|window| {
                         window.role == WindowRole::Launcher
                             || window.maximized
+                            || window.snapped.is_some()
                             || window.fullscreen
                             || (window.floating && !matches!(mode, Mode::Floating))
                     })
@@ -585,7 +597,10 @@ impl Desktop {
                         } else if window.maximized {
                             metadata.area
                         } else {
-                            window.floating_rect.normalized()
+                            window
+                                .snapped
+                                .and_then(|t| t.rect(metadata.area))
+                                .unwrap_or(window.floating_rect.normalized())
                         };
                         Placement {
                             window: window.id,
@@ -593,7 +608,8 @@ impl Desktop {
                             clip: if window.fullscreen {
                                 Some(metadata.bounds)
                             } else {
-                                window.maximized.then_some(metadata.area)
+                                (window.maximized || window.snapped.is_some())
+                                    .then_some(metadata.area)
                             },
                             focused: self.focused_window == Some(window.id),
                             tiled: false,
@@ -700,6 +716,7 @@ impl Desktop {
             .filter(|window| {
                 window.role == WindowRole::Normal
                     && !window.maximized
+                    && window.snapped.is_none()
                     && !window.fullscreen
                     && (!window.floating || matches!(mode, Mode::Floating))
             })

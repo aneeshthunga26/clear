@@ -252,6 +252,8 @@ pub struct Window {
     pub committed_size: Option<(i32, i32)>,
     /// Per-window exception to nonfloating layouts.
     pub floating: bool,
+    /// Half/quadrant placement override, independent of saved floating geometry.
+    pub snapped: Option<super::SnapTarget>,
     /// Fill the home output's usable area, independently of saved layout state.
     pub maximized: bool,
     /// Fill the full home output, preserving the underlying maximized restore state.

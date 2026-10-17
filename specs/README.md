@@ -16,6 +16,7 @@ permission to change behavior silently.
 | Specification | Contract |
 | --- | --- |
 | [Desktop state](desktop.md) | Workspace ownership, output groups, focus, floating state, maximize/minimize/fullscreen |
+| [Floating-window snapping](snapping.md) | Output-local snap overrides, saved free geometry and transactional move sessions |
 | [Layouts and resizing](layouts.md) | Built-in geometry, scrolling, persistent proportions, resize sessions |
 | [Desktop overview](overview.md) | Compositor-owned preview, navigation, input ownership and bounded live cards |
 | [Input and actions](input.md) | Shortcut parsing, action schema, default bindings, gestures, Alt-Tab |

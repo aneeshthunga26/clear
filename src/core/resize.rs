@@ -36,7 +36,18 @@ pub(super) struct ResizeEnvironment {
     area: Rect,
     gaps: i32,
     group: Vec<OutputId>,
-    members: Vec<(WindowId, bool, WindowRole, bool, bool, bool)>,
+    members: Vec<ResizeMember>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ResizeMember {
+    id: WindowId,
+    floating: bool,
+    role: WindowRole,
+    maximized: bool,
+    fullscreen: bool,
+    minimized: bool,
+    snapped: Option<SnapTarget>,
 }
 
 /// Opaque baseline for a resize gesture. Drop it to end or cancel the gesture.
@@ -88,6 +99,7 @@ impl Desktop {
         let workspace = window.workspace;
         if window.role != WindowRole::Normal
             || window.maximized
+            || window.snapped.is_some()
             || window.fullscreen
             || window.minimized
             || self.workspace_for_output(output) != Some(workspace)
@@ -348,15 +360,14 @@ impl Desktop {
                         .iter()
                         .filter_map(|id| self.window(*id))
                         .filter(|window| window.output == Some(output.id))
-                        .map(|window| {
-                            (
-                                window.id,
-                                window.floating,
-                                window.role,
-                                window.maximized,
-                                window.fullscreen,
-                                window.minimized,
-                            )
+                        .map(|window| ResizeMember {
+                            id: window.id,
+                            floating: window.floating,
+                            role: window.role,
+                            maximized: window.maximized,
+                            fullscreen: window.fullscreen,
+                            minimized: window.minimized,
+                            snapped: window.snapped,
                         })
                         .collect(),
                 };
