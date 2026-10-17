@@ -51,6 +51,9 @@ Each line is a separate request. The complete allowlist is:
 | `focus_output` | `output` | Focus a connected output |
 | `switch_workspace` | `output`, `workspace` | Focus output, then switch its group |
 | `focus_window` | `window` | Explicit core focus, including restore/reveal |
+| `close_window` | `window` | Send a close request to a mapped normal client without focusing it; the application may refuse |
+| `move_window_to_workspace` | `window`, `workspace` | Move an explicit normal window through core transfer policy without switching workspaces or focusing it |
+| `window_previews` | `windows` | Request a bounded batch of committed window images; requires a mapped panel owned by the requesting process |
 | `set_maximized` | `window`, `maximized` boolean | Set normal-window maximize state without explicitly changing focus |
 | `set_fullscreen` | `window`, `fullscreen` boolean | Set normal-window fullscreen state without revealing, restoring or explicitly focusing it |
 | `set_minimized` | `window`, `minimized` boolean | Hide/restore a normal window; repair focus when needed |
@@ -69,7 +72,10 @@ permit arbitrary script or action execution.
 All targets and values MUST be validated before any mutation, including requests
 with multiple targets. Invalid requests cannot partly change focus. Launcher
 targets reject maximize/minimize/fullscreen without mutation. There are no spawn, quit,
-reload, close-window, script-action, or raw core-command requests.
+reload, script-action, or raw core-command requests. Close and workspace-transfer
+requests validate exact normal-window IDs; launchers and unknown/noncanonical
+targets fail without mutation. Transfers validate the destination before mutation,
+and sending a window to its current workspace succeeds as a no-op.
 
 ## Responses and ordering
 
@@ -80,6 +86,7 @@ reload, close-window, script-action, or raw core-command requests.
 | Accepted command | `{"version":1,"type":"ok","id":2}` |
 | Error | `{"version":1,"type":"error","id":2,"message":"..."}` |
 | Panel discovery | `{"version":1,"type":"animation_panels","id":3,"panels":[...]}` |
+| Window images | `{"version":1,"type":"window_previews","id":4,"frames":[{"window":"7","image":"data:image/png;base64,..."}]}` |
 
 Malformed envelopes, unsupported versions, and parse errors use `id: null`.
 Errors after envelope validation retain its ID. Invalid JSON does not itself
@@ -107,7 +114,7 @@ All identity fields below are decimal strings, including identities inside array
 | `focused_output`, `focused_window` | ID or null |
 | `overview_open` | Boolean; active compositor-owned overview, excluding a deferred request |
 | `switcher` | null or `{output,windows,selected}` during the compositor's Alt-held gesture |
-| `capabilities` | String array; currently includes `animation_targets_v1` for the implemented adapter hint protocol |
+| `capabilities` | String array; includes `animation_targets_v1` and `window_previews_v1` for the implemented adapter protocols |
 
 Window `output` is its saved home or null, not a visibility test. `role` is
 `normal` or `launcher`. `floating` is the saved exception flag, not the effective
@@ -194,11 +201,51 @@ images follow the [animation presentation](animations.md) contract.
 
 The Quickshell example discovers its own panels after subscription and once per
 second. It matches output, namespace and committed dimensions unambiguously,
-then reports the actual 20×20 app-icon item rectangles after layout and dock
+then reports the actual 22×22 app-icon item rectangles after layout and dock
 scrolling and renews them once per second. Entirely visible icons with matching
 live normal home-output windows are included; pinned-only and clipped icons are
 omitted. It sends empty replacements when its dock becomes hidden and never
 replays reports across disconnection. No shell process is required for fallback.
+
+## Private window previews
+
+`window_previews_v1` is an optional toolkit-independent capability on the existing
+private socket, not a public Wayland capture protocol. Requests require a live
+mapped panel whose Wayland PID/UID match the socket peer, using the same panel
+eligibility as advisory discovery. Ownership is checked when queued and again
+before GPU capture. A different process receives an error even for the same user.
+Pure model execution rejects capture requests; only the adapter can fulfill them.
+
+A request MUST name one to four distinct, canonical, mapped normal-window IDs.
+All IDs and ownership MUST be validated before queueing; launchers, unknown IDs,
+duplicates, empty batches and oversized batches fail atomically. Hidden-workspace
+and minimized windows are eligible without revealing, restoring, moving, resizing
+or focusing them. There is one pending batch globally and at least 200ms between
+accepted batches globally; excess requests receive an error rather than queueing.
+Disconnected peers, unmapped panels and disappeared clients cannot receive stale
+captures. A window disappearing before capture yields `image: null`.
+
+Capture uses the latest committed window body, subsurfaces, negotiated decoration
+and rounded outline through the shared window-image composer. It excludes popups,
+other windows, wallpaper and backdrop filtering. Images retain their aspect ratio,
+fit within 256×144 pixels, and do not upscale small sources. Premultiplied pixels
+are converted to straight-alpha PNG data URIs. GPU/readback/encoding failures yield
+`image: null` for the affected window and MUST NOT terminate the compositor.
+Capture readback MUST restore the host EGL target before ordinary composition.
+No frame files or filesystem IO are introduced in the capture/render path.
+
+Images are separate solicited replies, never state snapshots or subscriptions.
+At most four transient small images/readbacks and the shared composer's existing
+bounded scratch are used; no persistent per-window GPU image cache is added.
+A batch's maximum uncompressed PNG/base64 payload remains below the transport's
+1 MiB outgoing cap; slow consumers retain the existing bounded disconnect policy.
+While polled, captured windows receive a 450ms renewable callback/suspension lease.
+Nonvisible roots use the existing overview callback throttle. Lease expiry,
+disconnect or lost panel ownership removes that eligibility without changing
+minimized state or ordinary placements. Once polling stops, capture work stops;
+the compositor retains only bounded ID/timestamp records until lease cleanup.
+These previews are rate-limited committed frames, not presentation feedback or a
+full-rate screencasting service.
 
 ## Transport bounds
 
@@ -241,8 +288,8 @@ peer can still receive replies to complete requests before disconnection.
 ## Optional Quickshell appearances
 
 The optional example provides two entry points sharing its bridge, services,
-controls, and overlay lifecycle: `examples/quickshell/shell.qml` retains the
-existing appearance, while `examples/quickshell/liquid-glass.qml` selects the
+controls, and overlay lifecycle: `examples/quickshell/shell.qml` selects the
+standard appearance, while `examples/quickshell/liquid-glass.qml` selects the
 glass appearance intended for `examples/liquid-glass.toml`.
 
 Both panels show registered StatusNotifierItem icons and a local two-line
@@ -256,6 +303,84 @@ workspace and restores the same windows on a second click; it does not change
 other workspaces. On outputs narrower than 900 pixels, Bluetooth, battery,
 show-desktop, and mode controls are hidden to leave room for the launcher,
 workspace controls, dock, volume, and clock.
+Below 600 pixels the overview button is also hidden, panel spacing tightens,
+and workspace controls have a smaller viewport. Workspace buttons MUST scroll
+horizontally when they exceed their viewport; changing the selected workspace
+MUST bring its button into view. The application dock scrolls independently.
+
+The standard appearance uses a 44-pixel panel inset 12 pixels horizontally and
+8 pixels from the top, reserving 52 pixels total. Its painted and input silhouettes
+have radius 16. Panel and overlay fills are `#171c29` at 237/255 opacity and
+`#1c2232` at 245/255 opacity respectively. Overlays have radius 20, a subtle
+outline, and opaque text/icons. Workspace selection uses a pale blue accent;
+application selection uses a quieter tinted surface. Shared controls use
+32-pixel hit targets (workspace buttons are 30×28), rounded hover/press fills,
+and 140ms color transitions. Panel launcher, overview, notification and window
+controls use bundled SVGs rather than font-dependent symbols. Application icons
+in the dock, preview, launcher and switcher MUST fall back to the bundled generic
+icon when the desktop entry, theme icon or loaded image is unavailable.
+
+Application previews MUST wait for a one-second hover dwell. Leaving an application
+before that dwell completes MUST cancel opening; moving to another application
+starts a new dwell. Metadata-only snapshots MUST retain dock buttons by app ID
+so updates do not interrupt the dwell. Leaving an open preview or its application
+starts a 300ms close delay, allowing the pointer to cross the gap; hovering anywhere inside the
+preview keeps it open, including its header, whitespace and window controls.
+Clicking an app, opening the launcher/notification center, scrolling the dock,
+or resizing the panel dismisses the preview. These popups MUST NOT grab keyboard
+focus. Their anchor is centered on the actual hovered item, clamped within the
+panel width, 8 pixels below the panel's bottom. They MUST expand downward and
+MUST NOT vertically flip over the hovered control. Preview width is bounded by
+350 pixels and the panel width minus 16; height is bounded by 560 pixels and the
+space below the panel, with a scrolling window list. Each card includes a live
+committed window image, title, workspace/state labels and window controls. Missing
+or unavailable initial images fall back to the application's icon. Once a frame
+has loaded, the card MUST retain it while the next frame decodes or a capture is
+temporarily unavailable/invalid. A decoded replacement swaps in without an icon
+flash. Metadata snapshots update cards by window ID without recreating them or
+resetting scroll position. Each card retains at most two uncached decoded image
+slots, one displayed and one loading; closing/removing its card releases them.
+The shell requests images for up to four windows starting at the first visible
+card, every 220ms, with at most one request in flight. Closing the hover popup stops requests.
+
+Right-clicking an application MUST open a context menu, rather than immediately
+toggling its pin. The menu includes the matched desktop entry's published actions
+(up to 32), launch, pin/unpin, per-window minimize/restore, maximize/unmaximize,
+fullscreen, move-to-workspace, and close. Grouped apps expose a window selector
+and close-all action. Close-all sends individual close requests. Desktop actions
+execute through Quickshell's desktop-action API without shell interpolation;
+apps that publish no actions have no invented app-specific actions. This is not
+an application's in-window File/Edit menu or a recent-documents service.
+Opening the menu dismisses hover previews. A bounded output-local menu layer owns
+keyboard input while open; Escape closes it. A separate fully transparent
+output-sized dismissal layer catches outside clicks, with the menu's rounded
+region subtracted from its input mask so it cannot block menu controls regardless
+of layer registration order. Only the bounded painted menu opts into geometric
+glass treatment, keeping refraction and blur inside its actual silhouette.
+Closing the menu retains both roles as transparent 1×1 layers with empty input
+regions and restores ordinary keyboard ownership through the existing lifecycle.
+The shell asynchronously prepares the closed menu at startup. Its content keeps
+its full layout while transparent, and opening requests its final bounded size
+from the screen dimensions, independently of the dismissal layer's asynchronous
+configure. Right-click has no hover dwell or opening animation. Tall menus scroll
+within the output.
+
+Shared tooltips MUST wait one second and have an empty input region. In the glass
+appearance they receive the same independent backdrop treatment within their
+10-pixel rounded silhouette; noninteractive does not mean optically untreated. Panel tooltips
+use the same 8-pixel gap and downward placement, preventing them from intercepting
+the hovered control. Applications with open windows use their preview instead
+of a simultaneous tooltip. Pinned apps without windows retain a text tooltip.
+
+Launcher and notification layers are placed relative to the panel-reduced usable
+area: the launcher starts 16 pixels below it, the notification center 8 pixels.
+Their heights are bounded by the remaining output height. The launcher has a
+themed search field, selected result, keyboard hints and an empty-search message;
+changing the query resets the selection and scroll position. Up/Down navigate
+the results and keep the selection visible, Enter launches, and Escape closes.
+Launching still uses the desktop entry without shell interpolation. Notifications
+use shared card styling and a centered empty state. Opening either of these
+overlays through the panel closes the other.
 
 The glass variant uses a 44-pixel top panel on every output, inset 12 pixels
 from the left/right edges and 10 pixels from the top, reserving 54 pixels total.
@@ -269,14 +394,17 @@ Launcher, notification, and app-preview surfaces share a 24%-opaque tint and
 rounded corners; the horizontal switcher uses capsule ends. Each switcher card
 shows the window title, app name, and a desktop-entry icon resolved from its app
 ID, falling back to a bundled generic application icon when lookup or icon
-loading fails. The switcher does not capture window pixels. These overlays
-retain their existing lazy creation and transparent 1×1 closed state. Glass
-styles change appearance only: shell commands, keyboard ownership, per-output
+loading fails. The switcher does not capture window pixels. Launcher, notification
+and switcher layers retain lazy creation and their transparent 1×1 closed state,
+while the app-preview popup is hidden. Glass
+styles share the interaction behavior above: shell commands, keyboard ownership, per-output
 placement, and compositor-side filtering retain their existing contracts.
 The QML draws its own rounded alpha and input masks; Clear's window corner-radius
 setting does not shape layer-shell panels. Its `clear-glass-pill-*` and
 `clear-glass-rounded-*` layer namespaces also tell Clear the opt-in optical outline
-to fit to the panel bounds. Other layer clients keep their own shape behavior.
+to fit to the painted layer bounds. The glass panel uses the `-rounded-popups`
+opt-in for its hover cards; details are owned by
+[rendering](rendering.md#liquid-glass). Other layer clients keep their own shape behavior.
 No client-side blur shader is added. Style values are centralized in
 `ShellStyle.qml`; the glass entry point does not copy the shell logic or autostart
 another shell.
@@ -296,6 +424,10 @@ another shell.
 - [Adapter inline tests](../src/platform/smithay/shell.rs): panel fallback
   priority, full bounds with nonzero origins, short-body/tiny-output fitting,
   and exclusion of shifted-body/whole-output panel geometry.
+- [Private capture adapter](../src/platform/smithay/shell_previews.rs): panel
+  authorization, global batch/rate bounds, shared committed-image composition,
+  straight-alpha PNG encoding and lease cleanup. Its inline test covers base64
+  padding; the UI fixture checks actual GPU frames.
 - [Real Quickshell hint fixture](../scripts/vm-shell-hints-smoke.py): accepted
   nonempty icon reports, same-process discovery, foreign-process refusal,
   unchanged desktop policy, and fresh identities after panel restart. It does
@@ -310,5 +442,24 @@ another shell.
   `--quickshell-style glass` checks capsule silhouettes, low-opacity pixels, and
   the glass variant's output reservations; `--exercise-overlays` checks both
   appearances' shared lifecycle without physical input injection.
+  [UI fixture](../scripts/vm-shell-ui-smoke.py) captures panel, preview, tooltip,
+  launcher/search-empty, notification and context-menu scenes on a single output. Its QML timers
+  exercise dwell cancellation and opening through the real example's hover
+  handlers; real popup configure traces and GPU pixels check below-panel
+  placement. Preview cases check the one-second dwell and require distinct real
+  frames after minimizing a changing client. Changing window titles must retain
+  one preview card; injected null and undecodable replies must not restore the
+  fallback icon after a successful frame, and subsequent good frames must swap in. Context-menu cases execute a fixture desktop action and move a window
+  without revealing its destination. Context-menu traces require preloading,
+  dispatch under 150ms and a first configure at the final requested size, with no
+  intervening tiny sizes on opening or reopening. This bounds dispatch/configure
+  behavior, not actual input-to-presentation latency. A foreign socket process must be denied
+  capture. `--width 480` exercises compact layouts; `--glass` checks the shared
+  appearance. `--glass --verify-backdrops` enables actual compositor effects and
+  compares patterned plain, blur-only, glass-only and combined GPU captures of
+  hover cards, shared noninteractive tooltips and context menus, requiring
+  distinct filter results and untouched rounded corners and exterior pixels. Merely selecting `--glass` styles the QML; it does not enable
+  the compositor's filters in the ordinary UI fixture. This does not inject physical input or
+  establish real pointer travel, keyboard delivery, or animation cadence.
   [Example model tests](../examples/quickshell/Protocol.test.mjs) cover its client
   helpers, not compositor protocol/GPU or physical input behavior.

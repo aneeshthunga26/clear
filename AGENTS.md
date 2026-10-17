@@ -184,6 +184,15 @@ Prefer an isolated VM for compositor integration tests:
 - `python3 -B scripts/vm-shell-hints-smoke.py --binary target/debug/clear`: bounded
   real Quickshell icon reports, same-process authorization, foreign-process refusal,
   and panel unmap/restart identities. No pixel oracle, motion or physical input.
+- `python3 -B scripts/vm-shell-ui-smoke.py --binary target/debug/clear`: bounded
+  single-output UI captures, cancellable hover dwell, real below-panel popup
+  coordinates, live/minimized capture, published app actions, context-menu workspace
+  moves, workspace reveal and panel bounds. Use `--width 480` for compact
+  layouts and `--glass` for the shared glass appearance. No physical input.
+  Add `--glass --verify-backdrops` for patterned GPU comparisons of plain,
+  blur-only, glass-only and combined effects on hover cards, tooltips and context
+  menus, including unchanged
+  exterior pixels and rounded corner holes.
 - `node --test examples/quickshell/Protocol.test.mjs`: optional example's pure
   message/model tests, without launching a shell.
 

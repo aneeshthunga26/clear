@@ -20,6 +20,10 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
   trust client-provided output coordinates or mutate core state from hints.
 - The Smithay adapter owns backend reconciliation. It reconciles successful
   mutations before acknowledging/publishing; model snapshot reads remain pure.
+- Explicit normal-window close and workspace-transfer requests validate IDs
+  without focusing the target. Close delivery and panel-authorized preview
+  capture remain adapter effects; pure execute must reject preview requests.
+  Image responses stay separate from snapshots and existing transport limits.
 - Preserve optional operation: no shell process is required, and no arbitrary
   toolkit-specific actions belong in the wire contract. Future native shells can
   consume the same model. See [the shell specification](../../specs/shell.md)

@@ -310,7 +310,8 @@ pub(super) fn init(
                         }
                         if (state.runtime.config.theme.corner_radius.is_rounded()
                             || state.overview_present()
-                            || state.runtime.config.animations.enabled)
+                            || state.runtime.config.animations.enabled
+                            || state.shell_previews_pending())
                             && rounded.is_none()
                         {
                             rounded = Some(
@@ -319,6 +320,22 @@ pub(super) fn init(
                             );
                         }
                         if let Some(shaders) = rounded.as_ref() {
+                            if state.shell_previews_pending() {
+                                state.prepare_shell_previews(
+                                    renderer,
+                                    &mut titlebars,
+                                    shaders,
+                                    &mut window_images,
+                                );
+                                // CPU readback invalidates EGL's target. Restore it even
+                                // when an individual preview buffer was unavailable.
+                                let sync = renderer
+                                    .render(&mut framebuffer, size, Transform::Flipped180)
+                                    .map_err(|e| format!("restore preview target: {e}"))?
+                                    .finish()
+                                    .map_err(|e| e.to_string())?;
+                                renderer.wait(&sync).map_err(|e| e.to_string())?;
+                            }
                             state
                                 .prepare_window_animations(
                                     renderer,

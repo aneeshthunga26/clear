@@ -104,9 +104,9 @@ def main():
             assert report["request"]["targets"], report
             for target in report["request"]["targets"]:
                 rect = target["rect"]
-                assert rect["width"] == rect["height"] == 20, target
-                assert 0 <= rect["x"] <= descriptor["width"] - 20
-                assert 0 <= rect["y"] <= descriptor["height"] - 20
+                assert rect["width"] == rect["height"] == 22, target
+                assert 0 <= rect["x"] <= descriptor["width"] - 22
+                assert 0 <= rect["y"] <= descriptor["height"] - 22
             before = peer.state()
             assert before["focused_window"] == before["windows"][0]["id"]
             query = peer.request("animation_panels")

@@ -20,6 +20,12 @@ function decodeMessage(line) {
                 && typeof panel.namespace === "string" && Number.isInteger(panel.width)
                 && Number.isInteger(panel.height) && panel.width > 0 && panel.height > 0;
         })) throw new Error("Invalid Clear animation panels");
+    } else if (message.type === "window_previews") {
+        if (!Array.isArray(message.frames) || message.frames.length > 4
+                || !message.frames.every(function(frame) {
+                    return typeof frame.window === "string" && (frame.image === null
+                        || (typeof frame.image === "string" && frame.image.startsWith("data:image/png;base64,")));
+                })) throw new Error("Invalid Clear window previews");
     } else if (message.type === "error") {
         if (typeof message.message !== "string")
             throw new Error("Invalid Clear error");

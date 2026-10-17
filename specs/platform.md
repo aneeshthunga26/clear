@@ -91,9 +91,13 @@ host draw is pending. Overview retains its existing bounded/throttled eligibilit
 Protocol commits/lifecycle changes, compositor input/policy changes, reload and
 host exposure wake demand through a coalesced Calloop ping. Callback-only commits
 with unchanged effective visual state wake callback scheduling without repainting.
+The explicit [rounded-popup glass opt-in](rendering.md#liquid-glass) makes an
+empty/nonempty input-region transition part of that popup's visual state while
+effects are enabled; it therefore repaints. Ordinary input-only changes retain
+the nonpainting behavior below.
 When the compositor owns pointer routing, committed input-region-only changes
-MUST refresh stationary pointer ownership from last-submitted presentation
-geometry without requesting pixels. This refresh sends
+that leave effective visual state unchanged MUST refresh stationary pointer
+ownership from last-submitted presentation geometry without requesting pixels. This refresh sends
 motion/frame only if surface identity, origin or inverse scale changed; repeated
 unchanged callbacks MUST NOT inject identical pointer motion. Submitted animation
 frames retain their unconditional pointer-coordinate refresh.
@@ -266,8 +270,10 @@ it. Popup/layer geometry is not subjected to application body rounding.
 Native DRM/KMS, physical monitor hotplug, XWayland, fractional scaling, IME,
 full cursor-surface handling, and activation policy
 are not implemented. Group editing exposes stretch-all and split, not arbitrary
-output subsets. Toplevel listing/capture protocols for live shell thumbnails are
-not exposed. Layer and popup support is intentionally limited to the implemented
+output subsets. Public Wayland toplevel listing/capture protocols are not exposed;
+the optional [private shell preview capability](shell.md#private-window-previews)
+provides bounded committed-window images to same-process panel clients.
+Layer and popup support is intentionally limited to the implemented
 adapter paths; this is not a promise of every desktop protocol.
 
 The backend uses demand and damage tracking with conservative complete-frame

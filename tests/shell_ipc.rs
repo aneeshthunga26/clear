@@ -697,3 +697,88 @@ fn animation_target_messages_are_strict_and_model_cannot_bypass_adapter_validati
             .contains(&"animation_targets_v1".into())
     );
 }
+
+#[test]
+fn task_menu_moves_explicit_windows_without_revealing_or_focusing_them() {
+    let mut r = runtime();
+    let before_output = r.desktop.focused_output();
+    let before_workspace = r.desktop.workspace_for_output(OutputId(11));
+    run(
+        &mut r,
+        RequestKind::MoveWindowToWorkspace {
+            window: HIDDEN_WINDOW.to_string(),
+            workspace: "1".into(),
+        },
+    );
+    assert_eq!(
+        r.desktop.window(WindowId(HIDDEN_WINDOW)).unwrap().workspace,
+        WorkspaceId(1)
+    );
+    assert_eq!(r.desktop.focused_output(), before_output);
+    assert_eq!(
+        r.desktop.workspace_for_output(OutputId(11)),
+        before_workspace
+    );
+    let before = snapshot(&r);
+    for kind in [
+        RequestKind::MoveWindowToWorkspace {
+            window: "20".into(),
+            workspace: "missing".into(),
+        },
+        RequestKind::MoveWindowToWorkspace {
+            window: "10".into(),
+            workspace: "1".into(),
+        },
+        RequestKind::CloseWindow {
+            window: "10".into(),
+        },
+        RequestKind::CloseWindow {
+            window: "020".into(),
+        },
+        RequestKind::WindowPreviews {
+            windows: vec!["20".into()],
+        },
+    ] {
+        assert!(execute(&mut r, &request(kind)).is_err());
+        assert_eq!(snapshot(&r), before);
+    }
+    run(
+        &mut r,
+        RequestKind::CloseWindow {
+            window: "20".into(),
+        },
+    );
+    assert_eq!(
+        snapshot(&r),
+        before,
+        "close is adapter-delivered, never implicit focus"
+    );
+}
+
+#[test]
+fn task_menu_requests_keep_strict_wire_shapes_and_large_ids() {
+    for value in [
+        json!({"type":"close_window", "window":HIDDEN_WINDOW.to_string()}),
+        json!({"type":"move_window_to_workspace", "window":HIDDEN_WINDOW.to_string(), "workspace":"1"}),
+        json!({"type":"window_previews", "windows":[HIDDEN_WINDOW.to_string()]}),
+    ] {
+        assert!(
+            parse_request(
+                serde_json::to_string(&json!({"version":1,"id":4,"request":value}))
+                    .unwrap()
+                    .as_bytes()
+            )
+            .is_ok()
+        );
+        let mut extra = value;
+        extra["unexpected"] = json!(true);
+        assert!(
+            parse_request(
+                serde_json::to_string(&json!({"version":1,"id":4,"request":extra}))
+                    .unwrap()
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+}

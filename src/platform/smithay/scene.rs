@@ -89,7 +89,7 @@ fn client_tree_shape(elements: &[WaylandSurfaceRenderElement<GlesRenderer>]) -> 
 }
 
 fn glass_layer_shape(rect: Rect, namespace: &str, root: bool) -> Option<RoundedShape> {
-    if !root {
+    if !root || (rect.width == 1 && rect.height == 1) {
         return None;
     }
     let fit = |radius: f32| radius.min(rect.width.min(rect.height).max(0) as f32 / 2.0);
@@ -103,6 +103,35 @@ fn glass_layer_shape(rect: Rect, namespace: &str, root: bool) -> Option<RoundedS
     Some(RoundedShape {
         rect,
         radii: [radius; 4],
+    })
+}
+
+fn glass_popup_shape(rect: Rect, namespace: &str, interactive: bool) -> Option<RoundedShape> {
+    if !glass_popup_namespace(namespace) {
+        return None;
+    }
+    Some(RoundedShape {
+        rect,
+        radii: [(if interactive { 24.0_f32 } else { 10.0_f32 })
+            .min(rect.width.min(rect.height).max(0) as f32 / 2.0); 4],
+    })
+}
+
+/// Explicit popup opt-in is separate from the owning layer's pill/rounded shape.
+pub(super) fn glass_popup_namespace(namespace: &str) -> bool {
+    namespace.starts_with("clear-glass-") && namespace.ends_with("-rounded-popups")
+}
+
+/// Empty-input tooltips use their smaller optical radius without gaining input.
+pub(super) fn glass_popup_interactive(surface: &WlSurface) -> bool {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::compositor::SurfaceAttributes>()
+            .current()
+            .input_region
+            .as_ref()
+            .is_none_or(|region| !region.rects.is_empty())
     })
 }
 
@@ -292,7 +321,8 @@ impl Compositor {
             }
         }
         let placements = self.runtime.placements();
-        let overview_live = self.overview_live_windows();
+        let mut overview_live = self.overview_live_windows();
+        overview_live.extend(self.shell_preview_windows());
         for (id, entry) in &self.windows {
             if let Some(window) = self.runtime.desktop.window(*id)
                 && let Some(top) = entry.window.toplevel()
@@ -1277,11 +1307,16 @@ impl Compositor {
                                 .map(SceneElement::Surface),
                         );
                         let root = surface == *layer.wl_surface();
+                        let interactive = !root && glass_popup_interactive(&surface);
                         let mask = shape.map(|rect| {
-                            glass_layer_shape(rect, layer.namespace(), root).map_or(
-                                BlurMask::ClientAlpha(rect),
-                                |shape| BlurMask::GlassLayer { shape, alpha },
-                            )
+                            let outline = if root {
+                                glass_layer_shape(rect, layer.namespace(), true)
+                            } else {
+                                glass_popup_shape(rect, layer.namespace(), interactive)
+                            };
+                            outline.map_or(BlurMask::ClientAlpha(rect), |shape| {
+                                BlurMask::GlassLayer { shape, alpha }
+                            })
                         });
                         groups.push(SceneGroup {
                             elements: start..elements.len(),
@@ -1365,6 +1400,18 @@ impl Compositor {
                 if let Some(top) = self.windows[id].window.toplevel() {
                     // Includes offscreen placements and visible desktop miniatures;
                     // None honors the throttle without pretending to be scanout.
+                    append(top.wl_surface(), &region.output, true);
+                }
+            }
+        }
+        if let Some(region) = self.outputs.first() {
+            for id in self.shell_preview_windows() {
+                if !ordinary_live.contains(&id)
+                    && let Some(top) = self
+                        .windows
+                        .get(&id)
+                        .and_then(|entry| entry.window.toplevel())
+                {
                     append(top.wl_surface(), &region.output, true);
                 }
             }
@@ -1667,6 +1714,30 @@ mod tests {
         assert_eq!(rounded.radii, [22.0; 4]);
         assert!(glass_layer_shape(rect, "clear-example-panel", true).is_none());
         assert!(glass_layer_shape(rect, "clear-glass-pill-panel", false).is_none());
+        assert!(
+            glass_layer_shape(
+                Rect::new(12, 10, 1, 1),
+                "clear-glass-rounded-context-menu",
+                true
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn glass_popups_fit_preview_and_noninteractive_tooltip_outlines() {
+        let namespace = "clear-glass-pill-panel-rounded-popups";
+        let rect = Rect::new(85, 62, 350, 276);
+        let popup = glass_popup_shape(rect, namespace, true).unwrap();
+        assert_eq!(popup.rect, rect);
+        assert_eq!(popup.radii, [24.0; 4]);
+        let small = glass_popup_shape(Rect::new(700, 52, 30, 20), namespace, true).unwrap();
+        assert_eq!(small.radii, [10.0; 4]);
+        let tooltip = glass_popup_shape(rect, namespace, false).unwrap();
+        assert_eq!(tooltip.rect, rect);
+        assert_eq!(tooltip.radii, [10.0; 4]);
+        assert!(glass_popup_shape(rect, "clear-glass-pill-panel", true).is_none());
+        assert!(glass_popup_shape(rect, "other-rounded-popups", true).is_none());
     }
 
     fn fixture() -> (Desktop, Placement, [(OutputId, Rect); 2]) {

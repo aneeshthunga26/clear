@@ -169,3 +169,11 @@ test("animation icon reports use actual panel-local bounds, exclude clipping and
     }
     assert.equal(protocol.animationAppTargets(model, {id: "2"}, icons, viewport, 640, 32).length, 0);
 });
+
+test("window capture batches keep exact IDs and reject malformed image responses", () => {
+    const frame = {window: "18446744073709551615", image: "data:image/png;base64,cG5n"};
+    assert.equal(protocol.decodeMessage(JSON.stringify({version: 1, type: "window_previews", id: 3, frames: [frame]})).frames[0].window, frame.window);
+    for (const frames of [null, [frame, frame, frame, frame, frame], [{window: 3, image: null}], [{window: "3", image: "file:///etc/passwd"}]]) {
+        assert.throws(() => protocol.decodeMessage(JSON.stringify({version: 1, type: "window_previews", id: 3, frames})));
+    }
+});

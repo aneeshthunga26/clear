@@ -32,10 +32,16 @@ impl Compositor {
 
     /// Nearest lease expiry; an empty advisory store requires no maintenance wakeup.
     pub fn shell_maintenance_deadline(&self) -> Option<std::time::Duration> {
-        self.animation_targets.store.next_expiry()
+        self.animation_targets
+            .store
+            .next_expiry()
+            .into_iter()
+            .chain(self.shell_preview_expiry())
+            .min()
     }
 
     pub fn dispatch_shell(&mut self) {
+        self.expire_shell_previews();
         self.refresh_animation_targets();
         let Some(mut server) = self.shell_server.take() else {
             return;
@@ -51,6 +57,14 @@ impl Compositor {
                 }
             };
             match &request.request {
+                RequestKind::WindowPreviews { windows } => {
+                    if let Err(error) =
+                        self.queue_shell_previews(&server, client, request.id, windows)
+                    {
+                        server.reply(client, shell::encode_error(Some(request.id), &error));
+                    }
+                    continue;
+                }
                 RequestKind::AnimationPanels => {
                     let Some(peer) = server.peer_credentials(client) else {
                         server.reply(
@@ -109,6 +123,15 @@ impl Compositor {
                 server.reply(client, shell::encode_error(Some(request.id), &error));
                 continue;
             }
+            if let RequestKind::CloseWindow { window } = &request.request
+                && let Some(entry) = self
+                    .windows
+                    .iter()
+                    .find_map(|(id, entry)| (id.0.to_string() == *window).then_some(entry))
+                && let Some(top) = entry.window.toplevel()
+            {
+                top.send_close();
+            }
             self.service_overview();
             match request.request {
                 RequestKind::Snapshot | RequestKind::Subscribe => {
@@ -147,6 +170,16 @@ impl Compositor {
 }
 
 use crate::shell::server::PeerCredentials;
+
+impl Compositor {
+    /// Match a socket peer to a current committed panel provider.
+    pub fn owns_shell_panel(&self, peer: PeerCredentials) -> bool {
+        self.animation_targets
+            .panels
+            .iter()
+            .any(|panel| panel.descriptor.peer == peer)
+    }
+}
 use crate::{
     core::{Rect, WindowId},
     shell::animation_targets::{PanelDescriptor, TargetStore},

@@ -391,6 +391,19 @@ invisible panels cannot leave a frosted/glass footprint. Other
 layer-shell surfaces continue using alpha-derived backdrop coverage and square
 optical bounds because their protocol does not expose client corner radii.
 
+Glass namespaces ending in `-rounded-popups` additionally opt their
+layer-owned XDG popup trees into independent rounded backdrop coverage. Each
+popup uses its own original tree bounds, rather than its parent panel's pill
+radius or output rectangle. Interactive cards use fitted radius 24; explicitly
+empty-input tooltips use fitted radius 10, matching the shared tooltip silhouette
+without gaining pointer or keyboard ownership. Under enabled blur/glass,
+committing a change between empty and nonempty popup input regions changes the
+optical radius and MUST invalidate pixels; other
+input-only commits retain the ordinary nonpainting path. These effects do not
+alter popup position, clipping, input regions, or foreground sharpness.
+Transparent 1×1 closed glass layers MUST NOT retain independent geometric
+coverage or leave an optical footprint.
+
 ### Resources
 
 Glass adds one lazy shader and three immutable map textures (1,134,000 RGBA8

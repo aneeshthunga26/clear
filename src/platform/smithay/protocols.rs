@@ -50,7 +50,7 @@ use smithay::{
     },
 };
 
-/// Only effective pixel state is remembered; callback/input-region changes are excluded.
+/// Only effective pixel state is remembered; ordinary callback/input changes are excluded.
 #[derive(Default)]
 struct CommittedVisual(std::sync::Mutex<CommittedVisualState>);
 
@@ -77,6 +77,7 @@ struct TreeVisual {
     decoration: Option<(bool, bool)>,
     layer: Option<LayerVisual>,
     popup: Option<PopupState>,
+    popup_glass: Option<bool>,
 }
 
 #[derive(PartialEq)]
@@ -240,12 +241,27 @@ impl Compositor {
             PopupKind::Xdg(popup) => popup.with_committed_state(|state| state.copied()),
             _ => None,
         });
+        // An opt-in popup's empty-input state selects tooltip versus card radii.
+        // Ordinary input-region changes remain nonpainting commits.
+        let popup_glass = (self.runtime.config.theme.blur_radius > 0.0
+            || self.runtime.config.theme.liquid_glass.enabled)
+            .then(|| self.popups.find_popup(root))
+            .flatten()
+            .and_then(|popup| find_popup_root_surface(&popup).ok())
+            .filter(|parent| {
+                self.layers.iter().any(|layer| {
+                    layer.surface.wl_surface() == parent
+                        && super::scene::glass_popup_namespace(layer.surface.namespace())
+                })
+            })
+            .map(|_| super::scene::glass_popup_interactive(root));
         TreeVisual {
             surfaces,
             geometry,
             decoration,
             layer,
             popup,
+            popup_glass,
         }
     }
 

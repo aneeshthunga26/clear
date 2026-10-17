@@ -3,19 +3,37 @@ import QtQuick.Controls
 
 Item {
     id: control
+
+    property ShellStyle appearance
+
+    appearance: ShellStyle {
+    }
+
     property url icon
     property string description: ""
     property bool dimmed: false
+
     signal clicked()
     signal scrolled(real delta)
-    width: 26
-    height: 28
 
+    width: 32
+    height: 32
+    Accessible.name: description
+    Accessible.role: Accessible.Button
     Rectangle {
         anchors.fill: parent
         radius: height / 2
-        color: pointer.containsMouse ? "#334155" : "transparent"
+        color: pointer.pressed ? control.appearance.pressedColor : pointer.containsMouse ? control.appearance.hoverColor : "transparent"
+
+        Behavior on color {
+            ColorAnimation {
+                duration: control.appearance.motionDuration
+            }
+
+        }
+
     }
+
     Image {
         anchors.centerIn: parent
         width: 19
@@ -24,14 +42,24 @@ Item {
         opacity: control.dimmed ? 0.45 : 1
         fillMode: Image.PreserveAspectFit
     }
+
     MouseArea {
         id: pointer
+
         anchors.fill: parent
         hoverEnabled: true
         onClicked: control.clicked()
-        onWheel: event => control.scrolled(event.angleDelta.y)
-        ToolTip.visible: containsMouse
-        ToolTip.text: control.description
-        ToolTip.delay: 600
+        onWheel: (event) => {
+            return control.scrolled(event.angleDelta.y);
+        }
     }
+
+    ShellToolTip {
+        target: control
+        appearance: control.appearance
+        hovered: pointer.containsMouse
+        text: control.description
+        belowPanel: true
+    }
+
 }

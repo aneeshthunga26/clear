@@ -84,6 +84,11 @@ only directory allowed to depend on Smithay and Wayland types.
 - `shell_readiness.rs`: Calloop listener/live-stream registration, queued-only
   writable interests, and coalesced buffered-work continuations. Unix transport
   remains in `src/shell/`.
+- `shell_previews.rs`: panel-process-authorized bounded committed window capture,
+  one globally rate-limited pending batch, small straight-alpha PNG replies and
+  expiring hidden-root callback leases. Reuse `window_image.rs`; never remap,
+  resize, focus or restore sources. Restore the EGL host target after readback.
+  Keep images separate from state snapshots; no frame filesystem IO.
 - `animations.rs`: bridge complete normal-window snapshots to the runtime planner;
   capture committed images before lifecycle loss, enforce image ownership/bounds,
   and retire only sources acknowledged by successful submission.
@@ -111,6 +116,10 @@ only directory allowed to depend on Smithay and Wayland types.
   Client-alpha layers default to square optical bounds and alpha-derived backdrop
   coverage; `clear-glass-pill-*` / `clear-glass-rounded-*` opt into fitted radii
   and independent geometric backdrop coverage across the panel interior.
+  The `-rounded-popups` suffix additionally opts popup trees into their own rounded
+  bounds: radius 24 for interactive cards, 10 for empty-input tooltips.
+  Remember that empty/nonempty transitions are visual only for this opt-in when
+  effects are enabled. Closed 1×1 glass layers have no geometric footprint.
 - `rounded.rs`: fitted outer/inner window outlines, shared body hit masks, and
   renderer-owned rounded shaders with offscreen surface-tree composition.
 

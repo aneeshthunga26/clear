@@ -17,6 +17,7 @@ mod render_demand;
 mod rounded;
 mod scene;
 mod shell;
+mod shell_previews;
 mod state;
 mod titlebar;
 mod wallpaper;

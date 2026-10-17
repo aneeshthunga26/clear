@@ -115,7 +115,7 @@ def main():
     if args.exercise_overlays and not args.quickshell:
         parser.error("--exercise-overlays requires --quickshell")
     glass = args.quickshell_style == "glass"
-    reserved = 54 if glass else 36
+    reserved = 54 if glass else 52
     entry = "liquid-glass.qml" if glass else "shell.qml"
     if args.quickshell_config is None:
         args.quickshell_config = str(Path(__file__).resolve().parents[1] / "examples/quickshell" / entry)
@@ -485,15 +485,15 @@ def main():
             assert (magic, dimensions, maximum) == (b"P6", b"1280 480", b"255")
             assert len(pixels) == 1280 * 480 * 3
             if args.quickshell:
-                # QML #e60f172a over Clear's default background; the reserved
+                # Shared style fills over Clear's default background; the reserved
                 # bar area has no client underneath. Allow GPU byte rounding.
-                alpha = 46 / 255 if glass else 230 / 255
+                alpha = 46 / 255 if glass else 237 / 255
                 panel_pixel = tuple(
                     round(alpha * foreground + (1 - alpha) * background * 255)
-                    for foreground, background in zip((35, 40, 52) if glass else (15, 23, 42), (0.07, 0.08, 0.10))
+                    for foreground, background in zip((35, 40, 52) if glass else (23, 28, 41), (0.07, 0.08, 0.10))
                 )
-                for x in ((320, 960) if glass else (2, 642)):
-                    offset = ((12 if glass else 1) * 1280 + x) * 3
+                for x in (320, 960):
+                    offset = ((12 if glass else 10) * 1280 + x) * 3
                     assert all(
                         abs(actual - expected) <= 1
                         for actual, expected in zip(
@@ -512,8 +512,8 @@ def main():
                             offset = (32 * 1280 + origin + x) * 3
                             assert all(abs(a - b) <= 1 for a, b in zip(pixels[offset:offset + 3], panel_pixel)), "missing capsule end"
                 # Controls must remain visible instead of inheriting background alpha.
-                for x in ((75, 715) if glass else (330, 970)):
-                    offset = ((32 if glass else 10) * 1280 + x) * 3
+                for x in (90, 730):
+                    offset = (28 * 1280 + x) * 3
                     assert any(
                         abs(actual - expected) > 1
                         for actual, expected in zip(

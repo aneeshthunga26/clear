@@ -13,6 +13,15 @@ Scope {
         : online ? "Connected" : socket.connected ? "Waiting for Clear state" : "Offline: retrying Clear IPC"
     property var state: null
     property var animationPanels: []
+    property var windowPreviews: ({})
+    property double previewRequest: 0
+
+    function requestPreviews(windows) {
+        if (!online || previewRequest || !state.capabilities
+                || state.capabilities.indexOf("window_previews_v1") < 0 || !windows.length) return;
+        previewRequest = nextId;
+        send({type: "window_previews", windows: windows});
+    }
     property string lastError: ""
     // QML int is signed; double represents every u32 request ID exactly.
     property double nextId: 1
@@ -36,6 +45,13 @@ Scope {
     function receive(line) {
         try {
             var message = Protocol.decodeMessage(line);
+            if (message.id === previewRequest) {
+                previewRequest = 0;
+                var frames = {};
+                if (message.type === "window_previews")
+                    message.frames.forEach(function(frame) { if (frame.image) frames[frame.window] = frame.image; });
+                if (message.type === "window_previews") windowPreviews = frames;
+            }
             if (message.type === "snapshot" || message.type === "state") {
                 if (state === null)
                     console.info("Clear shell: subscribed to protocol v1");
@@ -55,6 +71,11 @@ Scope {
         }
     }
 
+    Timer {
+        interval: 2000
+        running: bridge.previewRequest !== 0
+        onTriggered: bridge.previewRequest = 0
+    }
     Component.onCompleted: ready = true
 
     Socket {
@@ -66,6 +87,8 @@ Scope {
             onRead: data => bridge.receive(data)
         }
         onConnectedChanged: {
+            bridge.windowPreviews = {};
+            bridge.previewRequest = 0;
             bridge.state = null;
             bridge.animationPanels = [];
             if (connected)

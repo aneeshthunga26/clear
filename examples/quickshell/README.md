@@ -10,18 +10,29 @@ cargo build --locked
 ./target/debug/clear --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
-The 36px top panel on each output offers workspace buttons, grouped applications,
+The floating top panel on each output offers workspace buttons, grouped applications,
 mode controls with SVG icons, a StatusNotifier tray, status controls, a two-line
 clock, and a notification button.
 Hover an application to see cards for all of its open windows, including windows
 on other workspaces; click a card to reveal and focus it. Left click an app icon
-to focus its first window or launch its desktop entry. Right click to pin or unpin
-it. Window cards have minimize/restore and maximize/unmaximize buttons, and show
+to focus its first window or launch its desktop entry. Right click for the app's
+published desktop actions, pinning, window controls and moving to a workspace.
+Grouped apps let you select a window or close all their windows. Window cards
+have minimize/restore and maximize/unmaximize buttons, and show
 minimized/maximized status, following Clear's
 [window-state contract](../../specs/desktop.md#maximize-and-minimize).
 Pins are saved in Quickshell's per-shell state directory. The mode button
 cycles built-in modes and the reset button clears the current output override.
 Rows, grid, and the Fibonacci-style spiral have their own mode icons.
+
+The shared styling takes design cues from
+[Caelestia](https://github.com/caelestia-dots/shell),
+[DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell), and
+[end-4's shell](https://github.com/end-4/dots-hyprland): grouped controls, quiet
+surfaces, consistent line icons and clear selection states. The QML and bundled
+control icons are original implementations. Hover placement, delays, compact
+layouts and appearance details are defined in the
+[shell specification](../../specs/shell.md#optional-quickshell-appearances).
 
 The launcher button opens a searchable desktop-entry launcher. Type to filter,
 press Enter or click an entry to launch, use its star to pin, and press Escape
@@ -54,10 +65,30 @@ match or the icon theme cannot load the entry's icon.
 Gesture, acceptance, and cancellation behavior is defined by the
 [input specification](../../specs/input.md#alt-tab).
 
-The hover cards show window titles, app IDs, and workspaces. They are not live
-pixel thumbnails: Clear does not yet offer a toplevel capture protocol. The
-launcher uses Quickshell's desktop-entry index, so only installed desktop entries
+The hover cards include live committed window images through Clear's
+[bounded private preview capability](../../specs/shell.md#private-window-previews),
+including minimized windows. These are modest-rate previews rather than a
+full-rate screencast. The launcher uses Quickshell's desktop-entry index, so only installed desktop entries
 appear. Notification history exists for the life of the Quickshell process.
+
+For bounded single-output UI captures in an isolated test environment:
+
+```sh
+python3 -B scripts/vm-shell-ui-smoke.py --binary target/debug/clear --quickshell quickshell
+```
+
+Use `--width 480` for compact layouts, `--glass` for the glass appearance, or
+`--case preview --case context-menu` for live capture and menu actions. Artifacts
+stay under `target/`. This checks QML-driven hover timing, changing captured
+pixels (also minimized), stable cards across title changes and missing/invalid
+frame replies, a one-second hover dwell, popup placement, a published desktop action and explicit
+workspace moves. Context-menu checks also cover first-open dispatch and final-size
+configures without intermediate tiny frames; they do not measure presentation
+latency or inject physical pointer or keyboard input.
+
+To compare real blur and glass rendering on hover cards, shared tooltips and
+context menus against patterned backgrounds, add `--glass --verify-backdrops`. This runs plain, blur-only,
+glass-only and combined captures and checks that effects stay inside each menu.
 
 ## Translucent panels
 

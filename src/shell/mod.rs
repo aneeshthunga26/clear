@@ -55,6 +55,16 @@ pub enum RequestKind {
     FocusWindow {
         window: String,
     },
+    CloseWindow {
+        window: String,
+    },
+    MoveWindowToWorkspace {
+        window: String,
+        workspace: String,
+    },
+    WindowPreviews {
+        windows: Vec<String>,
+    },
     SetMaximized {
         window: String,
         maximized: bool,
@@ -175,7 +185,7 @@ pub struct WindowSnapshot {
 pub fn snapshot(runtime: &Runtime) -> Snapshot {
     let desktop = &runtime.desktop;
     Snapshot {
-        capabilities: vec!["animation_targets_v1".into()],
+        capabilities: vec!["animation_targets_v1".into(), "window_previews_v1".into()],
         outputs: desktop
             .outputs()
             .map(|output| {
@@ -299,6 +309,31 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
         RequestKind::AnimationPanels | RequestKind::SetAnimationTargets { .. } => {
             return Err("animation targets require compositor panel ownership validation".into());
         }
+        RequestKind::WindowPreviews { .. } => {
+            return Err("window previews require compositor panel ownership validation".into());
+        }
+        RequestKind::CloseWindow { window } | RequestKind::MoveWindowToWorkspace { window, .. } => {
+            let window = runtime
+                .desktop
+                .windows()
+                .find(|candidate| candidate.id.0.to_string() == *window)
+                .ok_or_else(|| format!("unknown window {window:?}"))?;
+            if window.role != WindowRole::Normal {
+                return Err("launcher windows reject task menu requests".into());
+            }
+            if let RequestKind::MoveWindowToWorkspace { workspace, .. } = &request.request {
+                let workspace = runtime
+                    .desktop
+                    .workspaces()
+                    .find(|candidate| candidate.id.0.to_string() == *workspace)
+                    .map(|workspace| workspace.id)
+                    .ok_or_else(|| format!("unknown workspace {workspace:?}"))?;
+                runtime
+                    .desktop
+                    .command(Command::MoveWindowToWorkspace(window.id, workspace));
+            }
+            // Close is a protocol effect delivered by the adapter, without changing focus.
+        }
         RequestKind::ToggleOverview => {
             runtime.overview_requested = !runtime.overview_requested;
         }
@@ -395,6 +430,10 @@ struct Response<'a> {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message<'a> {
+    WindowPreviews {
+        id: u32,
+        frames: &'a [WindowPreview],
+    },
     Snapshot {
         id: u32,
         state: &'a Snapshot,
@@ -413,6 +452,18 @@ enum Message<'a> {
         id: Option<u32>,
         message: &'a str,
     },
+}
+
+/// One bounded committed-window image; unavailable buffers carry no image.
+#[derive(Serialize)]
+pub struct WindowPreview {
+    pub window: String,
+    pub image: Option<String>,
+}
+
+/// Encode a bounded batch of private preview images, separate from state snapshots.
+pub fn encode_window_previews(id: u32, frames: &[WindowPreview]) -> Vec<u8> {
+    encode(Message::WindowPreviews { id, frames })
 }
 
 fn encode(message: Message<'_>) -> Vec<u8> {
