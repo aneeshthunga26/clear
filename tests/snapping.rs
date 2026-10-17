@@ -277,3 +277,32 @@ fn extreme_finite_pointer_positions_do_not_saturate_into_another_outputs_bounds(
     assert_eq!(d.window(WindowId(1)).unwrap().output, Some(OutputId(1)));
     assert!(d.snap_preview(&s).is_none());
 }
+
+#[test]
+fn generous_corner_zones_work_without_touching_edges_and_leave_edge_centers_available() {
+    let b = Rect::new(801, -20, 640, 481);
+    for ((x, y), target) in [
+        ((851., 30.), Some(SnapTarget::TopLeft)),
+        ((1391., 30.), Some(SnapTarget::TopRight)),
+        ((851., 411.), Some(SnapTarget::BottomLeft)),
+        ((1391., 411.), Some(SnapTarget::BottomRight)),
+        ((864., 43.), Some(SnapTarget::TopLeft)),
+        ((865., 44.), None),
+        ((802., 60.), Some(SnapTarget::Left)),
+        ((1440., 60.), Some(SnapTarget::Right)),
+        ((900., -19.), Some(SnapTarget::Maximize)),
+        ((1100., 460.), None),
+    ] {
+        assert_eq!(SnapTarget::at_pointer(b, x, y), target, "{x},{y}");
+    }
+    let tiny = Rect::new(0, 0, 30, 30);
+    assert_eq!(
+        SnapTarget::at_pointer(tiny, 14., 14.),
+        Some(SnapTarget::TopLeft)
+    );
+    assert_eq!(
+        SnapTarget::at_pointer(tiny, 15., 15.),
+        Some(SnapTarget::BottomRight)
+    );
+    assert_eq!(SnapTarget::at_pointer(tiny, 30., 15.), None);
+}

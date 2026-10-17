@@ -49,10 +49,23 @@ impl SnapTarget {
         ))
     }
 
-    /// Twelve logical pixels at physical output edges; corners win over edges.
+    /// Twelve-pixel edge strips and forgiving 64-pixel corner zones, output-local.
     pub fn at_pointer(bounds: Rect, x: f64, y: f64) -> Option<Self> {
         if !contains_pointer(bounds, x, y) {
             return None;
+        }
+        let corner_x = (f64::from(bounds.width) / 2.0).min(64.0);
+        let corner_y = (f64::from(bounds.height) / 2.0).min(64.0);
+        let near_left = x < f64::from(bounds.x) + corner_x;
+        let near_right = x >= f64::from(bounds.right()) - corner_x;
+        let near_top = y < f64::from(bounds.y) + corner_y;
+        let near_bottom = y >= f64::from(bounds.bottom()) - corner_y;
+        match (near_left, near_right, near_top, near_bottom) {
+            (true, _, true, _) => return Some(Self::TopLeft),
+            (_, true, true, _) => return Some(Self::TopRight),
+            (true, _, _, true) => return Some(Self::BottomLeft),
+            (_, true, _, true) => return Some(Self::BottomRight),
+            _ => {}
         }
         let dx = (f64::from(bounds.width) / 2.0).min(12.0);
         let dy = (f64::from(bounds.height) / 2.0).min(12.0);
@@ -61,10 +74,6 @@ impl SnapTarget {
         let top = y < f64::from(bounds.y) + dy;
         let bottom = y >= f64::from(bounds.bottom()) - dy;
         match (left, right, top, bottom) {
-            (true, _, true, _) => Some(Self::TopLeft),
-            (_, true, true, _) => Some(Self::TopRight),
-            (true, _, _, true) => Some(Self::BottomLeft),
-            (_, true, _, true) => Some(Self::BottomRight),
             (_, _, true, _) => Some(Self::Maximize),
             (true, _, _, _) => Some(Self::Left),
             (_, true, _, _) => Some(Self::Right),

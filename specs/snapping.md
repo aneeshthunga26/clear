@@ -36,8 +36,11 @@ otherwise keep the supplied frame size. Movement MUST use total displacement
 from that baseline, without easing pointer translation.
 
 The pointer can transfer the window to the visible workspace of another output.
-`SnapTarget::at_pointer` recognizes twelve-logical-pixel zones inside the full
-output bounds, with half-open output ownership and corner precedence. Top center
+`SnapTarget::at_pointer` recognizes twelve-logical-pixel edge strips and
+64-by-64-logical-pixel corner zones inside the full output bounds. A corner can
+be selected without touching either edge. Corner zones take precedence over edge
+strips; each corner extent clamps to half the output dimension so opposing zones
+never overlap. Output ownership remains half-open. Top center
 selects maximize, side centers select halves, and bottom center has no target.
 Preview geometry uses the target output's usable area, independently of those
 full-output trigger zones. Unsupported tiny targets, output gaps, out-of-bounds
@@ -109,3 +112,6 @@ ends at the current geometry, without applying move-session rollback.
   target invalidation. It uses synthetic seat input without GPU or physical
   device injection. [Scene assembly](../src/platform/smithay/scene.rs) owns the
   unfiltered preview and requested-body clips.
+- `generous_corner_zones_work_without_touching_edges_and_leave_edge_centers_available`
+  in [policy tests](../tests/snapping.rs) checks near-corner selection, preserved
+  edge centers, output offsets and clamping on tiny outputs.
