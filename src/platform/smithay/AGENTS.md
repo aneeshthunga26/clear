@@ -103,7 +103,7 @@ only directory allowed to depend on Smithay and Wayland types.
   shared visibility clips, and frame callbacks. Tile zoom reveals live top/overlay
   shell trees with presentation opacity; omit their ordinary copies and preserve
   fullscreen ordering and overview input ownership. Remap blur group ranges when
-  prepending scene trees. Snap preview solids have no input owner or backdrop
+  prepending scene trees. Snap preview elements have no input owner or backdrop
   mask; keep them below shell/elevated trees and clip pending snapped bodies
   consistently in rendering and hits.
 - `wallpaper.rs`: renderer-owned immutable texture cache, per-output image
@@ -127,6 +127,8 @@ only directory allowed to depend on Smithay and Wayland types.
   effects are enabled. Closed 1×1 glass layers have no geometric footprint.
 - `rounded.rs`: fitted outer/inner window outlines, shared body hit masks, and
   renderer-owned rounded shaders with offscreen surface-tree composition.
+  Snap previews reuse the same corner fitting/coverage through a direct pixel
+  shader, without an image allocation or offscreen pass.
 
 ## Protocol and geometry invariants
 

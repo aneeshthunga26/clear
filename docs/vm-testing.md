@@ -1268,3 +1268,20 @@ to check body/input clipping without clipping its popup to the snapped half.
 Physical dragging, snap-specific GPU pixels, held-client snap pixels and delivered
 animation cadence remain manual acceptance work; the regression fixtures above
 do not establish them.
+
+#### Snap preview rounding and corner tolerance (2026-10-18)
+
+Corner targets now have a 64-pixel zone; ordinary edge strips remain 12 pixels.
+The policy regression checks selection without touching an edge, preserved edge
+centers, offsets and nonoverlapping tiny-output zones. Preview outlines reuse
+window corner fitting, including asymmetric and zero corners, and stay within
+the exact target. Rounded previews draw directly with one pixel-shader element,
+without a texture allocation or offscreen pass.
+
+Cargo fmt/check/test, the release build and editor diagnostics passed (163 library
+and 13 snapping policy tests, plus the other integration suites). Release
+`rounded-previews` and `rounded-asymmetric` passed in the VM under
+`target/snapping-preview-polish/`. These GPU regressions compile the updated
+shader programs and verify the shared window outline path; they do not activate
+the snap preview. Snap preview pixels and physical corner targeting remain manual
+checks in the bounded floating demo.

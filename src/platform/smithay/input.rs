@@ -360,7 +360,7 @@ mod tests {
             assert_eq!(preview.target, target);
             let mut elements = Vec::new();
             let mut groups = Vec::new();
-            state.snap_preview_elements(&mut elements, &mut groups);
+            state.snap_preview_elements(&mut elements, &mut groups, None);
             assert_eq!(elements.len(), 5);
             assert_eq!(groups.len(), 1);
             assert!(groups[0].mask.is_none());
@@ -391,7 +391,7 @@ mod tests {
             state.pointer_button(0x110, ButtonState::Released, 3);
             assert!(state.drag.is_none());
             let mut ended_elements = Vec::new();
-            state.snap_preview_elements(&mut ended_elements, &mut Vec::new());
+            state.snap_preview_elements(&mut ended_elements, &mut Vec::new(), None);
             assert!(ended_elements.is_empty());
             assert!(!state.suppressed_buttons.contains(&0x110));
             assert_eq!(

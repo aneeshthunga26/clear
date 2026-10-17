@@ -74,9 +74,14 @@ application windows, below shell top/overlay trees and elevated fullscreen trees
 Its geometry is the prospective frame; it has no input target and MUST NOT
 resize/configure the client to the target before release. It uses the active
 border RGB with a 0.16-alpha fill and a 0.8-alpha, at-most-two-pixel outline,
-clipped to that target. At most five solid elements in one unfiltered scene group
-are produced; there is no thumbnail, filter invocation or retained GPU image for
-the preview. Leaving the zone, cancellation, invalidation and release remove it.
+clipped to that target. Preview corners MUST use the configured window corner
+radii, including asymmetric/zero corners and proportional fitting for tiny
+rectangles; the preview outline stays inside its target independently of window
+border thickness. Rounded previews use one pixel-shader element with the shared
+window coverage function; square previews use at most five solid elements. Both
+paths use one unfiltered scene group and no thumbnail, offscreen target, filter
+invocation or retained GPU image. Leaving the zone, cancellation, invalidation
+and release remove it.
 A stationary held gesture MUST NOT by itself require continuous rendering.
 
 Drop uses the existing `window_movement` effect for halves/quadrants and
@@ -112,6 +117,9 @@ ends at the current geometry, without applying move-session rollback.
   target invalidation. It uses synthetic seat input without GPU or physical
   device injection. [Scene assembly](../src/platform/smithay/scene.rs) owns the
   unfiltered preview and requested-body clips.
+- `snap_preview_reuses_window_radii_and_fits_inside_the_target` in
+  [rounded renderer tests](../src/platform/smithay/rounded.rs) checks matching
+  window radii, asymmetric/square corners, bounded outlines and tiny-target fitting.
 - `generous_corner_zones_work_without_touching_edges_and_leave_edge_centers_available`
   in [policy tests](../tests/snapping.rs) checks near-corner selection, preserved
   edge centers, output offsets and clamping on tiny outputs.

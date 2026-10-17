@@ -17,7 +17,7 @@ use smithay::{
             texture::TextureRenderElement,
             utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
         },
-        gles::{GlesError, GlesRenderer, GlesTexture},
+        gles::{GlesError, GlesRenderer, GlesTexture, element::PixelShaderElement},
     },
     desktop::{
         PopupManager, WindowSurfaceType, layer_map_for_output,
@@ -39,6 +39,7 @@ smithay::backend::renderer::element::render_elements! {
     Border=SolidColorRenderElement,
     Titlebar=CropRenderElement<TextureRenderElement<GlesTexture>>,
     RoundedSurface=RoundedSurface,
+    SnapPreview=PixelShaderElement,
     Wallpaper=TextureRenderElement<GlesTexture>,
     AnimatedPopup=CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>,
 }
@@ -788,6 +789,7 @@ impl Compositor {
         &self,
         elements: &mut Vec<SceneElement>,
         groups: &mut Vec<SceneGroup>,
+        rounded: Option<&RoundedShaders>,
     ) {
         if self.overview_present() {
             return;
@@ -802,6 +804,21 @@ impl Compositor {
         };
         let start = elements.len();
         let rect = preview.rect;
+        if self.runtime.config.theme.corner_radius.is_rounded() {
+            let shaders =
+                rounded.expect("rounded shaders prepared for the configured window radii");
+            elements.push(SceneElement::SnapPreview(shaders.snap_preview(
+                rect,
+                &self.runtime.config.theme,
+                self.host_size.h,
+            )));
+            groups.push(SceneGroup {
+                elements: start..elements.len(),
+                clip: physical(rect),
+                mask: None,
+            });
+            return;
+        }
         let mut fill = self.runtime.config.theme.active_border;
         fill[3] = 0.16;
         let mut edge = fill;
@@ -903,7 +920,7 @@ impl Compositor {
                     &mut groups,
                     |output| full_outputs.contains(&output),
                 );
-                self.snap_preview_elements(&mut elements, &mut groups);
+                self.snap_preview_elements(&mut elements, &mut groups, rounded);
             }
             for placement in self.placements.iter().rev() {
                 if self.overview_present() {

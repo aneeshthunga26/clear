@@ -11,8 +11,9 @@ use smithay::{
                 texture::TextureRenderElement, utils::CropRenderElement,
             },
             gles::{
-                GlesError, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
-                UniformType, element::TextureShaderElement,
+                GlesError, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
+                UniformName, UniformType,
+                element::{PixelShaderElement, TextureShaderElement},
             },
         },
     },
@@ -134,6 +135,34 @@ impl WindowOutline {
         Self { outer, inner }
     }
 
+    /// Fit the configured window radii inside the preview's exact target bounds.
+    pub fn snap_preview(rect: Rect, theme: &Theme) -> Self {
+        let outer = RoundedShape::new(rect, theme.corner_radius.values());
+        Self {
+            outer,
+            inner: outer,
+        }
+        .selection(2)
+    }
+
+    fn uniforms(self, height: i32) -> Vec<Uniform<'static>> {
+        let mut uniforms = self.outer.uniforms(height);
+        let rect = self.inner.rect;
+        uniforms.extend([
+            Uniform::new(
+                "inner_outline",
+                [
+                    rect.x as f32,
+                    rect.y as f32,
+                    rect.width as f32,
+                    rect.height as f32,
+                ],
+            ),
+            Uniform::new("inner_radii", self.inner.radii),
+        ]);
+        uniforms
+    }
+
     /// Map an already fitted desktop outline into a scaled destination.
     pub fn scaled(self, dest: Rect) -> Self {
         let source = self.outer.rect;
@@ -197,6 +226,7 @@ impl WindowOutline {
 /// Compiled once per renderer, on first use; reload only changes uniforms.
 pub(super) struct RoundedShaders {
     window: GlesTexProgram,
+    preview: GlesPixelProgram,
 }
 
 pub(super) type RoundedSurface = TextureShaderElement;
@@ -215,7 +245,41 @@ impl RoundedShaders {
                 UniformName::new("body_alpha", UniformType::_1f),
             ],
         )?;
-        Ok(Self { window })
+        let preview = renderer.compile_custom_pixel_shader(
+            format!("precision highp float;\nuniform float alpha;\n#ifdef DEBUG_FLAGS\nuniform float tint;\n#endif\n{SHAPE}\n{PREVIEW_MAIN}"),
+            &[
+                UniformName::new("outline", UniformType::_4f),
+                UniformName::new("radii", UniformType::_4f),
+                UniformName::new("target_height", UniformType::_1f),
+                UniformName::new("inner_outline", UniformType::_4f),
+                UniformName::new("inner_radii", UniformType::_4f),
+                UniformName::new("fill_color", UniformType::_4f),
+                UniformName::new("border_color", UniformType::_4f),
+            ],
+        )?;
+        Ok(Self { window, preview })
+    }
+
+    /// Draw a rounded preview directly; no source texture or offscreen pass is needed.
+    pub fn snap_preview(&self, rect: Rect, theme: &Theme, height: i32) -> PixelShaderElement {
+        let outline = WindowOutline::snap_preview(rect, theme);
+        let mut fill = theme.active_border;
+        fill[3] = 0.16;
+        let mut edge = fill;
+        edge[3] = 0.8;
+        let mut uniforms = outline.uniforms(height);
+        uniforms.extend([
+            Uniform::new("fill_color", super::scene::premultiply(fill)),
+            Uniform::new("border_color", super::scene::premultiply(edge)),
+        ]);
+        PixelShaderElement::new(
+            self.preview.clone(),
+            super::scene::logical(rect),
+            None,
+            1.0,
+            uniforms,
+            Kind::Unspecified,
+        )
     }
 
     /// Composite the unmasked surface tree, then mask its body and add the border once.
@@ -332,19 +396,8 @@ impl RoundedShaders {
         height: i32,
         body_alpha: f32,
     ) -> RoundedSurface {
-        let mut uniforms = outline.outer.uniforms(height);
-        let rect = outline.inner.rect;
+        let mut uniforms = outline.uniforms(height);
         uniforms.extend([
-            Uniform::new(
-                "inner_outline",
-                [
-                    rect.x as f32,
-                    rect.y as f32,
-                    rect.width as f32,
-                    rect.height as f32,
-                ],
-            ),
-            Uniform::new("inner_radii", outline.inner.radii),
             Uniform::new("body_alpha", body_alpha),
             Uniform::new("border_color", super::scene::premultiply(color)),
         ]);
@@ -399,6 +452,23 @@ uniform float tint;
 #endif
 "#;
 
+const PREVIEW_MAIN: &str = r#"
+uniform vec4 inner_outline;
+uniform vec4 inner_radii;
+uniform vec4 fill_color;
+uniform vec4 border_color;
+void main() {
+    vec2 p = desktop_point();
+    float inside = coverage(p, inner_outline, inner_radii);
+    float ring = max(0.0, coverage(p, outline, radii) - inside);
+    vec4 color = (fill_color * inside + border_color * ring) * alpha;
+#ifdef DEBUG_FLAGS
+    if (tint == 1.0) color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+    gl_FragColor = color;
+}
+"#;
+
 const TEXTURE_MAIN: &str = r#"
 uniform vec4 inner_outline;
 uniform vec4 inner_radii;
@@ -421,6 +491,31 @@ void main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snap_preview_reuses_window_radii_and_fits_inside_the_target() {
+        let theme: Theme =
+            toml::from_str("corner_radius = [48, 0, 24, 0]\nborder_width = 8").unwrap();
+        let rect = Rect::new(320, 200, 160, 100);
+        let preview = WindowOutline::snap_preview(rect, &theme);
+        let window = WindowOutline::new(rect, &theme);
+        assert_eq!(preview.outer.rect, rect);
+        assert_eq!(preview.outer.radii, window.outer.radii);
+        assert_eq!(preview.inner.radii, [46.0, 0.0, 22.0, 0.0]);
+        assert!(!preview.outer.contains((321.0, 201.0).into()));
+        assert!(preview.outer.contains((479.0, 201.0).into()));
+        let tiny = Rect::new(0, 0, 8, 6);
+        let preview = WindowOutline::snap_preview(tiny, &theme);
+        assert_eq!(preview.outer.rect, tiny);
+        assert_eq!(preview.outer.radii, [6.0, 0.0, 3.0, 0.0]);
+        assert_eq!(
+            preview.inner.rect.intersection(tiny),
+            Some(preview.inner.rect)
+        );
+        let square = WindowOutline::snap_preview(rect, &Theme::default());
+        assert_eq!(square.outer.radii, [0.0; 4]);
+        assert!(square.outer.contains((320.5, 200.5).into()));
+    }
 
     #[test]
     fn asymmetric_arcs_and_square_corners_have_matching_hit_regions() {
