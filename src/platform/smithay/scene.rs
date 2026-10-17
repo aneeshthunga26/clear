@@ -289,10 +289,12 @@ impl Compositor {
             }
         }
         if self.drag.as_ref().is_some_and(|drag| {
-            self.runtime
-                .desktop
-                .window(drag.window)
-                .is_none_or(|w| w.minimized || w.maximized || w.fullscreen)
+            self.runtime.desktop.window(drag.window).is_none_or(|w| {
+                w.minimized || w.maximized || w.fullscreen || w.role == WindowRole::Launcher
+            }) || drag
+                .moving
+                .as_ref()
+                .is_some_and(|session| !self.runtime.desktop.move_valid(session))
         }) {
             self.end_drag();
         }
@@ -302,7 +304,7 @@ impl Compositor {
                     .runtime
                     .desktop
                     .window(*id)
-                    .is_none_or(|window| window.minimized || window.maximized)
+                    .is_none_or(|window| window.minimized || window.fullscreen)
         }) {
             self.titlebar_drag = None;
         }
@@ -647,7 +649,15 @@ impl Compositor {
             let surface_origin = origin - entry.window.geometry().loc;
             if let Some((surface, offset)) = entry.window.surface_under(
                 point - surface_origin.to_f64(),
-                if ((p.tiled || ssd || entry.committed_fullscreen) && !contains(content, point))
+                if ((p.tiled
+                    || ssd
+                    || entry.committed_fullscreen
+                    || self
+                        .runtime
+                        .desktop
+                        .window(p.window)
+                        .is_some_and(|w| w.snapped.is_some()))
+                    && !contains(content, point))
                     || (!entry.committed_fullscreen
                         && self.runtime.config.theme.corner_radius.is_rounded()
                         && !entry
@@ -774,6 +784,75 @@ impl Compositor {
         )
     }
 
+    pub(super) fn snap_preview_elements(
+        &self,
+        elements: &mut Vec<SceneElement>,
+        groups: &mut Vec<SceneGroup>,
+    ) {
+        if self.overview_present() {
+            return;
+        }
+        let Some(preview) = self
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.moving.as_ref())
+            .and_then(|session| self.runtime.desktop.snap_preview(session))
+        else {
+            return;
+        };
+        let start = elements.len();
+        let rect = preview.rect;
+        let mut fill = self.runtime.config.theme.active_border;
+        fill[3] = 0.16;
+        let mut edge = fill;
+        edge[3] = 0.8;
+        // A bounded set of solid elements has no Wayland/input owner or retained image.
+        let thickness = 2.min(rect.width / 2).min(rect.height / 2);
+        for (part, color) in [
+            (rect, fill),
+            (Rect::new(rect.x, rect.y, rect.width, thickness), edge),
+            (
+                Rect::new(rect.x, rect.bottom() - thickness, rect.width, thickness),
+                edge,
+            ),
+            (
+                Rect::new(
+                    rect.x,
+                    rect.y + thickness,
+                    thickness,
+                    rect.height - 2 * thickness,
+                ),
+                edge,
+            ),
+            (
+                Rect::new(
+                    rect.right() - thickness,
+                    rect.y + thickness,
+                    thickness,
+                    rect.height - 2 * thickness,
+                ),
+                edge,
+            ),
+        ] {
+            if part.is_empty() {
+                continue;
+            }
+            let buffer = SolidColorBuffer::new((part.width, part.height), premultiply(color));
+            elements.push(SceneElement::Border(SolidColorRenderElement::from_buffer(
+                &buffer,
+                (part.x, part.y),
+                1.0,
+                1.0,
+                Kind::Unspecified,
+            )));
+        }
+        groups.push(SceneGroup {
+            elements: start..elements.len(),
+            clip: physical(rect),
+            mask: None,
+        });
+    }
+
     pub fn scene_elements(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -824,6 +903,7 @@ impl Compositor {
                     &mut groups,
                     |output| full_outputs.contains(&output),
                 );
+                self.snap_preview_elements(&mut elements, &mut groups);
             }
             for placement in self.placements.iter().rev() {
                 if self.overview_present() {
@@ -994,7 +1074,15 @@ impl Compositor {
                             })
                             .map(SceneElement::Titlebar),
                     );
-                    let body_clip = if placement.tiled || ssd || entry.committed_fullscreen {
+                    let body_clip = if placement.tiled
+                        || ssd
+                        || entry.committed_fullscreen
+                        || self
+                            .runtime
+                            .desktop
+                            .window(placement.window)
+                            .is_some_and(|w| w.snapped.is_some())
+                    {
                         physical(clip).intersection(physical(content))
                     } else {
                         Some(physical(clip))

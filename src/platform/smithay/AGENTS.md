@@ -63,6 +63,9 @@ only directory allowed to depend on Smithay and Wayland types.
   cancellation and teardown so engine tracks cannot outlive a gesture. Keep policy
   transfers and input ownership in input/runtime, and GPU ownership in overview.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
+  Move gestures own opaque core MoveSessions; successful initiating release commits,
+  while Escape/focus loss cancel. Keep pointer following immediate and retain
+  native serial/grab authorization. See [snapping](../../../specs/snapping.md).
 - `presentation_input.rs`: surface-local inverse pointer/DnD coordinates while
   preserving Wayland surface identity, popup focus and client grab ownership.
   Resolve through last submitted animation geometry; inverse-map body, SSD,
@@ -100,7 +103,9 @@ only directory allowed to depend on Smithay and Wayland types.
   shared visibility clips, and frame callbacks. Tile zoom reveals live top/overlay
   shell trees with presentation opacity; omit their ordinary copies and preserve
   fullscreen ordering and overview input ownership. Remap blur group ranges when
-  prepending scene trees.
+  prepending scene trees. Snap preview solids have no input owner or backdrop
+  mask; keep them below shell/elevated trees and clip pending snapped bodies
+  consistently in rendering and hits.
 - `wallpaper.rs`: renderer-owned immutable texture cache, per-output image
   placement and scaled overview placement preserving the full-output crop.
   Resource decoding and filesystem access stay in runtime.
@@ -133,7 +138,9 @@ only directory allowed to depend on Smithay and Wayland types.
   synchronizes Maximized/Fullscreen/Suspended states.
   Minimize removes placements/space visibility, never the managed mapping or core
   window. Clear initial intent and transient protocol states on client unmap.
-  State changes cancel active drags; maximized/fullscreen windows reject dragging.
+  State changes invalidate incompatible drags. Moving maximized/snapped windows
+  restores free size under the pointer; maximized resize and all fullscreen drags
+  remain refused.
   Suppress SSD, borders and rounding only at a buffered fullscreen root commit;
   an ACK alone cannot switch displayed decoration. Preserve negotiated mode.
   Keep fullscreen-output Top layer ordering identical for rendering and hits.

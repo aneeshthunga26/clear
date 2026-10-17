@@ -84,8 +84,10 @@ only when released over the same window/control where it was pressed; matching
 button releases are suppressed. A titlebar click focuses and arms movement, but
 a tile detaches only after crossing the movement threshold. Super+mouse gestures
 take precedence over controls. Minimize/maximize target existing core state;
-close sends a graceful client close. Maximized windows must be restored before
-dragging; launchers reject ordinary move/maximize/minimize operations.
+close sends a graceful client close. Titlebar dragging uses the
+[snapping move-session rules](snapping.md#drag-input-and-presentation), including
+maximized drag-out after the movement threshold. Launchers reject ordinary
+move/maximize/minimize operations.
 
 ## Prepared SVG and app-icon resources
 

@@ -119,8 +119,9 @@ rectangle, and persistent layout proportions.
 Maximize places a normal window in its home output's usable rectangle with an
 explicit clip. It follows reservation and output-size changes and MUST NOT span
 the whole stretched group. Restoring uses the current layout or unchanged saved
-floating rectangle. A normal window must be restored before an interactive move
-or resize.
+floating rectangle. Starting an interactive move restores maximized size under
+the pointer through a [move session](snapping.md#core-move-sessions). A maximized
+window must be restored before an interactive resize.
 
 Minimize removes placements, layout participation, and ordinary focus-cycle
 eligibility, but retains the managed window and its maximized flag. Focus is

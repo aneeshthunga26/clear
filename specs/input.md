@@ -103,8 +103,10 @@ floating exception. A resize MUST retain tiled membership and use the
 the window to the output crossed by the pointer.
 
 Super+right selects a corner by the pointer's quadrant of the frame. Only supported
-internal tile boundaries move. Launchers, maximized windows, and fullscreen windows reject ordinary
-move/resize gestures. Client XDG move/resize requests require a valid pointer grab
+internal tile boundaries move. [Floating snapping](snapping.md) adds edge/corner
+previews, release-to-snap, move cancellation and snapped/maximized drag-out.
+Maximized windows reject resize until restored; fullscreen windows and launchers
+reject ordinary move/resize gestures. Client XDG move/resize requests require a valid pointer grab
 serial and a grab origin owned by the requesting client; merely sending a request
 does not authorize it.
 

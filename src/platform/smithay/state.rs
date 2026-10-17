@@ -63,7 +63,7 @@ pub(super) struct OutputRegion {
 pub(super) struct Drag {
     pub window: WindowId,
     pub origin: Point<f64, Logical>,
-    pub rect: Rect,
+    pub moving: Option<crate::core::MoveSession>,
     pub resize: Option<crate::core::ResizeSession>,
     pub button: u32,
 }

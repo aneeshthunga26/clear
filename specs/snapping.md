@@ -56,6 +56,43 @@ client-size updates do not. Invalidated sessions MUST NOT snap or roll back newe
 policy. Their preview queries return no target. Dropping a session owns no engine,
 protocol or GPU resource.
 
+## Drag input and presentation
+
+The adapter uses the same move session for Super+left drag, SSD titlebar dragging
+(after the existing four-pixel threshold), and authorized XDG move requests.
+The existing client pointer-grab serial and same-client origin checks remain
+required. A plain titlebar click MUST NOT restore or move a snapped/maximized
+window. During a move, Escape and host focus loss cancel; only the initiating
+button's release commits. Consumed compositor presses/releases remain paired,
+including an Escape press/release. Overview takes no snap gesture ownership.
+
+A valid pending target MUST show a noninteractive rectangle over normal
+application windows, below shell top/overlay trees and elevated fullscreen trees.
+Its geometry is the prospective frame; it has no input target and MUST NOT
+resize/configure the client to the target before release. It uses the active
+border RGB with a 0.16-alpha fill and a 0.8-alpha, at-most-two-pixel outline,
+clipped to that target. At most five solid elements in one unfiltered scene group
+are produced; there is no thumbnail, filter invocation or retained GPU image for
+the preview. Leaving the zone, cancellation, invalidation and release remove it.
+A stationary held gesture MUST NOT by itself require continuous rendering.
+
+Drop uses the existing `window_movement` effect for halves/quadrants and
+`maximize` for the top target, with ordinary animation disable/reduced-motion,
+speed, pacing and asynchronous-buffer behavior. Pointer-following and drag-out
+remain immediate. No new animation law or configuration option is introduced.
+Snapped bodies MUST use their requested frame for both rendering and input clips
+while old committed client buffers remain larger; popups retain the normal
+output viewport clip. Halves/quadrants remain floating XDG windows, not tiled
+layout members; top-edge maximize advertises ordinary XDG maximization.
+
+An explicit resize of a half/quadrant leaves the override at its current shown
+rectangle, then uses an ordinary floating resize session. Maximized windows
+reject resize until restored. Fullscreen and launcher windows reject both
+ordinary move and resize. Invalid resize edges MUST NOT detach a snap override.
+Core `begin_resize` itself rejects a retained override; the adapter's explicit
+floating-rectangle edit performs the transition first. Ordinary resize cancellation
+ends at the current geometry, without applying move-session rollback.
+
 ## Evidence
 
 - [Core policy](../src/core/snapping.rs), [placement integration](../src/core/desktop.rs)
@@ -65,3 +102,10 @@ protocol or GPU resource.
   minimize interleavings, role refusal, drag-out, release/cancel, output transfer,
   metadata/commit updates and changed-then-restored environment invalidation.
   These are CPU policy tests, not GPU or physical-input evidence.
+- [Adapter input/seat regression](../src/platform/smithay/input.rs),
+  `snapping_release_escape_drag_out_and_stale_target_use_the_real_seat_paths`,
+  covers all seven target releases, bounded preview-element geometry/removal,
+  resize detachment, maximized drag-out, paired Escape suppression and stale
+  target invalidation. It uses synthetic seat input without GPU or physical
+  device injection. [Scene assembly](../src/platform/smithay/scene.rs) owns the
+  unfiltered preview and requested-body clips.

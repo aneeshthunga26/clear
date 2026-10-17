@@ -156,7 +156,9 @@ configures changed desired geometry/state and maps visible placements into the
 scene. It MUST distinguish compositor-requested frame/content size from the
 client's committed buffer and window geometry. Resizing is asynchronous: delayed
 clients do not block all other clients in a global transaction. Old tiled content
-remains clipped while waiting for new content.
+remains clipped while waiting for new content. [Snapped floating bodies](snapping.md)
+also retain requested frame clips for rendering and input while committed client
+buffers catch up; their popups keep the output viewport clip.
 
 XDG maximize/unmaximize/minimize/fullscreen/unfullscreen requests target core
 window state. Pre-map maximize and fullscreen are retained for the first map and

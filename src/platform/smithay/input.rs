@@ -299,6 +299,166 @@ mod tests {
     }
 
     #[test]
+    fn snapping_release_escape_drag_out_and_stale_target_use_the_real_seat_paths() {
+        const CHILD: &str = "CLEAR_SNAPPING_INPUT_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let directory =
+                std::env::temp_dir().join(format!("clear-snapping-input-{}", std::process::id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "platform::smithay::input::tests::snapping_release_escape_drag_out_and_stale_target_use_the_real_seat_paths", "--nocapture"])
+                .env(CHILD, "1").env("XDG_RUNTIME_DIR", &directory).status().unwrap();
+            let _ = std::fs::remove_dir_all(directory);
+            assert!(status.success());
+            return;
+        }
+        use crate::core::{Mode, SnapTarget};
+        let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let mut state = overview_input_fixture(&event_loop);
+        state.outputs[0].output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (800, 600).into(),
+                refresh: 60000,
+            }),
+            None,
+            None,
+            None,
+        );
+        state
+            .runtime
+            .desktop
+            .command(Command::SetWorkspaceMode(Mode::Floating));
+        let id = WindowId(2);
+        let saved = Rect::new(200, 150, 300, 220);
+        for (point, target) in [
+            ((400., 0.), SnapTarget::Maximize),
+            ((0., 300.), SnapTarget::Left),
+            ((799., 300.), SnapTarget::Right),
+            ((0., 0.), SnapTarget::TopLeft),
+            ((799., 0.), SnapTarget::TopRight),
+            ((0., 599.), SnapTarget::BottomLeft),
+            ((799., 599.), SnapTarget::BottomRight),
+        ] {
+            state
+                .runtime
+                .desktop
+                .command(Command::SetMaximized(id, false));
+            state
+                .runtime
+                .desktop
+                .command(Command::SetFloatingRect(id, saved));
+            state.placements = state.runtime.placements();
+            state.motion((220., 160.).into(), 1);
+            state.suppressed_buttons.insert(0x110);
+            state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+            state.motion(point.into(), 2);
+            let preview = state
+                .runtime
+                .desktop
+                .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(preview.target, target);
+            let mut elements = Vec::new();
+            let mut groups = Vec::new();
+            state.snap_preview_elements(&mut elements, &mut groups);
+            assert_eq!(elements.len(), 5);
+            assert_eq!(groups.len(), 1);
+            assert!(groups[0].mask.is_none());
+            assert_eq!(groups[0].elements, 0..5);
+            use smithay::backend::renderer::element::Element;
+            for element in &elements {
+                let geometry = element.geometry(1.0.into());
+                let rect = Rect::new(
+                    geometry.loc.x,
+                    geometry.loc.y,
+                    geometry.size.w,
+                    geometry.size.h,
+                );
+                assert_eq!(rect.intersection(preview.rect), Some(rect));
+            }
+            assert_eq!(state.runtime.desktop.window(id).unwrap().snapped, None);
+            assert!(!state.runtime.desktop.window(id).unwrap().maximized);
+            assert_eq!(
+                state
+                    .runtime
+                    .desktop
+                    .window(id)
+                    .unwrap()
+                    .floating_rect
+                    .width,
+                300
+            );
+            state.pointer_button(0x110, ButtonState::Released, 3);
+            assert!(state.drag.is_none());
+            let mut ended_elements = Vec::new();
+            state.snap_preview_elements(&mut ended_elements, &mut Vec::new());
+            assert!(ended_elements.is_empty());
+            assert!(!state.suppressed_buttons.contains(&0x110));
+            assert_eq!(
+                state
+                    .placements
+                    .iter()
+                    .find(|p| p.window == id)
+                    .unwrap()
+                    .rect,
+                preview.rect
+            );
+            assert_eq!(
+                state.runtime.desktop.window(id).unwrap().floating_rect,
+                saved
+            );
+            assert_eq!(
+                state.runtime.desktop.window(id).unwrap().maximized,
+                target == SnapTarget::Maximize
+            );
+        }
+        // Resizing leaves the snap at its shown geometry and uses a normal resize session.
+        let shown = state
+            .placements
+            .iter()
+            .find(|p| p.window == id)
+            .unwrap()
+            .rect;
+        state.begin_drag(id, (790., 590.).into(), 10, 0x111);
+        assert!(state.drag.as_ref().unwrap().resize.is_some());
+        assert!(state.runtime.desktop.window(id).unwrap().snapped.is_none());
+        assert_eq!(
+            state.runtime.desktop.window(id).unwrap().floating_rect,
+            shown
+        );
+        state.end_drag();
+        state.runtime.desktop.snap_window(id, SnapTarget::Maximize);
+        state.placements = state.runtime.placements();
+        let before = state.runtime.desktop.window(id).unwrap().clone();
+        state.begin_drag(id, (400., 10.).into(), 0, 0x110);
+        state.motion((300., 200.).into(), 4);
+        assert!(!state.runtime.desktop.window(id).unwrap().maximized);
+        // Escape cancels before user bindings and suppresses its paired release.
+        state.keyboard_key(9u32.into(), KeyState::Pressed, 5);
+        state.keyboard_key(9u32.into(), KeyState::Released, 6);
+        assert!(state.drag.is_none());
+        assert_eq!(state.runtime.desktop.window(id), Some(&before));
+        assert!(state.suppressed_keys.is_empty());
+        // An external minimize invalidates a pending target without applying it.
+        state
+            .runtime
+            .desktop
+            .command(Command::SetMaximized(id, false));
+        state.placements = state.runtime.placements();
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        state.motion((0., 300.).into(), 7);
+        state
+            .runtime
+            .desktop
+            .command(Command::SetMinimized(id, true));
+        state.dirty = true;
+        state.reconcile();
+        assert!(state.drag.is_none());
+        assert!(state.runtime.desktop.window(id).unwrap().minimized);
+        assert!(state.runtime.desktop.window(id).unwrap().snapped.is_none());
+    }
+
+    #[test]
     fn fullscreen_refuses_drag_without_mutation_and_restore_allows_drag() {
         const CHILD: &str = "CLEAR_FULLSCREEN_DRAG_TEST";
         if std::env::var_os(CHILD).is_none() {
@@ -1024,6 +1184,11 @@ impl Compositor {
                 if pressed && state.suppressed_keys.contains(&code.raw()) {
                     return FilterResult::Intercept(None);
                 }
+                if pressed && state.drag.is_some() && key.raw_syms().contains(&Keysym::Escape) {
+                    state.end_drag();
+                    state.suppressed_keys.insert(code.raw());
+                    return FilterResult::Intercept(None);
+                }
                 if state.overview_present() {
                     if pressed {
                         state.suppressed_keys.insert(code.raw());
@@ -1249,7 +1414,7 @@ impl Compositor {
         }
         if !pressed && self.suppressed_buttons.remove(&button) {
             if self.drag.as_ref().is_some_and(|drag| drag.button == button) {
-                self.end_drag();
+                self.finish_drag();
             }
             if button == 0x110 {
                 self.titlebar_drag = None;
@@ -1377,7 +1542,7 @@ impl Compositor {
         );
         pointer.frame(self);
         if !pressed && self.drag.as_ref().is_some_and(|drag| drag.button == button) {
-            self.end_drag();
+            self.finish_drag();
         }
         self.service_overview();
         self.reconcile();
@@ -1592,38 +1757,24 @@ impl Compositor {
             self.titlebar_drag = None;
             self.begin_drag(id, origin, 0, 0x110);
         }
-        if let Some(drag) = &self.drag {
-            let id = drag.window;
+        if let Some(mut drag) = self.drag.take() {
             let delta = position - drag.origin;
-            let dx = delta.x.round() as i32;
-            let dy = delta.y.round() as i32;
-            if let Some(session) = &drag.resize {
-                if !self.runtime.desktop.update_resize(session, dx, dy) {
-                    self.end_drag();
-                }
-            } else {
-                let mut rect = drag.rect;
-                rect.x = rect.x.saturating_add(dx);
-                rect.y = rect.y.saturating_add(dy);
-                if let Some(region) = self
-                    .outputs
-                    .iter()
-                    .find(|o| logical(o.rect).contains(position.to_i32_floor()))
-                {
-                    if self
-                        .runtime
-                        .desktop
-                        .window(id)
-                        .is_some_and(|w| w.output != Some(region.id))
-                    {
-                        self.runtime
-                            .desktop
-                            .command(Command::MoveToOutput(region.id));
-                    }
-                }
+            let valid = if let Some(session) = &drag.resize {
+                self.runtime.desktop.update_resize(
+                    session,
+                    delta.x.round() as i32,
+                    delta.y.round() as i32,
+                )
+            } else if let Some(session) = &mut drag.moving {
                 self.runtime
                     .desktop
-                    .command(Command::SetFloatingRect(id, rect));
+                    .update_move(session, (position.x, position.y))
+            } else {
+                false
+            };
+            self.drag = Some(drag);
+            if !valid {
+                self.end_drag();
             }
             self.dirty = true;
             self.render_demand
@@ -1664,7 +1815,10 @@ impl Compositor {
             })
             || edges & !15 != 0
             || self.runtime.desktop.window(id).is_none_or(|w| {
-                w.role == WindowRole::Launcher || w.maximized || w.fullscreen || w.minimized
+                w.role == WindowRole::Launcher
+                    || (w.maximized && edges != 0)
+                    || w.fullscreen
+                    || w.minimized
             })
             || self
                 .window_animations
@@ -1677,21 +1831,38 @@ impl Compositor {
             return;
         };
         self.runtime.desktop.command(Command::Focus(id));
-        let resize = if edges == 0 {
+        let (moving, resize) = if edges == 0 {
             self.settle_window_animation(id);
-            if placement.tiled {
-                self.runtime.desktop.command(Command::ToggleFloating);
-            }
-            self.runtime
-                .desktop
-                .command(Command::SetFloatingRect(id, placement.rect));
-            None
+            let Some(session) =
+                self.runtime
+                    .desktop
+                    .begin_move(id, placement.rect, (position.x, position.y))
+            else {
+                return;
+            };
+            (Some(session), None)
         } else {
-            let Some(session) = self.runtime.desktop.begin_resize(id, resize_edges(edges)) else {
+            // An explicit resize leaves the snap override at its shown geometry.
+            // Do not detach it until at least one requested resize axis is valid.
+            let selected = resize_edges(edges);
+            if selected.left == selected.right && selected.top == selected.bottom {
+                return;
+            }
+            if self
+                .runtime
+                .desktop
+                .window(id)
+                .is_some_and(|w| w.snapped.is_some())
+            {
+                self.runtime
+                    .desktop
+                    .command(Command::SetFloatingRect(id, placement.rect));
+            }
+            let Some(session) = self.runtime.desktop.begin_resize(id, selected) else {
                 return;
             };
             self.settle_window_animation(id);
-            Some(session)
+            (None, Some(session))
         };
         if resize.is_some() {
             if let Some(top) = self.windows.get(&id).and_then(|w| w.window.toplevel()) {
@@ -1703,7 +1874,7 @@ impl Compositor {
         self.drag = Some(Drag {
             window: id,
             origin: position,
-            rect: placement.rect,
+            moving,
             resize,
             button,
         });
@@ -1712,8 +1883,24 @@ impl Compositor {
             .invalidate(super::render_demand::Reason::Input);
     }
 
+    /// Cancel a move without applying the provisional snap destination.
     pub fn end_drag(&mut self) {
+        self.complete_drag(false);
+    }
+
+    fn finish_drag(&mut self) {
+        self.complete_drag(true);
+    }
+
+    fn complete_drag(&mut self, commit: bool) {
         if let Some(drag) = self.drag.take() {
+            if let Some(session) = drag.moving {
+                if commit {
+                    self.runtime.desktop.finish_move(session);
+                } else {
+                    self.runtime.desktop.cancel_move(session);
+                }
+            }
             if let Some(top) = self
                 .windows
                 .get(&drag.window)

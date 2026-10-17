@@ -1227,3 +1227,44 @@ virtual KWin host, not a VM**. They do not test physical input, animated optical
 pixels during dragging or desktop-tile activation, presentation cadence, or
 performance. The existing CPU transition tests cover those gesture geometries;
 they do not establish GPU or physical-input behavior.
+
+### Floating-window snapping (2026-10-18)
+
+The [snapping contract](../specs/snapping.md) owns placement, restore, input and
+preview behavior. Deterministic coverage can be run without a compositor session:
+
+```sh
+cargo test --locked --test snapping --test core --test resize --test window_state
+cargo test --locked --lib platform::smithay::input
+```
+
+All twelve snapping policy tests passed, including exhaustive small odd-sized
+partitions, reserved areas, hidden-window setters, cross-output release/rollback,
+maximized drag-out, tiny-output recovery, stale resize/move invalidation and
+extreme finite pointer coordinates. The synthetic seat regression releases all
+seven targets and checks preview-element bounds and removal, snapped resize,
+maximized drag-out, Escape press/release suppression and external minimization.
+These tests do not create snap GPU captures or inject physical pointer input.
+
+Cargo fmt/check/test and the optimized release build passed, with 162 library
+tests and all integration suites. Rust Analyzer reported no error/warning-level
+diagnostics. Bounded release regressions passed in an isolated VM using private
+virtual KWin hosts: `maximized` and `restored` from the window-state fixture,
+`movement` and `maximize` from the animation fixture, and `static` and
+`animation-after-idle` from the idle fixture. Artifacts are under
+`target/snapping-validation/{window-state,animations,idle}/`. These existing GPU/
+protocol cases check shared scene, configure, animation and quiet-loop behavior;
+they do not activate snapping. The final release also passed the three-real-foot,
+two-output nonblank GPU smoke under `target/snapping-validation/final-smoke/`.
+
+For manual snap acceptance, use a floating workspace with a panel and drag a
+normal SSD or CSD window to each top/side/corner target. Check the preview against
+the reserved work area before release; move away to dismiss it. Release, drag out,
+resize a half/quadrant, and cancel moves with Escape or host focus loss. Repeat
+across differently sized outputs and during a panel/output-size change. With
+animations enabled, compare smooth drop motion against immediate pointer
+following; repeat with motion disabled. Use a client holding a configure commit
+to check body/input clipping without clipping its popup to the snapped half.
+Physical dragging, snap-specific GPU pixels, held-client snap pixels and delivered
+animation cadence remain manual acceptance work; the regression fixtures above
+do not establish them.
