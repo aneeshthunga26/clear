@@ -64,6 +64,7 @@ pub(super) struct Drag {
     pub window: WindowId,
     pub origin: Point<f64, Logical>,
     pub moving: Option<crate::core::MoveSession>,
+    pub snap_ready_at: Option<Duration>,
     pub resize: Option<crate::core::ResizeSession>,
     pub button: u32,
 }

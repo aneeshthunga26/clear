@@ -21,6 +21,9 @@ use smithay::{
     reexports::wayland_protocols::xdg::shell::server::xdg_toplevel,
     utils::{Logical, Point, SERIAL_COUNTER},
 };
+use std::time::Duration;
+
+const SNAP_DELAY: Duration = Duration::from_millis(500);
 
 // A focus click must not detach a tile or replace its remembered floating geometry.
 fn titlebar_drag_ready(origin: Point<f64, Logical>, position: Point<f64, Logical>) -> bool {
@@ -351,6 +354,47 @@ mod tests {
             state.motion((220., 160.).into(), 1);
             state.suppressed_buttons.insert(0x110);
             state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+            let deadline = state.snap_delay_deadline().unwrap();
+            state.motion(point.into(), 2);
+            let mut early_elements = Vec::new();
+            state.snap_preview_elements(&mut early_elements, &mut Vec::new(), None);
+            assert!(early_elements.is_empty());
+            let generation = state.render_demand.generation();
+            state.service_snap_delay(deadline - Duration::from_nanos(1));
+            assert_eq!(state.render_demand.generation(), generation);
+            assert!(
+                state
+                    .runtime
+                    .desktop
+                    .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                    .is_none()
+            );
+            // A stationary pointer reveals the cached target at exactly 500 ms.
+            state.service_snap_delay(deadline);
+            assert_eq!(state.render_demand.generation(), generation + 1);
+            assert_eq!(state.snap_delay_deadline(), None);
+            state.service_snap_delay(deadline + SNAP_DELAY);
+            assert_eq!(state.render_demand.generation(), generation + 1);
+            // Leaving/reentering and switching targets never restart the delay.
+            state.motion((400., 300.).into(), 2);
+            assert!(
+                state
+                    .runtime
+                    .desktop
+                    .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                    .is_none()
+            );
+            state.motion((799., 300.).into(), 2);
+            assert_eq!(
+                state
+                    .runtime
+                    .desktop
+                    .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                    .unwrap()
+                    .target,
+                SnapTarget::Right
+            );
+            assert_eq!(state.snap_delay_deadline(), None);
             state.motion(point.into(), 2);
             let preview = state
                 .runtime
@@ -421,12 +465,71 @@ mod tests {
             .rect;
         state.begin_drag(id, (790., 590.).into(), 10, 0x111);
         assert!(state.drag.as_ref().unwrap().resize.is_some());
+        assert_eq!(state.snap_delay_deadline(), None);
         assert!(state.runtime.desktop.window(id).unwrap().snapped.is_none());
         assert_eq!(
             state.runtime.desktop.window(id).unwrap().floating_rect,
             shown
         );
         state.end_drag();
+
+        // Each new move resets the delay; an early drop keeps immediate free motion.
+        state
+            .runtime
+            .desktop
+            .command(Command::SetFloatingRect(id, saved));
+        state.placements = state.runtime.placements();
+        state.suppressed_buttons.insert(0x110);
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        assert!(state.snap_delay_deadline().is_some());
+        state.motion((0., 300.).into(), 3);
+        let moved = state.runtime.desktop.window(id).unwrap().floating_rect;
+        assert_ne!(moved, saved);
+        state.pointer_button(0x110, ButtonState::Released, 3);
+        assert_eq!(state.snap_delay_deadline(), None);
+        assert_eq!(
+            state.runtime.desktop.window(id).unwrap().floating_rect,
+            moved
+        );
+        assert!(state.runtime.desktop.window(id).unwrap().snapped.is_none());
+
+        // Unlocking away from an edge needs no pixels; later entry is immediate.
+        state
+            .runtime
+            .desktop
+            .command(Command::SetFloatingRect(id, saved));
+        state.placements = state.runtime.placements();
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        state.motion((400., 300.).into(), 3);
+        let deadline = state.snap_delay_deadline().unwrap();
+        let generation = state.render_demand.generation();
+        state.service_snap_delay(deadline);
+        assert_eq!(state.render_demand.generation(), generation);
+        assert_eq!(state.snap_delay_deadline(), None);
+        state.motion((0., 300.).into(), 3);
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                .unwrap()
+                .target,
+            SnapTarget::Left
+        );
+        state.end_drag();
+        assert_eq!(state.snap_delay_deadline(), None);
+
+        // Release checks elapsed time even if timer dispatch has not run yet.
+        state.placements = state.runtime.placements();
+        state.suppressed_buttons.insert(0x110);
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        state.motion((0., 300.).into(), 3);
+        state.drag.as_mut().unwrap().snap_ready_at = Some(Duration::ZERO);
+        state.pointer_button(0x110, ButtonState::Released, 3);
+        assert_eq!(
+            state.runtime.desktop.window(id).unwrap().snapped,
+            Some(SnapTarget::Left)
+        );
         state.runtime.desktop.snap_window(id, SnapTarget::Maximize);
         state.placements = state.runtime.placements();
         let before = state.runtime.desktop.window(id).unwrap().clone();
@@ -454,6 +557,7 @@ mod tests {
         state.dirty = true;
         state.reconcile();
         assert!(state.drag.is_none());
+        assert_eq!(state.snap_delay_deadline(), None);
         assert!(state.runtime.desktop.window(id).unwrap().minimized);
         assert!(state.runtime.desktop.window(id).unwrap().snapped.is_none());
     }
@@ -1773,6 +1877,7 @@ impl Compositor {
                 false
             };
             self.drag = Some(drag);
+            self.service_snap_delay(self.start.elapsed());
             if !valid {
                 self.end_drag();
             }
@@ -1833,13 +1938,14 @@ impl Compositor {
         self.runtime.desktop.command(Command::Focus(id));
         let (moving, resize) = if edges == 0 {
             self.settle_window_animation(id);
-            let Some(session) =
+            let Some(mut session) =
                 self.runtime
                     .desktop
                     .begin_move(id, placement.rect, (position.x, position.y))
             else {
                 return;
             };
+            session.set_snapping_enabled(false);
             (Some(session), None)
         } else {
             // An explicit resize leaves the snap override at its shown geometry.
@@ -1874,6 +1980,7 @@ impl Compositor {
         self.drag = Some(Drag {
             window: id,
             origin: position,
+            snap_ready_at: moving.as_ref().map(|_| self.start.elapsed() + SNAP_DELAY),
             moving,
             resize,
             button,
@@ -1892,7 +1999,32 @@ impl Compositor {
         self.complete_drag(true);
     }
 
+    pub(super) fn snap_delay_deadline(&self) -> Option<Duration> {
+        self.drag.as_ref().and_then(|drag| drag.snap_ready_at)
+    }
+
+    /// Unlock once per move, including a stationary pointer at an edge. This uses
+    /// monotonic elapsed time, independently of animation sampling and speed.
+    pub(super) fn service_snap_delay(&mut self, now: Duration) {
+        let Some(drag) = self.drag.as_mut() else {
+            return;
+        };
+        if !drag.snap_ready_at.is_some_and(|deadline| now >= deadline) {
+            return;
+        }
+        drag.snap_ready_at = None;
+        if let Some(session) = drag.moving.as_mut() {
+            session.set_snapping_enabled(true);
+            if self.runtime.desktop.snap_preview(session).is_some() {
+                self.render_demand
+                    .invalidate(super::render_demand::Reason::Input);
+            }
+        }
+    }
+
     fn complete_drag(&mut self, commit: bool) {
+        // A release can arrive at the deadline before the timer is dispatched.
+        self.service_snap_delay(self.start.elapsed());
         if let Some(drag) = self.drag.take() {
             if let Some(session) = drag.moving {
                 if commit {

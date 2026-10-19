@@ -65,7 +65,9 @@ only directory allowed to depend on Smithay and Wayland types.
 - `input.rs`: physical event translation, shortcuts, pointer routing, and drags.
   Move gestures own opaque core MoveSessions; successful initiating release commits,
   while Escape/focus loss cancel. Keep pointer following immediate and retain
-  native serial/grab authorization. See [snapping](../../../specs/snapping.md).
+  native serial/grab authorization. Own the per-move snap delay using monotonic
+  time and the shared earliest-deadline timer, never animation sampling or polling.
+  See [snapping](../../../specs/snapping.md).
 - `presentation_input.rs`: surface-local inverse pointer/DnD coordinates while
   preserving Wayland surface identity, popup focus and client grab ownership.
   Resolve through last submitted animation geometry; inverse-map body, SSD,

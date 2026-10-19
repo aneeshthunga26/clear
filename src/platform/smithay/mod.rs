@@ -127,6 +127,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let initial = minimum(backend.service(&mut state), options.exit_after);
     timer.arm(initial, state.start.elapsed())?;
     event_loop.run(None, &mut state, |state| {
+        state.service_snap_delay(state.start.elapsed());
         state.service_overview();
         state.reconcile();
         state.dispatch_shell();
@@ -170,6 +171,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
         next = minimum(next, child_deadline);
         next = minimum(next, flush_deadline);
         next = minimum(next, state.shell_maintenance_deadline());
+        next = minimum(next, state.snap_delay_deadline());
         if let Err(error) = timer.arm(next, state.start.elapsed()) {
             state.fail(format!("schedule deadline: {error}"));
         }

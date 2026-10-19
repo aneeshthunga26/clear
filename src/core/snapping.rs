@@ -158,6 +158,15 @@ pub struct MoveSession {
     origin: (f64, f64),
     rect: Rect,
     preview: Option<SnapPreview>,
+    snapping_enabled: bool,
+}
+
+impl MoveSession {
+    /// Gate preview and release snapping without losing the latest pointer target.
+    /// Timing belongs to the caller; moves enable snapping by default.
+    pub fn set_snapping_enabled(&mut self, enabled: bool) {
+        self.snapping_enabled = enabled;
+    }
 }
 
 impl Desktop {
@@ -239,6 +248,7 @@ impl Desktop {
             origin,
             rect,
             preview: None,
+            snapping_enabled: true,
         })
     }
 
@@ -296,7 +306,7 @@ impl Desktop {
 
     /// Return the valid target only; previews have no client or policy side effects.
     pub fn snap_preview(&self, session: &MoveSession) -> Option<SnapPreview> {
-        self.move_valid(session)
+        (session.snapping_enabled && self.move_valid(session))
             .then_some(session.preview)
             .flatten()
     }
@@ -306,7 +316,7 @@ impl Desktop {
         if !self.move_valid(&session) {
             return false;
         }
-        if let Some(preview) = session.preview {
+        if let Some(preview) = self.snap_preview(&session) {
             self.windows.get_mut(&session.window).unwrap().floating_rect = session.original.rect;
             return self.snap_window(session.window, preview.target);
         }

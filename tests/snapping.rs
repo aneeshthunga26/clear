@@ -279,6 +279,24 @@ fn extreme_finite_pointer_positions_do_not_saturate_into_another_outputs_bounds(
 }
 
 #[test]
+fn disabled_snapping_keeps_motion_and_cached_targets_but_cannot_snap_on_release() {
+    let mut d = desktop();
+    let id = WindowId(1);
+    let mut s = d.begin_move(id, frame(&d), (200., 150.)).unwrap();
+    s.set_snapping_enabled(false);
+    assert!(d.update_move(&mut s, (0., 300.)));
+    let moved = frame(&d);
+    assert_eq!(moved, Rect::new(-40, 290, 300, 220));
+    assert!(d.snap_preview(&s).is_none());
+    s.set_snapping_enabled(true);
+    assert_eq!(d.snap_preview(&s).unwrap().target, SnapTarget::Left);
+    s.set_snapping_enabled(false);
+    assert!(d.finish_move(s));
+    assert_eq!(frame(&d), moved);
+    assert_eq!(d.window(id).unwrap().snapped, None);
+}
+
+#[test]
 fn generous_corner_zones_work_without_touching_edges_and_leave_edge_centers_available() {
     let b = Rect::new(801, -20, 640, 481);
     for ((x, y), target) in [
