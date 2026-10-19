@@ -304,11 +304,20 @@ impl Desktop {
         true
     }
 
-    /// Return the valid target only; previews have no client or policy side effects.
-    pub fn snap_preview(&self, session: &MoveSession) -> Option<SnapPreview> {
-        (session.snapping_enabled && self.move_valid(session))
+    /// Return the valid pointer target even while preview/release snapping is gated.
+    pub fn snap_candidate(&self, session: &MoveSession) -> Option<SnapPreview> {
+        self.move_valid(session)
             .then_some(session.preview)
             .flatten()
+    }
+
+    /// Return the enabled valid target; previews have no client or policy side effects.
+    pub fn snap_preview(&self, session: &MoveSession) -> Option<SnapPreview> {
+        if session.snapping_enabled {
+            self.snap_candidate(session)
+        } else {
+            None
+        }
     }
 
     /// Finish a valid move. Snapping preserves its pre-drag free geometry for restore.

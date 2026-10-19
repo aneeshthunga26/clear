@@ -1,7 +1,7 @@
 use super::{
     overview::OverviewDrag,
     scene::{HitOwner, logical},
-    state::{Compositor, Drag},
+    state::{Compositor, Drag, SnapActivation},
     titlebar::TitlebarPart,
 };
 use crate::{
@@ -354,8 +354,9 @@ mod tests {
             state.motion((220., 160.).into(), 1);
             state.suppressed_buttons.insert(0x110);
             state.begin_drag(id, (220., 160.).into(), 0, 0x110);
-            let deadline = state.snap_delay_deadline().unwrap();
+            assert_eq!(state.snap_delay_deadline(), None);
             state.motion(point.into(), 2);
+            let deadline = state.snap_delay_deadline().unwrap();
             let mut early_elements = Vec::new();
             state.snap_preview_elements(&mut early_elements, &mut Vec::new(), None);
             assert!(early_elements.is_empty());
@@ -481,8 +482,9 @@ mod tests {
         state.placements = state.runtime.placements();
         state.suppressed_buttons.insert(0x110);
         state.begin_drag(id, (220., 160.).into(), 0, 0x110);
-        assert!(state.snap_delay_deadline().is_some());
+        assert_eq!(state.snap_delay_deadline(), None);
         state.motion((0., 300.).into(), 3);
+        assert!(state.snap_delay_deadline().is_some());
         let moved = state.runtime.desktop.window(id).unwrap().floating_rect;
         assert_ne!(moved, saved);
         state.pointer_button(0x110, ButtonState::Released, 3);
@@ -493,7 +495,7 @@ mod tests {
         );
         assert!(state.runtime.desktop.window(id).unwrap().snapped.is_none());
 
-        // Unlocking away from an edge needs no pixels; later entry is immediate.
+        // A long drag away from edges never arms or unlocks snapping.
         state
             .runtime
             .desktop
@@ -501,12 +503,44 @@ mod tests {
         state.placements = state.runtime.placements();
         state.begin_drag(id, (220., 160.).into(), 0, 0x110);
         state.motion((400., 300.).into(), 3);
-        let deadline = state.snap_delay_deadline().unwrap();
         let generation = state.render_demand.generation();
-        state.service_snap_delay(deadline);
+        state.service_snap_delay(state.start.elapsed() + Duration::from_secs(10));
         assert_eq!(state.render_demand.generation(), generation);
         assert_eq!(state.snap_delay_deadline(), None);
         state.motion((0., 300.).into(), 3);
+        let first_deadline = state.snap_delay_deadline().unwrap();
+        assert!(
+            state
+                .runtime
+                .desktop
+                .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                .is_none()
+        );
+        // Target changes during the initial dwell preserve its original deadline.
+        state.motion((799., 300.).into(), 3);
+        assert_eq!(state.snap_delay_deadline(), Some(first_deadline));
+        // Leaving before activation cancels the countdown, without unlocking.
+        state.motion((400., 300.).into(), 3);
+        assert_eq!(state.snap_delay_deadline(), None);
+        let generation = state.render_demand.generation();
+        state.service_snap_delay(first_deadline);
+        assert_eq!(state.render_demand.generation(), generation);
+        assert_eq!(
+            state.drag.as_ref().unwrap().snap_activation,
+            SnapActivation::WaitingForEdge
+        );
+        state.motion((0., 300.).into(), 3);
+        let second_deadline = state.snap_delay_deadline().unwrap();
+        assert!(second_deadline >= first_deadline);
+        state.service_snap_delay(second_deadline - Duration::from_nanos(1));
+        assert!(
+            state
+                .runtime
+                .desktop
+                .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                .is_none()
+        );
+        state.service_snap_delay(second_deadline);
         assert_eq!(
             state
                 .runtime
@@ -524,12 +558,35 @@ mod tests {
         state.suppressed_buttons.insert(0x110);
         state.begin_drag(id, (220., 160.).into(), 0, 0x110);
         state.motion((0., 300.).into(), 3);
-        state.drag.as_mut().unwrap().snap_ready_at = Some(Duration::ZERO);
+        state.drag.as_mut().unwrap().snap_activation = SnapActivation::Pending(Duration::ZERO);
         state.pointer_button(0x110, ButtonState::Released, 3);
         assert_eq!(
             state.runtime.desktop.window(id).unwrap().snapped,
             Some(SnapTarget::Left)
         );
+        // Motion leaving an edge after the deadline must latch before updating
+        // the candidate, even if timer dispatch was delayed.
+        state.placements = state.runtime.placements();
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        state.motion((0., 300.).into(), 3);
+        state.drag.as_mut().unwrap().snap_activation = SnapActivation::Pending(Duration::ZERO);
+        state.motion((400., 300.).into(), 3);
+        assert_eq!(
+            state.drag.as_ref().unwrap().snap_activation,
+            SnapActivation::Unlocked
+        );
+        state.motion((799., 300.).into(), 3);
+        assert_eq!(state.snap_delay_deadline(), None);
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                .unwrap()
+                .target,
+            SnapTarget::Right
+        );
+        state.end_drag();
         state.runtime.desktop.snap_window(id, SnapTarget::Maximize);
         state.placements = state.runtime.placements();
         let before = state.runtime.desktop.window(id).unwrap().clone();
@@ -1861,6 +1918,8 @@ impl Compositor {
             self.titlebar_drag = None;
             self.begin_drag(id, origin, 0, 0x110);
         }
+        // Unlock an elapsed edge dwell before a new motion can leave its zone.
+        self.service_snap_delay(self.start.elapsed());
         if let Some(mut drag) = self.drag.take() {
             let delta = position - drag.origin;
             let valid = if let Some(session) = &drag.resize {
@@ -1980,7 +2039,7 @@ impl Compositor {
         self.drag = Some(Drag {
             window: id,
             origin: position,
-            snap_ready_at: moving.as_ref().map(|_| self.start.elapsed() + SNAP_DELAY),
+            snap_activation: SnapActivation::WaitingForEdge,
             moving,
             resize,
             button,
@@ -2000,7 +2059,10 @@ impl Compositor {
     }
 
     pub(super) fn snap_delay_deadline(&self) -> Option<Duration> {
-        self.drag.as_ref().and_then(|drag| drag.snap_ready_at)
+        match self.drag.as_ref()?.snap_activation {
+            SnapActivation::Pending(deadline) => Some(deadline),
+            _ => None,
+        }
     }
 
     /// Unlock once per move, including a stationary pointer at an edge. This uses
@@ -2009,16 +2071,27 @@ impl Compositor {
         let Some(drag) = self.drag.as_mut() else {
             return;
         };
-        if !drag.snap_ready_at.is_some_and(|deadline| now >= deadline) {
+        if drag.snap_activation == SnapActivation::Unlocked {
             return;
         }
-        drag.snap_ready_at = None;
-        if let Some(session) = drag.moving.as_mut() {
-            session.set_snapping_enabled(true);
-            if self.runtime.desktop.snap_preview(session).is_some() {
+        let Some(session) = drag.moving.as_mut() else {
+            return;
+        };
+        if self.runtime.desktop.snap_candidate(session).is_none() {
+            drag.snap_activation = SnapActivation::WaitingForEdge;
+            return;
+        }
+        match drag.snap_activation {
+            SnapActivation::WaitingForEdge => {
+                drag.snap_activation = SnapActivation::Pending(now + SNAP_DELAY);
+            }
+            SnapActivation::Pending(deadline) if now >= deadline => {
+                drag.snap_activation = SnapActivation::Unlocked;
+                session.set_snapping_enabled(true);
                 self.render_demand
                     .invalidate(super::render_demand::Reason::Input);
             }
+            _ => {}
         }
     }
 

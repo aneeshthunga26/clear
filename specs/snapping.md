@@ -38,7 +38,9 @@ from that baseline, without easing pointer translation.
 Core sessions enable snapping by default. The caller MAY disable snapping with
 `MoveSession::set_snapping_enabled`; motion and the cached target still update,
 but preview queries and release MUST NOT snap until reenabled. Reenabling exposes
-the latest valid target without requiring another pointer update. Core owns no clock.
+the latest valid target without requiring another pointer update.
+`Desktop::snap_candidate` exposes that valid target independently of the gate so
+callers can detect zone entry. Core owns no clock.
 
 The pointer can transfer the window to the visible workspace of another output.
 `SnapTarget::at_pointer` recognizes twelve-logical-pixel edge strips and
@@ -74,20 +76,26 @@ window. During a move, Escape and host focus loss cancel; only the initiating
 button's release commits. Consumed compositor presses/releases remain paired,
 including an Escape press/release. Overview takes no snap gesture ownership.
 
-Snapping MUST stay disabled for the first 500 ms of each move gesture, measured
-from successful drag initiation using monotonic elapsed time, independently of
-animation speed or frame sampling. For SSD titlebars this starts after the
-movement threshold. Pointer-following remains immediate, and release before the
-deadline keeps the moved free rectangle. Once the deadline is reached, snapping
-stays enabled until that gesture ends: leaving/reentering zones, switching targets
-or crossing outputs MUST NOT restart the delay. The next move starts a new delay;
-resize gestures have none. Release MUST check elapsed time even if the timer has
-not yet dispatched.
+Snapping MUST initially stay disabled during each move. The 500 ms countdown
+starts when a pointer update first selects a valid snap candidate, using monotonic
+elapsed time independently of animation speed or frame sampling. Time spent
+dragging outside snap zones MUST NOT count. Leaving all valid snap zones before
+activation cancels the countdown; reentry starts a fresh 500 ms. Moving directly
+between valid targets preserves the pending countdown. Pointer-following remains
+immediate, and release before activation keeps the moved free rectangle.
 
-The existing earliest-deadline event source MUST wake once to unlock a held move,
+Once the deadline is reached in a valid zone, snapping stays enabled until that
+gesture ends: leaving/reentering zones, switching targets or crossing outputs
+MUST NOT restart the delay. The next move starts locked again; resize gestures
+have no countdown. Release and motion MUST check elapsed time before completing
+the move or replacing the previous candidate, even if the timer has not yet
+dispatched.
+
+The existing earliest-deadline event source MUST wake for a pending edge dwell,
 including a stationary pointer in a target zone. It MUST request pixels only if
 a valid preview becomes visible, with no repeated delay timer after unlocking.
-Cancellation, release and invalidation remove the pending deadline.
+Drags outside snap zones MUST NOT arm a snap deadline. Leaving the zones before
+activation, cancellation, release and invalidation remove the pending deadline.
 
 A valid pending target MUST show a noninteractive rectangle over normal
 application windows, below shell top/overlay trees and elevated fullscreen trees.
@@ -135,8 +143,9 @@ ends at the current geometry, without applying move-session rollback.
   covers all seven target releases, bounded preview-element geometry/removal,
   resize detachment, maximized drag-out, paired Escape suppression and stale
   target invalidation. Injected monotonic times cover the exact delay boundary,
-  stationary activation, instant target changes, per-gesture reset, early drop,
-  release-before-timer dispatch, and absence of repeated timer/redraw demand.
+  stationary activation, delayed edge entry, cancelled/restarted dwell, target
+  changes before/after activation, per-gesture reset, early drop, release/motion
+  before timer dispatch, and absence of repeated timer/redraw demand.
   It uses synthetic seat input without GPU or physical
   device injection. [Scene assembly](../src/platform/smithay/scene.rs) owns the
   unfiltered preview and requested-body clips.

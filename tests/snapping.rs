@@ -288,6 +288,7 @@ fn disabled_snapping_keeps_motion_and_cached_targets_but_cannot_snap_on_release(
     let moved = frame(&d);
     assert_eq!(moved, Rect::new(-40, 290, 300, 220));
     assert!(d.snap_preview(&s).is_none());
+    assert_eq!(d.snap_candidate(&s).unwrap().target, SnapTarget::Left);
     s.set_snapping_enabled(true);
     assert_eq!(d.snap_preview(&s).unwrap().target, SnapTarget::Left);
     s.set_snapping_enabled(false);

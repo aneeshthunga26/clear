@@ -60,11 +60,18 @@ pub(super) struct OutputRegion {
     pub rect: Rect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SnapActivation {
+    WaitingForEdge,
+    Pending(Duration),
+    Unlocked,
+}
+
 pub(super) struct Drag {
     pub window: WindowId,
     pub origin: Point<f64, Logical>,
     pub moving: Option<crate::core::MoveSession>,
-    pub snap_ready_at: Option<Duration>,
+    pub snap_activation: SnapActivation,
     pub resize: Option<crate::core::ResizeSession>,
     pub button: u32,
 }
