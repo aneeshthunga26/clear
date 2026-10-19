@@ -100,6 +100,34 @@ fn defaults_are_complete_and_collision_free() {
 }
 
 #[test]
+fn snap_delay_is_defaulted_and_accepts_only_bounded_integer_milliseconds() {
+    assert_eq!(Config::default().snap_delay_ms, 500);
+    assert_eq!(Config::from_source("").unwrap().snap_delay_ms, 500);
+    for delay in [0, 125, 500, 10_000] {
+        assert_eq!(
+            Config::from_source(&format!("snap_delay_ms = {delay}"))
+                .unwrap()
+                .snap_delay_ms,
+            delay
+        );
+    }
+    for value in [
+        "-1",
+        "10001",
+        "1.5",
+        "true",
+        "'500'",
+        "inf",
+        "9223372036854775807",
+    ] {
+        assert!(
+            Config::from_source(&format!("snap_delay_ms = {value}")).is_err(),
+            "{value}"
+        );
+    }
+}
+
+#[test]
 fn key_aliases_normalize_and_modifiers_are_exact() {
     let bindings = Bindings::new(&[binding(" Control + ALT + leader + Shift + Esc ")]).unwrap();
     let modifiers = Modifiers {

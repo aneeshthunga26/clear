@@ -2,6 +2,8 @@
 # This binding list replaces the defaults and exposes workspaces 1–3.
 # Set true to display compositor FPS; see specs/rendering.md#fps-overlay.
 show_fps = false
+# Initial dwell at a snap edge/corner, in milliseconds; 0 activates immediately.
+snap_delay_ms = 500
 gaps = 12
 
 # Explicitly replace the two default virtual outputs with one full-window output.

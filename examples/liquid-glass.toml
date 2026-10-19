@@ -4,6 +4,8 @@
 # Glass panels: dbus-run-session -- target/debug/clear --config examples/liquid-glass.toml --command quickshell -p examples/quickshell/liquid-glass.qml
 # Set true to display compositor FPS; see specs/rendering.md#fps-overlay.
 show_fps = false
+# Initial dwell at a snap edge/corner, in milliseconds; 0 activates immediately.
+snap_delay_ms = 500
 gaps = 24
 
 [[outputs]]

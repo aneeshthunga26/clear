@@ -145,6 +145,24 @@ fn fps_setting_reloads_atomically() {
 }
 
 #[test]
+fn snap_delay_reloads_atomically() {
+    let fixture = Fixture::new();
+    let mut runtime = Runtime::load(Some(fixture.config(""))).unwrap();
+    assert_eq!(runtime.config.snap_delay_ms, 500);
+    fixture.config("snap_delay_ms = 125");
+    runtime.reload().unwrap();
+    assert_eq!(runtime.config.snap_delay_ms, 125);
+    for invalid in ["snap_delay_ms = 10001", "snap_delay_ms = '0'"] {
+        fixture.config(invalid);
+        assert!(runtime.reload().is_err());
+        assert_eq!(runtime.config.snap_delay_ms, 125);
+    }
+    fixture.config("snap_delay_ms = 0");
+    runtime.reload().unwrap();
+    assert_eq!(runtime.config.snap_delay_ms, 0);
+}
+
+#[test]
 fn overview_hover_reload_is_atomic_and_preserves_an_open_preview() {
     let fixture = Fixture::new();
     let mut runtime = Runtime::load(Some(

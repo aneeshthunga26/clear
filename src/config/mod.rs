@@ -1,6 +1,7 @@
 //! TOML configuration with deterministic defaults and all-or-default startup loading.
 //!
-//! `gaps`, `show_fps`, and `script` are top-level keys. Arrays use `[[outputs]]`,
+//! `gaps`, `show_fps`, `snap_delay_ms`, and `script` are top-level keys.
+//! Arrays use `[[outputs]]`,
 //! `[[workspaces]]`, and `[[bindings]]`; each supplied array replaces its default.
 //! Bindings use a flattened snake-case `action` tag and action-specific fields.
 
@@ -80,6 +81,8 @@ pub struct Config {
     pub gaps: i32,
     /// Show submitted-frame FPS and average interval on the nested host framebuffer.
     pub show_fps: bool,
+    /// Initial edge dwell before snapping unlocks, in milliseconds.
+    pub snap_delay_ms: u64,
     /// Optional Rhai extension file; relative paths are resolved when loading a file.
     pub script: Option<PathBuf>,
     /// Static renderer styling.
@@ -115,6 +118,7 @@ impl Default for Config {
             bindings: input::default_bindings(),
             gaps: 8,
             show_fps: false,
+            snap_delay_ms: 500,
             script: None,
             theme: Theme::default(),
             wallpaper: WallpaperConfig::default(),
@@ -133,6 +137,7 @@ struct Source {
     bindings: Vec<Binding>,
     gaps: i32,
     show_fps: bool,
+    snap_delay_ms: u64,
     script: Option<PathBuf>,
     theme: Theme,
     wallpaper: WallpaperConfig,
@@ -151,6 +156,7 @@ impl Default for Source {
             bindings: config.bindings,
             gaps: config.gaps,
             show_fps: config.show_fps,
+            snap_delay_ms: config.snap_delay_ms,
             script: config.script,
             theme: config.theme,
             wallpaper: config.wallpaper,
@@ -234,6 +240,7 @@ impl Config {
             bindings: source.bindings,
             gaps: source.gaps,
             show_fps: source.show_fps,
+            snap_delay_ms: source.snap_delay_ms,
             script: source.script.filter(|p| !p.as_os_str().is_empty()),
             theme: source.theme,
             wallpaper: source.wallpaper,
@@ -296,6 +303,9 @@ impl Config {
         }
         if !(0..=4096).contains(&self.gaps) {
             return Err("gaps must be in 0..=4096".into());
+        }
+        if self.snap_delay_ms > 10_000 {
+            return Err("snap_delay_ms must be in 0..=10000".into());
         }
         self.wallpaper.validate(&outputs)?;
         self.theme.validate()?;

@@ -80,6 +80,10 @@ Start from [examples/config.toml](examples/config.toml) or
 [configuration specification](specs/configuration.md) defines paths, schema,
 defaults, validation, startup fallback, and reload behavior.
 
+Use top-level `snap_delay_ms` to tune the initial edge/corner dwell when dragging
+a window. See [snapping](specs/snapping.md#drag-input-and-presentation) for activation
+and reload behavior.
+
 ### Wallpapers
 
 For example, after creating the image files:

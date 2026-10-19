@@ -23,8 +23,6 @@ use smithay::{
 };
 use std::time::Duration;
 
-const SNAP_DELAY: Duration = Duration::from_millis(500);
-
 // A focus click must not detach a tile or replace its remembered floating geometry.
 fn titlebar_drag_ready(origin: Point<f64, Logical>, position: Point<f64, Logical>) -> bool {
     (position.x - origin.x).hypot(position.y - origin.y) >= 4.0
@@ -374,7 +372,7 @@ mod tests {
             state.service_snap_delay(deadline);
             assert_eq!(state.render_demand.generation(), generation + 1);
             assert_eq!(state.snap_delay_deadline(), None);
-            state.service_snap_delay(deadline + SNAP_DELAY);
+            state.service_snap_delay(deadline + Duration::from_millis(500));
             assert_eq!(state.render_demand.generation(), generation + 1);
             // Leaving/reentering and switching targets never restart the delay.
             state.motion((400., 300.).into(), 2);
@@ -587,6 +585,41 @@ mod tests {
             SnapTarget::Right
         );
         state.end_drag();
+        // Each countdown samples the configured delay. A reload does not retime
+        // a pending dwell, and zero unlocks immediately on the next zone entry.
+        state.runtime.config.snap_delay_ms = 125;
+        state.placements = state.runtime.placements();
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        let before_entry = state.start.elapsed();
+        state.motion((0., 300.).into(), 3);
+        let after_entry = state.start.elapsed();
+        let deadline = state.snap_delay_deadline().unwrap();
+        assert!(deadline >= before_entry + Duration::from_millis(125));
+        assert!(deadline <= after_entry + Duration::from_millis(125));
+        state.runtime.config.snap_delay_ms = 0;
+        state.service_snap_delay(deadline - Duration::from_nanos(1));
+        assert_eq!(state.snap_delay_deadline(), Some(deadline));
+        state.service_snap_delay(deadline);
+        assert_eq!(
+            state.drag.as_ref().unwrap().snap_activation,
+            SnapActivation::Unlocked
+        );
+        state.end_drag();
+        state.placements = state.runtime.placements();
+        state.begin_drag(id, (220., 160.).into(), 0, 0x110);
+        state.motion((799., 300.).into(), 3);
+        assert_eq!(state.snap_delay_deadline(), None);
+        assert_eq!(
+            state
+                .runtime
+                .desktop
+                .snap_preview(state.drag.as_ref().unwrap().moving.as_ref().unwrap())
+                .unwrap()
+                .target,
+            SnapTarget::Right
+        );
+        state.end_drag();
+        state.runtime.config.snap_delay_ms = 500;
         state.runtime.desktop.snap_window(id, SnapTarget::Maximize);
         state.placements = state.runtime.placements();
         let before = state.runtime.desktop.window(id).unwrap().clone();
@@ -2081,17 +2114,20 @@ impl Compositor {
             drag.snap_activation = SnapActivation::WaitingForEdge;
             return;
         }
-        match drag.snap_activation {
+        let deadline = match drag.snap_activation {
             SnapActivation::WaitingForEdge => {
-                drag.snap_activation = SnapActivation::Pending(now + SNAP_DELAY);
+                let deadline = now + Duration::from_millis(self.runtime.config.snap_delay_ms);
+                drag.snap_activation = SnapActivation::Pending(deadline);
+                deadline
             }
-            SnapActivation::Pending(deadline) if now >= deadline => {
-                drag.snap_activation = SnapActivation::Unlocked;
-                session.set_snapping_enabled(true);
-                self.render_demand
-                    .invalidate(super::render_demand::Reason::Input);
-            }
-            _ => {}
+            SnapActivation::Pending(deadline) => deadline,
+            SnapActivation::Unlocked => return,
+        };
+        if now >= deadline {
+            drag.snap_activation = SnapActivation::Unlocked;
+            session.set_snapping_enabled(true);
+            self.render_demand
+                .invalidate(super::render_demand::Reason::Input);
         }
     }
 

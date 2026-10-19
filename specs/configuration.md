@@ -15,6 +15,7 @@ default configuration rather than partly applying invalid declarations.
 | Workspace `mode`         | `columns`                                       | Nonblank mode string, at most 256 bytes                             |
 | Workspace `output_modes` | Empty                                           | Configured output names mapped to mode strings                      |
 | `show_fps` | `false` | Strict boolean; [FPS overlay](rendering.md#fps-overlay) |
+| `snap_delay_ms` | 500 | Integer milliseconds, 0–10000; 0 activates immediately on [snap-zone entry](snapping.md#drag-input-and-presentation) |
 | `gaps`                   | 8                                               | Integer logical pixels, 0–4096                                      |
 | `script`                 | Absent                                          | Optional Rhai path; empty path disables extensions                  |
 | `keys.leader`            | `Super`                                         | Explicit modifier combination; see [input](input.md)                |
@@ -82,7 +83,7 @@ The configured output list must be identical to the running configuration:
 changes to names, dimensions, order, or count require restart. Runtime does not
 hot-apply topology declarations.
 
-Successful reload updates gaps, declared workspace names/default modes and their
+Successful reload updates gaps, pointer preferences, declared workspace names/default modes and their
 configured output overrides, bindings, theme, resources, and shell rules. It
 preserves desktop windows and persistent workspace ownership. It clears disabled
 script-function state and reclassifies all managed windows, including hidden ones.
@@ -128,9 +129,9 @@ gesture; dispatching `AltTab` through ordinary runtime actions does not start on
 - [Config parsing](../src/config/mod.rs), [shell rules](../src/config/shell.rs),
   [runtime](../src/runtime/mod.rs), [example configuration](../examples/config.toml).
 - [Extension/config tests](../tests/extensions.rs): defaults, malformed values,
-  shortcut validation, XDG path selection, and startup fallback.
+  shortcut validation, XDG path selection, startup fallback, and snap-delay schema.
 - [Runtime tests](../tests/runtime.rs): atomic parse/script/topology rejection,
-  retained windows, launcher reclassification, and explicit effects.
+  retained windows, launcher reclassification, snap-delay reload, and explicit effects.
 - [Wallpaper](../tests/wallpaper.rs), [titlebar](../tests/titlebar_theme.rs),
   [rounded](../tests/rounded.rs), and [blur](../tests/blur.rs) tests cover their
   schema/resource reload cases; they do not establish rendered GPU behavior.

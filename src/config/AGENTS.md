@@ -5,7 +5,8 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 ## Responsibilities
 
 - `mod.rs`: TOML deserialization, defaults, validation, configuration paths, and
-  loading errors/fallback and top-level `show_fps` diagnostics preference. Keep
+  loading errors/fallback, top-level `show_fps` diagnostics and `snap_delay_ms`
+  interaction preferences. See [snapping](../../specs/snapping.md) for activation. Keep
   schema values backend-independent.
   It owns strict/defaulted `[overview]` interaction preferences; see
   [overview](../../specs/overview.md#layout-and-input) for behavior.
@@ -65,7 +66,7 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   their respective defaults.
 - Panel rules override only layer. Anchors, margins, sizing, and exclusive zones
   remain client-owned and are interpreted in the Smithay adapter.
-- Update `examples/config.toml`, `examples/vm.toml`, and user documentation for
+- Update `examples/config.toml`, the monitor examples, and user documentation for
   schema changes. Do not silently claim runtime output-topology reload support.
 
 ## Verification

@@ -76,11 +76,12 @@ window. During a move, Escape and host focus loss cancel; only the initiating
 button's release commits. Consumed compositor presses/releases remain paired,
 including an Escape press/release. Overview takes no snap gesture ownership.
 
-Snapping MUST initially stay disabled during each move. The 500 ms countdown
+Snapping MUST initially stay disabled during each move. The countdown uses
+top-level [`snap_delay_ms`](configuration.md#loading-and-defaults) and
 starts when a pointer update first selects a valid snap candidate, using monotonic
 elapsed time independently of animation speed or frame sampling. Time spent
 dragging outside snap zones MUST NOT count. Leaving all valid snap zones before
-activation cancels the countdown; reentry starts a fresh 500 ms. Moving directly
+activation cancels the countdown; reentry starts a fresh countdown. Moving directly
 between valid targets preserves the pending countdown. Pointer-following remains
 immediate, and release before activation keeps the moved free rectangle.
 
@@ -90,6 +91,11 @@ MUST NOT restart the delay. The next move starts locked again; resize gestures
 have no countdown. Release and motion MUST check elapsed time before completing
 the move or replacing the previous candidate, even if the timer has not yet
 dispatched.
+
+Each countdown captures the configured delay at zone entry. A successful reload
+applies to the next countdown; an already pending deadline and an unlocked move
+MUST remain unchanged. Zero delay MUST unlock immediately on the first valid
+zone-entry update without waiting for another timer or pointer event.
 
 The existing earliest-deadline event source MUST wake for a pending edge dwell,
 including a stationary pointer in a target zone. It MUST request pixels only if
@@ -145,7 +151,8 @@ ends at the current geometry, without applying move-session rollback.
   target invalidation. Injected monotonic times cover the exact delay boundary,
   stationary activation, delayed edge entry, cancelled/restarted dwell, target
   changes before/after activation, per-gesture reset, early drop, release/motion
-  before timer dispatch, and absence of repeated timer/redraw demand.
+  before timer dispatch, configured/zero delay, unchanged pending deadlines after
+  a setting change, and absence of repeated timer/redraw demand.
   It uses synthetic seat input without GPU or physical
   device injection. [Scene assembly](../src/platform/smithay/scene.rs) owns the
   unfiltered preview and requested-body clips.
