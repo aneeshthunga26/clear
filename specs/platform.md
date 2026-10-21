@@ -161,16 +161,24 @@ also retain requested frame clips for rendering and input while committed client
 buffers catch up; their popups keep the output viewport clip.
 
 XDG maximize/unmaximize/minimize/fullscreen/unfullscreen requests target core
-window state. Pre-map maximize and fullscreen are retained for the first map and
-reflected in initial size/state. A connected requested fullscreen output is used
-for initial placement; a mapped normal window transfers through ordinary
-focus/move commands before setting fullscreen. An absent or unavailable output
-uses the window's home/focused output. Fullscreen requests MUST NOT affect
-launcher policy. Rejected requests still receive a configure.
+policy. Pre-map fullscreen records an output preference and ownership epoch but
+MUST NOT evict a mapped occupant before first buffer. Only the latest pending
+enter survives; later mapped enters/exits revoke older pending epochs. A stale
+first buffer, ACK or commit MUST NOT reacquire a displaced slot. Revocation sends
+a normal configure. Pre-map launcher requests cannot acquire the slot.
+
+Mapped foreground fullscreen requests activate the dedicated desktop; background
+requests replace the occupant dormantly without stealing focus. Output preference
+selects presentation geometry without `MoveToOutput` or home/workspace changes.
+Unavailable outputs use core fallback. Rejected requests still get a configure.
+Fullscreen/transient desired size and visibility follow the
+[fullscreen policy](desktop.md#fullscreen). Mapped XDG parent changes synchronize
+validated core parent IDs; related dialogs can take focus above the occupant.
 
 Reconciliation owns Maximized, Fullscreen, and Suspended state; the
 [overview contract](overview.md) provides temporary protocol visibility for live
-previews without restoring core minimized state. Minimizing removes ordinary
+previews without restoring core minimized state. Dormant fullscreen occupants
+are suspended unless needed for an authorized live preview. Minimizing removes ordinary
 rendering without marking the client unmapped. State changes cancel incompatible
 drags. Capabilities advertise maximize/minimize/fullscreen, but not window-menu
 policy. See [desktop state](desktop.md#fullscreen) for saved-state and placement
@@ -247,8 +255,9 @@ precedence, focus reconciliation and committed-buffer previews.
 
 Front-to-back priority is overlay, top, application placements, bottom, background,
 then wallpaper on outputs without visible fullscreen. On a fullscreen output,
-priority is overlay, launchers homed there, fullscreen windows, top layers, other
-application placements, bottom, background, then wallpaper. Top-layer input is
+priority is overlay, related transient dialogs, the fullscreen occupant, an
+opaque black output-local backing, then top/bottom/background layers and wallpaper.
+Ordinary applications and unrelated launchers are absent on that output. Top-layer input is
 partitioned by the output under the pointer to preserve the render priority when
 an oversized launcher crosses output boundaries. Exclusive layer keyboard
 ownership remains independent of this visual ordering. Layer popup trees participate above their parent layer body and

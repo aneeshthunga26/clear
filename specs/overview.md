@@ -18,6 +18,24 @@ On-demand layer focus does not block entry. Opening/closing uses the configured
 [overview animation](animations.md) when global/effect motion is enabled.
 Disabled or reduced-motion preferences retain the instant path.
 
+## Fullscreen desktop
+
+An occupied fullscreen slot contributes one typed `Fullscreen` tile at the end
+of the target output's desktop strip. It is absent when empty and never has a
+numbered workspace ID. Selecting it previews only its occupant and related
+dialogs; normal workspace cards and miniature candidates exclude them. Clicking
+its tile activates the slot, using the same expanding-tile transition as ordinary
+desktops with an opaque black backing. A dormant slot remains previewable without
+activation. Cancellation preserves the original presentation/focus.
+
+Workspace navigation includes the special tile only on its target output and
+repairs stale fullscreen selections when the occupant disappears. A fullscreen
+card can be dropped on a normal workspace (including its home) to exit fullscreen
+and transfer it. The special tile is never a drop destination. Attached transient
+dialog cards focus normally but reject independent transfer until the parent
+leaves fullscreen. These paths are covered in
+[fullscreen desktop tests](../tests/fullscreen_desktop.rs).
+
 ## Presentation transitions
 
 Entry interpolates live visible window frames from their last submitted desktop

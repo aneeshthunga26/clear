@@ -151,20 +151,21 @@ Scope {
                             spacing: 2
 
                             Repeater {
-                                model: bridge.state ? bridge.state.workspaces : []
+                                model: Protocol.desktopEntries(bridge.state, panel.output)
 
                                 delegate: PanelButton {
                                     required property var modelData
 
                                     appearance: root.appearance
-                                    text: modelData.id
+                                    text: modelData.fullscreen ? "F" : modelData.id
                                     implicitWidth: 30
                                     implicitHeight: 28
                                     quiet: true
                                     tooltipBelowPanel: true
-                                    description: "Workspace " + modelData.name
+                                    description: modelData.fullscreen ? "Fullscreen desktop" : "Workspace " + modelData.name
                                     enabled: panel.active
-                                    selected: panel.active && panel.output.workspace === modelData.id
+                                    selected: panel.active && (modelData.fullscreen ? !!(bridge.state && bridge.state.fullscreen_desktop && bridge.state.fullscreen_desktop.active) :
+                                        panel.output.workspace === modelData.id && !(bridge.state.fullscreen_desktop && bridge.state.fullscreen_desktop.active && bridge.state.fullscreen_desktop.output === panel.output.id))
                                     onSelectedChanged: {
                                         if (selected) {
                                             Qt.callLater(function() {
@@ -172,7 +173,7 @@ Scope {
                                         });
                                         }
                                     }
-                                    onClicked: bridge.command({
+                                    onClicked: modelData.fullscreen ? bridge.command({"type": "activate_fullscreen"}) : bridge.command({
                                         "type": "switch_workspace",
                                         "output": panel.output.id,
                                         "workspace": modelData.id

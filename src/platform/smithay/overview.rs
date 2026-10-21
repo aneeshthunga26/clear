@@ -65,31 +65,19 @@ impl OverviewLayout {
         let tile_width = (strip_height * output.width / output.height.max(1)).max(1);
         let width = (output.width - 2 * margin).max(1);
         let slots = (width / (tile_width + gap).max(1)).clamp(1, 12) as usize;
-        let workspace_index = session
-            .workspaces
+        let desktops = session.desktop_targets();
+        let workspace_index = desktops
             .iter()
-            .position(|w| *w == session.workspace)
+            .position(|t| *t == session.desktop_target())
             .unwrap_or(0);
         let start = workspace_index
             .saturating_sub(slots / 2)
-            .min(session.workspaces.len().saturating_sub(slots));
-        let visible = session
-            .workspaces
-            .iter()
-            .skip(start)
-            .take(slots)
-            .count()
-            .max(1);
+            .min(desktops.len().saturating_sub(slots));
+        let visible = desktops.iter().skip(start).take(slots).count().max(1);
         let mut items = Vec::new();
         let strip_width = visible as i32 * (tile_width + gap) - gap;
         let strip_left = output.x + (output.width - strip_width) / 2;
-        for (i, workspace) in session
-            .workspaces
-            .iter()
-            .skip(start)
-            .take(slots)
-            .enumerate()
-        {
+        for (i, target) in desktops.iter().skip(start).take(slots).enumerate() {
             let preview = Rect::new(
                 strip_left + i as i32 * (tile_width + gap),
                 output.y + strip_top,
@@ -97,7 +85,7 @@ impl OverviewLayout {
                 strip_height,
             );
             items.push(OverviewItem {
-                target: OverviewTarget::Workspace(*workspace),
+                target: *target,
                 rect: Rect::new(preview.x, preview.y, preview.width, preview.height + 32),
                 preview: preview.intersection(output),
             });
@@ -350,6 +338,7 @@ struct ThumbnailAppearance {
 enum PreviewDestination {
     Card,
     Miniature(WorkspaceId),
+    FullscreenMiniature,
     Ghost,
     Zoom,
 }
@@ -439,6 +428,7 @@ impl OverviewCache {
         let destination = match destination {
             Some(OverviewTarget::Window(id)) => (0, id.0),
             Some(OverviewTarget::Workspace(id)) => (1, id.0),
+            Some(OverviewTarget::Fullscreen) => (3, 0),
             None => (2, 0),
         };
         let cached = self.labels.get_mut(&key).expect("prepared label");
@@ -682,8 +672,9 @@ impl OverviewCache {
                             sizes.include(id, preview);
                         }
                     }
-                    OverviewTarget::Workspace(id) => {
-                        for (window, dest) in state.overview_miniatures(id, preview, layout.output)
+                    target @ (OverviewTarget::Workspace(_) | OverviewTarget::Fullscreen) => {
+                        for (window, dest) in
+                            state.overview_target_miniatures(target, preview, layout.output)
                         {
                             sizes.include(window, dest);
                         }
@@ -838,20 +829,26 @@ impl OverviewCache {
                 continue;
             }
             let label = match item.target {
-                OverviewTarget::Workspace(id) => {
+                target @ (OverviewTarget::Workspace(_) | OverviewTarget::Fullscreen) => {
                     if let Some(preview) = item.preview
-                        && zoom.as_ref().is_none_or(|zoom| zoom.workspace != id)
+                        && zoom.as_ref().is_none_or(|zoom| zoom.target != target)
                     {
                         // Small desktop previews use remembered frames, not new
                         // policy placements or thumbnail-sized configures.
-                        for (window, dest) in state.overview_miniatures(id, preview, layout.output)
+                        for (window, dest) in
+                            state.overview_target_miniatures(target, preview, layout.output)
                         {
                             match self.thumbnail(
                                 state,
                                 renderer,
                                 titlebars,
                                 window,
-                                PreviewDestination::Miniature(id),
+                                match target {
+                                    OverviewTarget::Workspace(id) => {
+                                        PreviewDestination::Miniature(id)
+                                    }
+                                    _ => PreviewDestination::FullscreenMiniature,
+                                },
                                 dest,
                                 &sizes,
                                 shaders,
@@ -877,7 +874,12 @@ impl OverviewCache {
                             state,
                             &region.output.name(),
                             layout.output,
-                            WallpaperDestination::Miniature(id),
+                            match target {
+                                OverviewTarget::Workspace(id) => {
+                                    WallpaperDestination::Miniature(id)
+                                }
+                                _ => WallpaperDestination::FullscreenMiniature,
+                            },
                             preview,
                             state.overview_progress() as f32,
                         );
@@ -886,7 +888,7 @@ impl OverviewCache {
                             preview,
                             2,
                             fade_color(
-                                if id == session.workspace {
+                                if target == session.desktop_target() {
                                     state.runtime.config.theme.active_border
                                 } else {
                                     [0.35, 0.38, 0.44, 0.8]
@@ -896,12 +898,15 @@ impl OverviewCache {
                             layout.output,
                         );
                     }
-                    state
-                        .runtime
-                        .desktop
-                        .workspace(id)
-                        .map(|w| w.name.clone())
-                        .unwrap_or_default()
+                    match target {
+                        OverviewTarget::Workspace(id) => state
+                            .runtime
+                            .desktop
+                            .workspace(id)
+                            .map(|w| w.name.clone())
+                            .unwrap_or_default(),
+                        _ => "Fullscreen".into(),
+                    }
                 }
                 OverviewTarget::Window(id) => {
                     if let Some(preview) = item.preview {
@@ -1152,6 +1157,19 @@ fn desktop_backing(
     if dest.width <= 0 || dest.height <= 0 {
         return;
     }
+    let fullscreen = destination == WallpaperDestination::FullscreenMiniature
+        || (destination == WallpaperDestination::Canvas
+            && state
+                .overview_render_session()
+                .is_some_and(|s| s.fullscreen_selected))
+        || (destination == WallpaperDestination::Zoom
+            && state
+                .overview_workspace_zoom()
+                .is_some_and(|z| z.target == OverviewTarget::Fullscreen));
+    if fullscreen {
+        solid(elements, dest, [0.0, 0.0, 0.0, opacity]);
+        return;
+    }
     if let Some(element) = wallpapers.preview_element(
         renderer,
         &state.runtime.wallpapers,
@@ -1207,6 +1225,50 @@ fn solid(elements: &mut Vec<SceneElement>, rect: Rect, color: [f32; 4]) {
 }
 
 impl Compositor {
+    pub(super) fn overview_target_miniatures(
+        &self,
+        target: OverviewTarget,
+        preview: Rect,
+        output: Rect,
+    ) -> Vec<(WindowId, Rect)> {
+        match target {
+            OverviewTarget::Workspace(id) => self.overview_miniatures(id, preview, output),
+            OverviewTarget::Fullscreen => {
+                let Some(slot) = self.runtime.desktop.fullscreen_slot() else {
+                    return Vec::new();
+                };
+                let bounds = slot
+                    .output
+                    .and_then(|o| self.runtime.desktop.output(o))
+                    .map_or(output, |o| o.bounds);
+                std::iter::once(slot.window)
+                    .chain(
+                        self.runtime
+                            .desktop
+                            .windows()
+                            .filter(|w| {
+                                !w.minimized && self.runtime.desktop.is_fullscreen_transient(w.id)
+                            })
+                            .map(|w| w.id),
+                    )
+                    .take(4)
+                    .filter_map(|id| {
+                        let entry = self.windows.get(&id).filter(|e| e.mapped)?;
+                        let frame = if id == slot.window {
+                            bounds
+                        } else {
+                            entry
+                                .last_frame
+                                .get()
+                                .unwrap_or(self.runtime.desktop.window(id)?.floating_rect)
+                        };
+                        miniature_frame(frame, bounds, preview).map(|rect| (id, rect))
+                    })
+                    .collect()
+            }
+            OverviewTarget::Window(_) => Vec::new(),
+        }
+    }
     /// The same bounded miniature list drives rendering and client visibility.
     pub fn overview_miniatures(
         &self,
@@ -1221,10 +1283,12 @@ impl Compositor {
             .windows()
             .iter()
             .filter(|id| {
-                self.runtime
-                    .desktop
-                    .window(**id)
-                    .is_some_and(|w| w.role == crate::core::WindowRole::Normal && !w.minimized)
+                self.runtime.desktop.window(**id).is_some_and(|w| {
+                    w.role == crate::core::WindowRole::Normal
+                        && !w.minimized
+                        && !w.fullscreen
+                        && !self.runtime.desktop.is_fullscreen_transient(w.id)
+                })
             })
             .take(4)
             .filter_map(|id| {
@@ -1259,9 +1323,9 @@ impl Compositor {
                     OverviewTarget::Window(id) => {
                         windows.insert(id);
                     }
-                    OverviewTarget::Workspace(id) => {
+                    target @ (OverviewTarget::Workspace(_) | OverviewTarget::Fullscreen) => {
                         windows.extend(
-                            self.overview_miniatures(id, preview, layout.output)
+                            self.overview_target_miniatures(target, preview, layout.output)
                                 .into_iter()
                                 .map(|(id, _)| id),
                         );

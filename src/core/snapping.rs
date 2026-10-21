@@ -102,6 +102,7 @@ pub struct SnapPreview {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MoveState {
+    parent: Option<WindowId>,
     workspace: WorkspaceId,
     output: Option<OutputId>,
     floating: bool,
@@ -112,6 +113,7 @@ struct MoveState {
 impl MoveState {
     fn of(window: &Window) -> Self {
         Self {
+            parent: window.transient_for,
             workspace: window.workspace,
             output: window.output,
             floating: window.floating,
@@ -179,6 +181,7 @@ impl Desktop {
         if window.role != WindowRole::Normal
             || window.minimized
             || window.fullscreen
+            || self.is_fullscreen_transient(id)
             || window
                 .output
                 .and_then(|id| self.output(id))
@@ -209,6 +212,7 @@ impl Desktop {
             || window.minimized
             || window.fullscreen
             || self.workspace_for_output(output) != Some(window.workspace)
+            || self.is_fullscreen_transient(id)
             || frame.is_empty()
             || !origin.0.is_finite()
             || !origin.1.is_finite()

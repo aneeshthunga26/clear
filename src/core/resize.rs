@@ -41,6 +41,7 @@ pub(super) struct ResizeEnvironment {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ResizeMember {
+    parent: Option<WindowId>,
     id: WindowId,
     floating: bool,
     role: WindowRole,
@@ -103,6 +104,7 @@ impl Desktop {
             || window.fullscreen
             || window.minimized
             || self.workspace_for_output(output) != Some(workspace)
+            || self.is_fullscreen_transient(id)
         {
             return None;
         }
@@ -366,6 +368,7 @@ impl Desktop {
                             role: window.role,
                             maximized: window.maximized,
                             fullscreen: window.fullscreen,
+                            parent: window.transient_for,
                             minimized: window.minimized,
                             snapped: window.snapped,
                         })

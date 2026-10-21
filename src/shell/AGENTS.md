@@ -56,6 +56,9 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
   commands target normal windows without implicit workspace switches; launchers
   reject them atomically. Minimize repairs focus through core; restore preserves
   maximize state. Do not add separate shell policy or undo core focus decisions.
+- The additive `fullscreen_desktop` snapshot is separate from numbered workspaces.
+  `activate_fullscreen` validates an occupied connected slot. Keep home `output`
+  distinct from its target; transient dialogs share visibility without another occupant.
 - Snapshot/subscribe execution is a no-op; the transport supplies their responses.
   Snapshot responses carry an ID and `state`; unsolicited `state` responses omit
   the ID. Error responses carry `message` and an ID or JSON null.

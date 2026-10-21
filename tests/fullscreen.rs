@@ -76,13 +76,19 @@ fn fullscreen_ipc_is_strict_atomic_and_does_not_reveal_or_restore_hidden_windows
         .command(Command::SwitchWorkspace(WorkspaceId(3)));
     let original_focus = runtime.desktop.focused_output();
     let request = parse_request(br#"{"version":1,"id":1,"request":{"type":"set_fullscreen","window":"1","fullscreen":true}}"#).unwrap();
-    execute(&mut runtime, &request).unwrap();
+    assert!(execute(&mut runtime, &request).is_err());
     let state = snapshot(&runtime);
     let window = &state.windows[0];
-    assert!(window.fullscreen && window.minimized);
+    assert!(!window.fullscreen && window.minimized);
     assert_eq!(state.outputs[0].workspace, "3");
     assert_eq!(runtime.desktop.focused_output(), original_focus);
     assert!(runtime.placements().is_empty());
+    runtime
+        .desktop
+        .command(Command::SetMinimized(WindowId(1), false));
+    execute(&mut runtime, &request).unwrap();
+    assert!(runtime.desktop.window(WindowId(1)).unwrap().fullscreen);
+    assert!(!runtime.desktop.fullscreen_slot().unwrap().active);
     for payload in [
         br#"{"version":1,"id":1,"request":{"type":"set_fullscreen","window":"1","fullscreen":true,"extra":1}}"#.as_slice(),
         br#"{"version":1,"id":1,"request":{"type":"set_fullscreen","window":"1","fullscreen":"true"}}"#.as_slice(),

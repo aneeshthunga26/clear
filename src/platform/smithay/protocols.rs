@@ -157,6 +157,91 @@ fn assigned_buffer_damage_uncertain(buffers: &[AssignedBuffer]) -> bool {
 }
 
 impl Compositor {
+    pub(super) fn sync_transient_parents(&mut self) {
+        let parents: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| w.mapped)
+            .filter_map(|(id, entry)| {
+                let parent = with_states(entry.window.toplevel()?.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .and_then(|data| data.lock().unwrap().parent.clone())
+                });
+                Some((
+                    *id,
+                    parent
+                        .as_ref()
+                        .and_then(|surface| self.window_id(surface))
+                        .filter(|id| self.runtime.desktop.window(*id).is_some()),
+                ))
+            })
+            .collect();
+        for (id, parent) in parents {
+            let changed = self
+                .runtime
+                .desktop
+                .window(id)
+                .is_some_and(|w| w.transient_for != parent);
+            self.runtime.desktop.set_window_parent(id, parent);
+            if changed && parent.is_some() && self.runtime.desktop.is_fullscreen_transient(id) {
+                if let Some(entry) = self.windows.get(&id) {
+                    let size = entry.window.geometry().size;
+                    let height = size.h.saturating_add(if entry.uses_ssd() {
+                        self.runtime.config.theme.titlebar.height
+                    } else {
+                        0
+                    });
+                    if let Some(bounds) = self
+                        .runtime
+                        .desktop
+                        .window(id)
+                        .and_then(|w| w.output)
+                        .and_then(|o| self.runtime.desktop.output(o))
+                        .map(|o| o.bounds)
+                    {
+                        self.runtime.desktop.command(Command::SetFloatingRect(
+                            id,
+                            bounds.centered_unbounded(size.w, height),
+                        ));
+                    }
+                }
+                if self
+                    .runtime
+                    .desktop
+                    .fullscreen_slot()
+                    .is_some_and(|s| s.active)
+                {
+                    self.runtime.desktop.command(Command::Focus(id));
+                }
+            }
+        }
+    }
+    pub(super) fn revoke_stale_fullscreen_intents(&mut self) {
+        let revision = self.runtime.desktop.fullscreen_revision();
+        let stale: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| {
+                !w.mapped && w.initial_fullscreen && w.initial_fullscreen_revision != revision
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            let entry = self.windows.get_mut(&id).unwrap();
+            entry.initial_fullscreen = false;
+            entry.initial_fullscreen_output = None;
+            if let Some(top) = entry
+                .window
+                .toplevel()
+                .filter(|top| top.is_initial_configure_sent())
+                .cloned()
+            {
+                self.configure_initial_window(id, &top);
+            }
+        }
+    }
     fn surface_tree_visual(&self, root: &WlSurface) -> TreeVisual {
         let mut surfaces = Vec::new();
         with_surface_tree_upward(
@@ -362,20 +447,15 @@ impl CompositorHandler for Compositor {
                     self.runtime
                         .desktop
                         .command(Command::SetMaximized(id, entry.initial_maximized));
-                    self.runtime
-                        .desktop
-                        .command(Command::SetFullscreen(id, entry.initial_fullscreen));
                     if entry.initial_fullscreen
-                        && let Some(output) = entry.initial_fullscreen_output
-                        && self.runtime.desktop.output(output).is_some()
-                        && self
-                            .runtime
-                            .desktop
-                            .window(id)
-                            .is_some_and(|w| w.role == crate::core::WindowRole::Normal)
+                        && entry.initial_fullscreen_revision
+                            == self.runtime.desktop.fullscreen_revision()
                     {
-                        self.runtime.desktop.command(Command::Focus(id));
-                        self.runtime.desktop.command(Command::MoveToOutput(output));
+                        self.runtime.desktop.request_fullscreen(
+                            id,
+                            entry.initial_fullscreen_output,
+                            true,
+                        );
                     }
                     entry.initial_maximized = false;
                     entry.initial_fullscreen = false;
@@ -542,6 +622,7 @@ impl XdgShellHandler for Compositor {
                 initial_maximized: false,
                 initial_fullscreen: false,
                 initial_fullscreen_output: None,
+                initial_fullscreen_revision: 0,
                 committed_fullscreen: false,
                 last_frame: Default::default(),
             },
@@ -635,6 +716,13 @@ impl XdgShellHandler for Compositor {
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         self.set_client_fullscreen(surface, false, None);
     }
+
+    fn parent_changed(&mut self, _surface: ToplevelSurface) {
+        self.dirty = true;
+        self.render_demand
+            .invalidate(super::render_demand::Reason::Policy);
+        self.reconcile();
+    }
     fn minimize_request(&mut self, surface: ToplevelSurface) {
         if let Some(id) = self.window_id(surface.wl_surface()) {
             self.runtime
@@ -723,6 +811,21 @@ impl Compositor {
         let Some(id) = self.window_id(surface.wl_surface()) else {
             return;
         };
+        if !self.windows[&id].mapped
+            && self
+                .runtime
+                .config
+                .shell
+                .is_launcher(&metadata(surface.wl_surface()).1)
+        {
+            let entry = self.windows.get_mut(&id).unwrap();
+            entry.initial_fullscreen = false;
+            entry.initial_fullscreen_output = None;
+            if surface.is_initial_configure_sent() {
+                self.configure_initial_window(id, &surface);
+            }
+            return;
+        }
         if self.windows[&id].mapped {
             if self
                 .runtime
@@ -730,13 +833,15 @@ impl Compositor {
                 .window(id)
                 .is_some_and(|w| w.role == crate::core::WindowRole::Normal)
             {
-                if fullscreen && let Some(output) = output {
-                    self.runtime.desktop.command(Command::Focus(id));
-                    self.runtime.desktop.command(Command::MoveToOutput(output));
+                if fullscreen {
+                    self.runtime.desktop.request_fullscreen(
+                        id,
+                        output,
+                        self.runtime.desktop.focused_window() == Some(id),
+                    );
+                } else {
+                    self.runtime.desktop.leave_fullscreen(id);
                 }
-                self.runtime
-                    .desktop
-                    .command(Command::SetFullscreen(id, fullscreen));
             }
             self.dirty = true;
             self.render_demand
@@ -744,9 +849,34 @@ impl Compositor {
             self.reconcile();
             surface.send_configure();
         } else {
+            if fullscreen {
+                // Only the latest pending enter survives. No unbuffered client
+                // can evict the mapped occupant; core epochs also revoke intents
+                // superseded by a mapped request or shortcut before first buffer.
+                let revoked: Vec<_> = self
+                    .windows
+                    .iter()
+                    .filter(|(other, w)| **other != id && !w.mapped && w.initial_fullscreen)
+                    .map(|(other, _)| *other)
+                    .collect();
+                for other in revoked {
+                    let entry = self.windows.get_mut(&other).unwrap();
+                    entry.initial_fullscreen = false;
+                    entry.initial_fullscreen_output = None;
+                    if let Some(top) = entry
+                        .window
+                        .toplevel()
+                        .filter(|top| top.is_initial_configure_sent())
+                        .cloned()
+                    {
+                        self.configure_initial_window(other, &top);
+                    }
+                }
+            }
             let entry = self.windows.get_mut(&id).unwrap();
             entry.initial_fullscreen = fullscreen;
             entry.initial_fullscreen_output = fullscreen.then_some(output).flatten();
+            entry.initial_fullscreen_revision = self.runtime.desktop.fullscreen_revision();
             if surface.is_initial_configure_sent() {
                 self.configure_initial_window(id, &surface);
             }

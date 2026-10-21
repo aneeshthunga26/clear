@@ -26,6 +26,8 @@ keyboard ownership, grabs, and pointer events belong in `platform/smithay/`.
   focused normal window. Restore minimized windows via explicit focus/Alt-Tab.
 - `toggle_fullscreen` is a configurable unit action with no default shortcut;
   it routes through the same core policy from bindings and Rhai.
+- `activate_fullscreen`, `workspace_next` and `workspace_previous` route typed
+  presentation navigation; they have no default bindings. Never fabricate workspace IDs.
 - When extending `Action`, update validation, runtime dispatch, Rhai action
   conversion as needed, and config examples together.
 

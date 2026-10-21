@@ -31,8 +31,12 @@ CASES = (
     "state-interleavings",
     "initial-fullscreen",
     "output-target",
+    "output-target-stretched",
     "ssd-held",
     "launcher-rejected",
+    "desktop-slot",
+    "premap-supersession",
+    "transient-dialog",
 )
 CONFIG = """gaps = 0
 [theme]
@@ -103,6 +107,71 @@ def drive(client, peer, case, checks):
         )
         checks.append({"check": label + " policy", "window": policy(peer, "app", fullscreen=True)})
 
+    if case == "desktop-slot":
+        identity = app()
+        full()
+        client.command("hold app")
+        client.command("app-fullscreen other 640 480 0 0 3060e0")
+        expect("new occupant replaces held old fullscreen", fields={"app": {"fullscreen": False, "hold_commit": True}, "other": {"fullscreen": True, "committed_fullscreen": True}}, focus="other")
+        state = peer.state()
+        other = next(w["id"] for w in state["windows"] if w["app_id"] == "other")
+        assert sum(w["fullscreen"] for w in state["windows"]) == 1, state
+        assert state["fullscreen_desktop"]["window"] == other and state["fullscreen_desktop"]["active"], state
+        home = next(w["workspace"] for w in state["windows"] if w["id"] == other)
+        client.command("unfullscreen app")
+        assert peer.state()["fullscreen_desktop"]["window"] == other
+        peer.command("switch_workspace", output=state["fullscreen_desktop"]["output"], workspace=home)
+        expect("normal desktop suspends dormant fullscreen", fields={"other": {"fullscreen": True, "suspended": True}})
+        assert not peer.state()["fullscreen_desktop"]["active"]
+        peer.command("activate_fullscreen")
+        expect("special desktop reactivates", fields={"other": {"fullscreen": True, "suspended": False}}, focus="other")
+        assert next(w for w in peer.state()["windows"] if w["id"] == other)["workspace"] == home
+        client.command("alpha other 0")
+        checks.append({"check": "single occupied desktop and home ownership", "state": peer.state()})
+        return (640, 480), [(10, 10, (0, 0, 0)), (320, 240, (0, 0, 0)), (630, 470, (0, 0, 0))]
+
+    if case == "premap-supersession":
+        identity = app()
+        full()
+        for name in ("older", "newer"):
+            client.command(f"app-xdg-deferred {name} 640 480 0 0 3060e0 client")
+            client.command(f"fullscreen {name}")
+        client.command("app-xdg-deferred launcher 300 160 1 0 20c0d0 client")
+        client.command("fullscreen launcher")
+        assert peer.state()["fullscreen_desktop"]["window"] == identity
+        client.command("start older")
+        expect("older premap request was revoked", fields={"older": {"fullscreen": False}})
+        assert peer.state()["fullscreen_desktop"]["window"] == identity
+        client.command("start newer")
+        expect("latest premap request enters", fields={"newer": {"fullscreen": True}}, focus="newer")
+        client.command("app-xdg-deferred late 640 480 0 0 e0c030 client")
+        client.command("fullscreen late")
+        peer.command("focus_window", window=identity)
+        client.command("fullscreen app")
+        expect("mapped request supersedes pending intent", fields={"app": {"fullscreen": True}}, focus="app")
+        client.command("start late")
+        expect("late first buffer cannot reclaim fullscreen", fields={"late": {"fullscreen": False}}, focus="app")
+        assert peer.state()["fullscreen_desktop"]["window"] == identity
+        checks.append({"check": "pending intent revisions", "state": peer.state()})
+        return (640, 480), [(10, 10, APP), (630, 470, APP)]
+
+    if case == "transient-dialog":
+        app()
+        full()
+        client.command("app-xdg-deferred dialog 250 180 1 0 e0c030 client")
+        client.command("parent dialog app")
+        client.command("start dialog")
+        expect("related dialog owns focus above fullscreen", fields={"dialog": {"fullscreen": False}}, focus="dialog")
+        state = peer.state()
+        assert len([w for w in state["windows"] if w["fullscreen"]]) == 1, state
+        assert next(w for w in state["windows"] if w["app_id"] == "dialog")["fullscreen_transient"], state
+        checks.append({"check": "related transient presentation", "state": state})
+        peer.command("switch_workspace", output=state["fullscreen_desktop"]["output"], workspace=state["outputs"][0]["workspace"])
+        expect("dormant slot suspends the whole related presentation", fields={"app": {"suspended": True}, "dialog": {"suspended": True}})
+        peer.command("activate_fullscreen")
+        expect("reactivated slot resumes related presentation", fields={"app": {"suspended": False}, "dialog": {"suspended": False}}, focus="app")
+        return (640, 480), [(10, 10, APP), (320, 240, (224, 192, 48)), (630, 470, APP)]
+
     if case == "xdg-entry":
         app()
         full()
@@ -144,8 +213,8 @@ def drive(client, peer, case, checks):
         peer.command("focus_window", window=identity)
         peer.command("set_fullscreen", window=identity, fullscreen=True)
         expect(
-            "IPC fullscreen reflows neighbor",
-            sizes={"app": (640, 480), "other": (640, 448)},
+            "IPC fullscreen hides the ordinary desktop",
+            sizes={"app": (640, 480)},
             fields={"app": {"fullscreen": True}},
             focus="app",
         )
@@ -159,19 +228,19 @@ def drive(client, peer, case, checks):
         expect("minimize transfers focus", focus="other")
         checks.append(
             {
-                "check": "minimize retains both state flags",
-                "window": policy(peer, "app", fullscreen=True, maximized=True, minimized=True),
+                "check": "minimize exits fullscreen and preserves maximize",
+                "window": policy(peer, "app", fullscreen=False, maximized=True, minimized=True),
             },
         )
         assert len(peer.state()["windows"]) == 2, "minimize must retain managed window"
         peer.command("focus_window", window=identity)
         expect(
-            "focus restores to fullscreen",
-            sizes={"app": (640, 480)},
-            fields={"app": {"fullscreen": True, "maximized": True}},
+            "focus restores to ordinary maximized presentation",
+            sizes={"app": (640, 448)},
+            fields={"app": {"fullscreen": False, "maximized": True}},
             focus="app",
         )
-        policy(peer, "app", fullscreen=True, maximized=True, minimized=False)
+        policy(peer, "app", fullscreen=False, maximized=True, minimized=False)
         client.command("unfullscreen app")
         expect(
             "XDG exit restores underlying maximize",
@@ -189,10 +258,13 @@ def drive(client, peer, case, checks):
         policy(peer, "app", fullscreen=False, maximized=True, minimized=False)
         return (640, 480), [(10, 10, PANEL), (10, 40, APP), (630, 470, APP)]
 
-    if case == "output-target":
+    if case in ("output-target", "output-target-stretched"):
         app()
         client.command("app other 640 480 0 0 3060e0")
         expect("two left-output columns", sizes={"app": (320, 448), "other": (320, 448)}, focus="other")
+        if case == "output-target-stretched":
+            peer.command("stretch", output=peer.state()["outputs"][0]["id"])
+        peer.command("focus_window", window=policy(peer, "app")["id"])
         client.command("fullscreen app right")
         expect(
             "explicit right-output fullscreen",
@@ -204,12 +276,18 @@ def drive(client, peer, case, checks):
         right = next(output["id"] for output in state["outputs"] if output["name"] == "right")
         app_state = next(w for w in state["windows"] if w["app_id"] == "app")
         other_state = next(w for w in state["windows"] if w["app_id"] == "other")
-        assert app_state["output"] == right, state
+        assert app_state["output"] != right, state
+        assert state["fullscreen_desktop"]["output"] == right, state
         assert other_state["output"] != right, state
-        assert app_state["workspace"] != other_state["workspace"], state
+        assert app_state["workspace"] == other_state["workspace"], state
         checks.append(
-            {"check": "output target transfers one window without copying workspace ownership", "state": state},
+            {"check": "output target changes presentation without transferring home ownership", "state": state},
         )
+        client.command("unfullscreen app")
+        expect("cross-output exit restores the invoking desktop", sizes={"app": (320, 448), "other": (320, 448)}, fields={"app": {"fullscreen": False}}, focus="app")
+        assert peer.state()["focused_output"] == app_state["output"]
+        client.command("fullscreen app right")
+        expect("cross-output reentry preserves return context", sizes={"app": (640, 480), "other": (640, 448)}, fields={"app": {"fullscreen": True}}, focus="app")
         return (1280, 480), [
             (10, 10, PANEL), (10, 40, OTHER), (630, 470, OTHER),
             (640, 0, APP), (1279, 479, APP),
@@ -259,7 +337,7 @@ def drive(client, peer, case, checks):
         "pre-map launcher rejects fullscreen",
         sizes={"launcher": (300, 160)},
         fields={"launcher": {"fullscreen": False, "committed_fullscreen": False}},
-        focus="launcher",
+        focus="app",
     )
     identity = window(peer, "launcher")["id"]
     result = peer.request("set_fullscreen", window=identity, fullscreen=True)
@@ -272,7 +350,7 @@ def drive(client, peer, case, checks):
         fields={"launcher": {"fullscreen": False, "committed_fullscreen": False}},
     )
     policy(peer, "launcher", fullscreen=False, role="launcher")
-    return (640, 480), [(10, 10, APP), (320, 240, LAYER.COLORS["launcher"]), (630, 470, APP)]
+    return (640, 480), [(10, 10, APP), (320, 240, APP), (630, 470, APP)]
 
 
 def verify_pixels(frame, size, probes):
@@ -291,7 +369,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
     directory = artifacts / case
     directory.mkdir(parents=True, exist_ok=True)
     config = directory / "config.toml"
-    config.write_text(CONFIG + (RIGHT if case == "output-target" else ""))
+    config.write_text(CONFIG + (RIGHT if case in ("output-target", "output-target-stretched") else "") + ("\n[animations]\nenabled = true\n" if case == "output-target-stretched" else ""))
     frame = directory / "frame.ppm"
     frame.unlink(missing_ok=True)
     name = f"clear-fullscreen-{os.getpid()}-{case}"

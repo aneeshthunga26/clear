@@ -12,6 +12,11 @@ pub enum Action {
     AltTab,
     /// Toggle the compositor-owned workspace and window overview.
     ToggleOverview,
+    /// Reveal the occupied fullscreen desktop.
+    ActivateFullscreen,
+    /// Cycle presentation destinations, including occupied fullscreen.
+    WorkspaceNext,
+    WorkspacePrevious,
     FocusNext,
     FocusPrevious,
     CycleOutput,

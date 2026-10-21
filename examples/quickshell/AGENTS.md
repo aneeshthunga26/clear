@@ -30,6 +30,9 @@ Its contract is in [shell](../../specs/shell.md#optional-quickshell-appearances)
   Gate reporting on the advertised capability and a unique committed panel
   match; never guess global coordinates or replay reports across reconnects.
   See [advisory targets](../../specs/shell.md#advisory-panel-icon-targets).
+- Fullscreen navigation comes from the optional `fullscreen_desktop` snapshot,
+  never a synthetic entry in the wire workspace array. Keep activation typed and
+  resolve title/task visibility using the effective presentation.
 - Match rounded panel input regions to their painted silhouettes. Preserve lazy
   overlay creation and the transparent 1×1 closed state.
 - Keep glass tint/geometry independent of standard appearance changes. Run the Node

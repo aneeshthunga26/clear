@@ -24,7 +24,7 @@ def load(name, filename):
 
 BASE = load('idle_fullscreen', 'vm-fullscreen-smoke.py')
 LAYER, SHELL = BASE.LAYER, BASE.SHELL
-CASES = ('empty', 'static', 'callbacks', 'animated', 'hud', 'ipc',
+CASES = ('empty', 'static', 'fullscreen', 'callbacks', 'animated', 'hud', 'ipc',
          'subsurface', 'subsurface-sync', 'popup-destroy', 'layer-unmap',
          'disconnect', 'overview', 'animation-after-idle', 'partial-damage')
 CONFIG = '''gaps = 0
@@ -56,7 +56,7 @@ def stats_from_log(text):
 def verify(case, stats, frame, callback_frames):
     # These are generous settlement bounds, far below six seconds of continuous
     # 60 Hz submissions. Exact initial exposure counts depend on the host.
-    upper = 16 if case in ('empty', 'static', 'callbacks', 'hud') else 40
+    upper = 16 if case in ('empty', 'static', 'fullscreen', 'callbacks', 'hud') else 40
     if case == 'animated':
         assert callback_frames >= 20, callback_frames
         assert 20 <= stats['submissions'] < 180, stats
@@ -68,7 +68,7 @@ def verify(case, stats, frame, callback_frames):
         assert stats['submissions'] <= upper, stats
     if case == 'callbacks':
         assert callback_frames >= 30 and stats['callback_only'] >= 30, (callback_frames, stats)
-    if case in ('empty', 'static', 'hud'):
+    if case in ('empty', 'static', 'fullscreen', 'hud'):
         assert stats['loop_turns'] < 100, stats
     if case == 'hud':
         assert 1 <= stats['diagnostic_frames'] <= 3, stats
@@ -130,6 +130,10 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                 time.sleep(1.2)
                 callback_frames = client.command('state')['views']['app']['frame_count']
                 client.command('stop-frames app')
+            elif case == 'fullscreen':
+                client.command('fullscreen app')
+                client.expect('fullscreen settles after idle', sizes={'app': (960, 720)}, fields={'app': {'fullscreen': True}}, focus='app')
+                assert peer.state()['fullscreen_desktop']['active']
             elif case == 'ipc':
                 identity = BASE.window(peer, 'app')['id']
                 peer.command('switch_workspace', output='1', workspace='2')

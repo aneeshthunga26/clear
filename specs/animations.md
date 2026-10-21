@@ -140,15 +140,23 @@ by a pure sample.
 windows, including hidden/minimized windows, live/mapped generations, state flags,
 home outputs/workspaces, desired visible placements/clips, and optional minimize
 anchors. Outputs provide full bounds, physical scale, and optional mapped-panel
-fallback bounds. Groups describe current workspace ownership; the planner MUST
-NOT change that ownership, focus, layout geometry, or any desktop state.
+fallback bounds. Output-local groups describe typed presentation targets
+(`Workspace(id)` or `Fullscreen`), independently of home ownership. The nested
+adapter supplies one animation group per virtual output, including stretched
+outputs. Ordinary stretched members share a validated motion extent so their
+travel remains synchronized; a fullscreen override uses its selected output's
+extent. Live clips exclude outputs presenting another destination. The planner
+MUST NOT change ownership, focus, layout geometry, or any desktop state.
 
 Snapshots MUST have one record per window ID, unique mapped generation keys,
-unique output/group IDs, and unique presented workspace ownership across groups.
-Groups MUST cover connected outputs exactly once. All supplied rectangles MUST
+unique output/group IDs, and exclusive output membership across animation groups.
+The same ordinary workspace may appear on several output-local groups. Groups
+MUST cover connected outputs exactly once. All supplied rectangles MUST
 be nonempty and normalized without integer coordinate overflow. Mapped windows
 MUST be live; supplied visible placements MUST belong to mapped, live,
-non-minimized windows on their home output's presented workspace. Hidden records
+non-minimized windows on their effective presentation output. Fullscreen and
+related transients belong to the `Fullscreen` target while retaining home
+workspace IDs; ordinary windows belong to their workspace target. Hidden records
 may retain other workspace ownership. Invalid snapshots/directions MUST fail
 before changing planner state.
 
@@ -274,7 +282,7 @@ Workspace translations MUST move windows and per-output wallpaper crops by the
 same group offsets while panels/layers remain stationary. A stretched group's
 source wallpaper crops remain per-output images and may cross member output clips;
 independent groups MUST remain clipped separately. Horizontal direction follows
-workspace IDs unless the planner receives an explicit cause. Outgoing source
+ordinary workspace IDs, with Fullscreen ordered last, unless the planner receives an explicit cause. Outgoing source
 records and group offsets preserve the last submitted pose on reversal.
 
 Scene composition MUST record only successfully included sources and workspace

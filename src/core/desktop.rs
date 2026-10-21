@@ -11,8 +11,10 @@ pub struct Desktop {
     pub(super) workspaces: BTreeMap<WorkspaceId, Workspace>,
     groups: Vec<OutputGroup>,
     detached_workspaces: BTreeMap<OutputId, WorkspaceId>,
-    focused_output: Option<OutputId>,
-    focused_window: Option<WindowId>,
+    pub(super) focused_output: Option<OutputId>,
+    pub(super) focused_window: Option<WindowId>,
+    pub(super) fullscreen: Option<FullscreenSlot>,
+    pub(super) fullscreen_revision: u64,
     pending_workspace: WorkspaceId,
     pub(super) gaps: i32,
 }
@@ -34,6 +36,8 @@ impl Desktop {
             detached_workspaces: BTreeMap::new(),
             focused_output: None,
             focused_window: None,
+            fullscreen: None,
+            fullscreen_revision: 0,
             pending_workspace: WorkspaceId(1),
             gaps: 8,
         };
@@ -78,7 +82,7 @@ impl Desktop {
         self.workspaces.get(&id)
     }
 
-    /// Returns the workspace presented on an output.
+    /// Returns the underlying normal workspace, including beneath active fullscreen.
     pub fn workspace_for_output(&self, output: OutputId) -> Option<WorkspaceId> {
         self.group_index(output)
             .map(|index| self.groups[index].workspace)
@@ -222,6 +226,7 @@ impl Desktop {
                 workspace,
                 output: self.focused_output,
                 role: WindowRole::default(),
+                transient_for: None,
                 committed_size: None,
                 floating: false,
                 snapped: None,
@@ -242,6 +247,14 @@ impl Desktop {
 
     /// Removes a window and any remembered focus references to it.
     pub fn remove_window(&mut self, id: WindowId) {
+        self.leave_fullscreen(id);
+        for child in self
+            .windows
+            .values_mut()
+            .filter(|w| w.transient_for == Some(id))
+        {
+            child.transient_for = None;
+        }
         if let Some(window) = self.windows.remove(&id) {
             let workspace = self.workspaces.get_mut(&window.workspace).unwrap();
             workspace.windows.retain(|window| *window != id);
@@ -272,6 +285,9 @@ impl Desktop {
     /// Changes placement role without changing ownership, order, or saved floating state.
     /// Unknown windows are ignored.
     pub fn set_window_role(&mut self, id: WindowId, role: WindowRole) {
+        if role == WindowRole::Launcher {
+            self.leave_fullscreen(id);
+        }
         if let Some(window) = self.windows.get_mut(&id) {
             if window.role != role {
                 window.role = role;
@@ -342,7 +358,7 @@ impl Desktop {
             Command::MoveWindowToWorkspace(window, workspace) => {
                 self.windows
                     .get(window)
-                    .is_some_and(|w| w.workspace != *workspace)
+                    .is_some_and(|w| w.workspace != *workspace || w.fullscreen)
                     && self.workspaces.contains_key(workspace)
             }
             _ => true,
@@ -383,6 +399,30 @@ impl Desktop {
                 self.focused_output = next;
             }
             Command::SwitchWorkspace(id) => self.switch_workspace(id),
+            Command::ActivateFullscreen => {
+                self.activate_fullscreen();
+            }
+            Command::CycleDesktop(backwards) => {
+                if let Some(output) = self.focused_output {
+                    let targets = self.presentation_targets(output);
+                    let current = self.presentation_for_output(output);
+                    let index = targets
+                        .iter()
+                        .position(|t| Some(*t) == current)
+                        .unwrap_or(0);
+                    let next = if backwards {
+                        (index + targets.len() - 1) % targets.len()
+                    } else {
+                        (index + 1) % targets.len()
+                    };
+                    match targets[next] {
+                        PresentationTarget::Workspace(id) => self.switch_workspace(id),
+                        PresentationTarget::Fullscreen => {
+                            self.activate_fullscreen();
+                        }
+                    }
+                }
+            }
             Command::MoveToWorkspace(id) => {
                 if self.workspaces.contains_key(&id)
                     && let Some(window) = self.focused_window
@@ -459,16 +499,23 @@ impl Desktop {
                 }
             }
             Command::ToggleFullscreen => {
-                if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
-                    if window.role == WindowRole::Normal {
-                        window.fullscreen = !window.fullscreen;
+                if let Some(id) = self.focused_window {
+                    if self.window(id).is_some_and(|w| w.fullscreen) {
+                        self.leave_fullscreen(id);
+                    } else {
+                        self.request_fullscreen(id, None, true);
                     }
                 }
             }
             Command::MinimizeFocused => {
-                if let Some(window) = self.focused_window.and_then(|id| self.windows.get_mut(&id)) {
-                    if window.role == WindowRole::Normal {
-                        window.minimized = true;
+                if let Some(id) = self.focused_window {
+                    self.leave_fullscreen(id);
+                    if let Some(w) = self
+                        .windows
+                        .get_mut(&id)
+                        .filter(|w| w.role == WindowRole::Normal)
+                    {
+                        w.minimized = true;
                     }
                 }
             }
@@ -482,14 +529,17 @@ impl Desktop {
             }
             Command::SetFullscreen(id, fullscreen) => {
                 reveal = false;
-                if let Some(window) = self.windows.get_mut(&id) {
-                    if window.role == WindowRole::Normal {
-                        window.fullscreen = fullscreen;
-                    }
+                if fullscreen {
+                    self.request_fullscreen(id, None, self.focused_window == Some(id));
+                } else {
+                    self.leave_fullscreen(id);
                 }
             }
             Command::SetMinimized(id, minimized) => {
                 reveal = false;
+                if minimized {
+                    self.leave_fullscreen(id);
+                }
                 if let Some(window) = self.windows.get_mut(&id) {
                     if window.role == WindowRole::Normal {
                         window.minimized = minimized;
@@ -541,6 +591,47 @@ impl Desktop {
     ) -> Vec<Placement> {
         let mut placements = Vec::new();
         for (&output, metadata) in &self.outputs {
+            if self.presentation_for_output(output) == Some(PresentationTarget::Fullscreen) {
+                let slot = self.fullscreen.as_ref().unwrap();
+                if !metadata.bounds.is_empty() {
+                    placements.push(Placement {
+                        window: slot.window,
+                        rect: metadata.bounds,
+                        clip: Some(metadata.bounds),
+                        focused: self.focused_window == Some(slot.window),
+                        tiled: false,
+                    });
+                    placements.extend(
+                        self.windows
+                            .values()
+                            .filter(|w| !w.minimized && self.is_fullscreen_transient(w.id))
+                            .map(|w| {
+                                let home = w
+                                    .output
+                                    .and_then(|o| self.output(o))
+                                    .map_or(metadata.bounds, |o| o.bounds);
+                                let rect = Rect::new(
+                                    w.floating_rect
+                                        .x
+                                        .saturating_add(metadata.bounds.x.saturating_sub(home.x)),
+                                    w.floating_rect
+                                        .y
+                                        .saturating_add(metadata.bounds.y.saturating_sub(home.y)),
+                                    w.floating_rect.width,
+                                    w.floating_rect.height,
+                                );
+                                Placement {
+                                    window: w.id,
+                                    rect,
+                                    clip: Some(metadata.bounds),
+                                    focused: self.focused_window == Some(w.id),
+                                    tiled: false,
+                                }
+                            }),
+                    );
+                }
+                continue;
+            }
             let workspace = self.workspace_for_output(output).unwrap();
             let mode = self.effective_mode(workspace, output).unwrap();
             let context = self.layout_context(workspace, output);
@@ -634,6 +725,8 @@ impl Desktop {
         placements.sort_by_key(|placement| {
             let window = &self.windows[&placement.window];
             if window.role == WindowRole::Launcher {
+                (6, placement.focused)
+            } else if self.is_fullscreen_transient(window.id) {
                 (5, placement.focused)
             } else if window.fullscreen {
                 (4, placement.focused)
@@ -706,7 +799,12 @@ impl Desktop {
             .windows
             .iter()
             .filter_map(|id| self.windows.get(id))
-            .filter(move |window| window.output == Some(output) && !window.minimized)
+            .filter(move |window| {
+                window.output == Some(output)
+                    && !window.minimized
+                    && !window.fullscreen
+                    && !self.is_fullscreen_transient(window.id)
+            })
     }
 
     pub(super) fn layout_context(&self, workspace: WorkspaceId, output: OutputId) -> LayoutContext {
@@ -737,9 +835,12 @@ impl Desktop {
         }
     }
 
-    fn switch_workspace(&mut self, workspace: WorkspaceId) {
+    pub(super) fn switch_workspace(&mut self, workspace: WorkspaceId) {
         if !self.workspaces.contains_key(&workspace) {
             return;
+        }
+        if let Some(output) = self.focused_output {
+            self.hide_fullscreen_on(output);
         }
         let Some(active) = self
             .focused_output
@@ -764,6 +865,7 @@ impl Desktop {
     }
 
     fn transfer(&mut self, id: WindowId, workspace: WorkspaceId, output: Option<OutputId>) {
+        self.leave_fullscreen(id);
         let old = self.windows[&id].workspace;
         if old != workspace {
             let source = self.workspaces.get_mut(&old).unwrap();
@@ -789,6 +891,18 @@ impl Desktop {
     }
 
     fn focus(&mut self, id: WindowId) {
+        if self.is_fullscreen_transient(id) {
+            self.activate_fullscreen();
+            if let Some(w) = self.windows.get_mut(&id) {
+                w.minimized = false;
+            }
+            self.focused_window = Some(id);
+            return;
+        }
+        if self.fullscreen.as_ref().is_some_and(|s| s.window == id) {
+            self.activate_fullscreen();
+            return;
+        }
         let Some(workspace) = self.windows.get(&id).map(|window| window.workspace) else {
             return;
         };
@@ -800,6 +914,9 @@ impl Desktop {
         }
         self.windows.get_mut(&id).unwrap().minimized = false;
         self.repair_homes();
+        if let Some(output) = self.windows[&id].output {
+            self.hide_fullscreen_on(output);
+        }
         self.focused_output = self.windows[&id].output;
         self.focused_window = Some(id);
     }
@@ -812,7 +929,13 @@ impl Desktop {
             .windows
             .iter()
             .copied()
-            .filter(|id| !self.windows[id].minimized)
+            .filter(|id| !self.windows[id].minimized && !self.windows[id].fullscreen)
+            .chain(
+                self.fullscreen
+                    .as_ref()
+                    .filter(|s| s.active && s.output == self.focused_output)
+                    .map(|s| s.window),
+            )
             .collect();
         if windows.is_empty() {
             return;
@@ -905,6 +1028,7 @@ impl Desktop {
             self.focused_output = self.outputs.keys().next().copied();
         }
         self.repair_homes();
+        self.repair_fullscreen();
         self.refresh_resize_environments();
         let Some(output) = self.focused_output else {
             self.focused_window = None;
@@ -914,13 +1038,19 @@ impl Desktop {
         self.pending_workspace = workspace;
         let belongs = |id: WindowId| {
             self.windows.get(&id).is_some_and(|window| {
-                window.workspace == workspace && window.output == Some(output) && !window.minimized
+                window.workspace == workspace
+                    && window.output == Some(output)
+                    && !window.minimized
+                    && !window.fullscreen
             })
         };
         let remembered = self.workspaces[&workspace]
             .regions
             .get(&output)
             .and_then(|region| region.focused);
+        let transient_focus = self.focused_window.filter(|id| {
+            self.is_fullscreen_transient(*id) && self.window(*id).is_some_and(|w| !w.minimized)
+        });
         self.focused_window = self
             .focused_window
             .filter(|id| belongs(*id))
@@ -930,13 +1060,22 @@ impl Desktop {
                     .next()
                     .map(|window| window.id)
             });
-        self.workspaces
-            .get_mut(&workspace)
-            .unwrap()
-            .regions
-            .entry(output)
-            .or_default()
-            .focused = self.focused_window;
+        if let Some(slot) = self
+            .fullscreen
+            .as_ref()
+            .filter(|s| s.active && s.output == Some(output))
+        {
+            self.focused_window = transient_focus.or(Some(slot.window));
+        }
+        if self.presentation_for_output(output) != Some(PresentationTarget::Fullscreen) {
+            self.workspaces
+                .get_mut(&workspace)
+                .unwrap()
+                .regions
+                .entry(output)
+                .or_default()
+                .focused = self.focused_window;
+        }
         let scrolling: Vec<_> = self
             .outputs
             .keys()

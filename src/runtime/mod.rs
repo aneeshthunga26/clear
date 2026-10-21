@@ -238,6 +238,9 @@ impl Runtime {
                     continue;
                 }
                 Action::FocusNext => Command::FocusNext,
+                Action::ActivateFullscreen => Command::ActivateFullscreen,
+                Action::WorkspaceNext => Command::CycleDesktop(false),
+                Action::WorkspacePrevious => Command::CycleDesktop(true),
                 Action::FocusPrevious => Command::FocusPrevious,
                 Action::CycleOutput => Command::CycleOutput,
                 Action::SwitchWorkspace { workspace } => {
@@ -360,10 +363,29 @@ impl Runtime {
             .iter()
             .copied()
             .filter(|id| {
-                desktop
-                    .window(*id)
-                    .is_some_and(|window| window.role == WindowRole::Normal)
+                desktop.window(*id).is_some_and(|window| {
+                    window.role == WindowRole::Normal
+                        && !window.fullscreen
+                        && !desktop.is_fullscreen_transient(window.id)
+                })
             })
+            .chain(
+                desktop
+                    .fullscreen_slot()
+                    .filter(|s| s.active && s.output == Some(output))
+                    .map(|s| s.window),
+            )
+            .chain(
+                desktop
+                    .windows()
+                    .filter(|w| {
+                        desktop.is_fullscreen_transient(w.id)
+                            && desktop
+                                .fullscreen_slot()
+                                .is_some_and(|s| s.active && s.output == Some(output))
+                    })
+                    .map(|w| w.id),
+            )
             .collect();
         if windows.is_empty() {
             return;

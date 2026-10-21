@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     config::AnimationEffect,
-    core::{OutputId, Rect, WindowId, WorkspaceId},
+    core::{OutputId, Rect, WindowId},
     runtime::{
         OverviewSession, OverviewTarget,
         animation::{AnimationPose, AnimationRect},
@@ -38,7 +38,7 @@ pub(super) struct OverviewAnimation {
 
 /// Four submitted miniature origins and up to twelve reconciled desktop endpoints.
 struct WorkspaceZoom {
-    workspace: WorkspaceId,
+    target: OverviewTarget,
     origin: Rect,
     miniatures: BTreeMap<WindowId, Rect>,
     desktop: BTreeMap<WindowId, Rect>,
@@ -47,7 +47,7 @@ struct WorkspaceZoom {
 }
 
 pub(super) struct WorkspaceZoomScene {
-    pub workspace: WorkspaceId,
+    pub target: OverviewTarget,
     pub canvas: Rect,
     pub opacity: f32,
     pub windows: Vec<(WindowId, Rect, f32)>,
@@ -100,7 +100,7 @@ impl WorkspaceZoom {
                 })
                 .collect();
         WorkspaceZoomScene {
-            workspace: self.workspace,
+            target: self.target,
             canvas: interpolate(self.origin, output, amount),
             opacity: self.opacity + (1.0 - self.opacity) * amount as f32,
             windows,
@@ -183,9 +183,10 @@ impl Compositor {
         let zoom = (config.enabled && !config.reduced_motion && config.overview.enabled)
             .then(|| {
                 let session = self.runtime.overview.as_ref()?;
-                let OverviewTarget::Workspace(workspace) = session.selected else {
+                let target = session.selected;
+                if matches!(target, OverviewTarget::Window(_)) {
                     return None;
-                };
+                }
                 let layout = self.overview_layout()?;
                 let origin = layout
                     .items
@@ -193,10 +194,10 @@ impl Compositor {
                     .find(|item| item.target == session.selected)?
                     .preview?;
                 Some(WorkspaceZoom {
-                    workspace,
+                    target,
                     origin,
                     miniatures: self
-                        .overview_miniatures(workspace, origin, layout.output)
+                        .overview_target_miniatures(target, origin, layout.output)
                         .into_iter()
                         .collect(),
                     desktop: BTreeMap::new(),
@@ -227,7 +228,7 @@ impl Compositor {
         fn cards(layout: &OverviewLayout) -> impl Iterator<Item = (WindowId, Rect)> + '_ {
             layout.items.iter().filter_map(|item| match item.target {
                 OverviewTarget::Window(id) => item.preview.map(|rect| (id, rect)),
-                OverviewTarget::Workspace(_) => None,
+                OverviewTarget::Workspace(_) | OverviewTarget::Fullscreen => None,
             })
         }
         let animation = &self.overview_animation;
@@ -394,10 +395,7 @@ impl Compositor {
                     .session
                     .clone()
                     .expect("retained overview");
-                session.select(
-                    &self.runtime.desktop,
-                    OverviewTarget::Workspace(zoom.workspace),
-                );
+                session.select(&self.runtime.desktop, zoom.target);
                 if let Some(layout) = self.overview_target_layout(&session) {
                     let desktop = self.overview_desktop_frames(&layout, false);
                     self.overview_animation
@@ -661,6 +659,7 @@ fn transition_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::WorkspaceId;
     use crate::{config::AnimationsConfig, runtime::animation::AnimationEngine};
     use std::time::Duration;
 
@@ -719,7 +718,7 @@ mod tests {
         let full = Rect::new(350, 50, 300, 200);
         let miniature = miniature_frame(full, output, origin).unwrap();
         let zoom = WorkspaceZoom {
-            workspace: WorkspaceId(3),
+            target: OverviewTarget::Workspace(WorkspaceId(3)),
             origin,
             miniatures: BTreeMap::from([
                 (WindowId(1), miniature),
@@ -763,7 +762,7 @@ mod tests {
     #[test]
     fn workspace_zoom_reverses_from_submitted_progress_without_rolling_back_policy() {
         let mut zoom = WorkspaceZoom {
-            workspace: WorkspaceId(3),
+            target: OverviewTarget::Workspace(WorkspaceId(3)),
             origin: Rect::new(400, 10, 80, 60),
             miniatures: BTreeMap::new(),
             desktop: BTreeMap::new(),
@@ -779,7 +778,7 @@ mod tests {
         zoom.from_amount = reopened;
         assert_eq!(zoom.amount(false, 0.8, 0.8), reopened);
         assert_eq!(zoom.amount(false, 0.0, 0.8), 1.0);
-        assert_eq!(zoom.workspace, WorkspaceId(3));
+        assert_eq!(zoom.target, OverviewTarget::Workspace(WorkspaceId(3)));
     }
     #[test]
     fn entry_midpoint_and_exit_geometry_share_the_same_motion() {

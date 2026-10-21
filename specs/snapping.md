@@ -10,7 +10,8 @@ Empty targets are rejected. Halves require width at least two; quadrants also
 require height at least two. No target may create a zero-sized placement.
 
 `Desktop::snap_window` is a nonrevealing, nonfocusing operation on a normal,
-nonminimized, nonfullscreen window with a valid home output and target geometry.
+nonminimized, nonfullscreen window outside a fullscreen transient presentation,
+with a valid home output and target geometry.
 Invalid requests MUST leave policy unchanged. Successful snapping makes the
 window a floating exception. Top-edge maximize uses the existing maximized flag;
 halves/quadrants use `Window::snapped` without setting that flag. Snapped windows
@@ -28,7 +29,7 @@ MUST NOT implicitly clear the existing maximized/fullscreen flags.
 ## Core move sessions
 
 `MoveSession` is an opaque baseline for one visible normal-window move. Fullscreen
-and minimized windows and launchers reject moves. The caller supplies the actual
+and minimized windows, launchers and attached fullscreen transients reject moves. The caller supplies the actual
 visible policy frame, including a custom layout's geometry. Beginning a move
 focuses the window and promotes it to floating. For a snapped/maximized source,
 restore its saved free size with the normalized pointer anchor over that frame;

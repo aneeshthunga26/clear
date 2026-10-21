@@ -156,6 +156,10 @@ pub enum Command {
     CycleOutput,
     /// Present a workspace, swapping whole group presentations if already visible.
     SwitchWorkspace(WorkspaceId),
+    /// Activate the occupied fullscreen desktop; empty slots are harmless no-ops.
+    ActivateFullscreen,
+    /// Navigate desktops on the focused output; true goes backwards.
+    CycleDesktop(bool),
     /// Move the focused window without following it to the destination workspace.
     MoveToWorkspace(WorkspaceId),
     /// Move a specific window without revealing it or following its workspace.
@@ -178,13 +182,13 @@ pub enum Command {
     ToggleFloating,
     /// Toggle maximization of the focused normal window within its usable output.
     ToggleMaximized,
-    /// Toggle fullscreen on the focused normal window within its full home output.
+    /// Toggle the single fullscreen presentation for the focused normal window.
     ToggleFullscreen,
     /// Hide the focused normal window without unmapping or discarding its state.
     MinimizeFocused,
     /// Set maximization without changing focus, floating state, or saved geometry.
     SetMaximized(WindowId, bool),
-    /// Set fullscreen without changing focus or the underlying maximized restore state.
+    /// Set/clear slot ownership without revealing background targets or changing saved geometry.
     SetFullscreen(WindowId, bool),
     /// Set minimization; restoring this way does not reveal its workspace or focus it.
     SetMinimized(WindowId, bool),
@@ -224,12 +228,12 @@ pub struct Output {
     pub area: Rect,
 }
 
-/// A set of outputs presenting exactly one workspace.
+/// Outputs sharing one underlying normal workspace, beneath any fullscreen override.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputGroup {
     /// Connected members, sorted by ID.
     pub outputs: Vec<OutputId>,
-    /// Exclusively presented workspace.
+    /// Underlying normal workspace; fullscreen may override one output's presentation.
     pub workspace: WorkspaceId,
 }
 
@@ -248,6 +252,8 @@ pub struct Window {
     pub output: Option<OutputId>,
     /// Placement role, retained across mode changes.
     pub role: WindowRole,
+    /// Optional XDG-style transient parent identity; never changes workspace ownership.
+    pub transient_for: Option<WindowId>,
     /// Last valid client-committed size, separate from requested floating geometry.
     pub committed_size: Option<(i32, i32)>,
     /// Per-window exception to nonfloating layouts.
@@ -256,7 +262,7 @@ pub struct Window {
     pub snapped: Option<super::SnapTarget>,
     /// Fill the home output's usable area, independently of saved layout state.
     pub maximized: bool,
-    /// Fill the full home output, preserving the underlying maximized restore state.
+    /// Derived membership of the single fullscreen slot, preserving home/maximize state.
     pub fullscreen: bool,
     /// Hidden from placements and ordinary focus cycling; explicit focus restores it.
     pub minimized: bool,

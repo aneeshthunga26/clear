@@ -805,6 +805,12 @@ static void command(char *line) {
         // Position is parent-commit state even for a desynchronized child.
         // A synchronized child becomes effective at this parent commit.
         wl_surface_commit(p->surface);
+    } else if (!strcmp(op, "parent") && sscanf(line, "%*s %31s %31s", name, parent) == 2) {
+        struct view *v = find(name);
+        struct view *p = find(parent);
+        if (!v->top || !p->top)
+            fail("parent requires two XDG toplevels");
+        xdg_toplevel_set_parent(v->top, p->top);
     } else if ((!strcmp(op, "fullscreen") || !strcmp(op, "unfullscreen")) &&
                sscanf(line, "%*s %31s", name) == 1) {
         struct view *v = find(name);

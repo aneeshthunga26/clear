@@ -48,6 +48,7 @@ pub(super) struct ManagedWindow {
     pub initial_maximized: bool,
     pub initial_fullscreen: bool,
     pub initial_fullscreen_output: Option<OutputId>,
+    pub initial_fullscreen_revision: u64,
     // Fullscreen decoration visibility changes with the root buffer's committed state.
     pub committed_fullscreen: bool,
     // Exact frame hints survive hiding and decoration changes, including tiny frames.
@@ -90,6 +91,10 @@ pub(super) struct Compositor {
     pub next_window: u64,
     pub outputs: Vec<OutputRegion>,
     pub placements: Vec<Placement>,
+    pub fullscreen_backing: Option<(
+        Rect,
+        smithay::backend::renderer::element::solid::SolidColorBuffer,
+    )>,
     pub layers: Vec<super::layers::LayerEntry>,
     pub layer_focus: Option<WlSurface>,
     pub shell_server: Option<crate::shell::server::Server>,
@@ -194,6 +199,7 @@ impl Compositor {
             next_window: 1,
             outputs: Vec::new(),
             placements: Vec::new(),
+            fullscreen_backing: None,
             layers: Vec::new(),
             layer_focus: None,
             shell_server: None,

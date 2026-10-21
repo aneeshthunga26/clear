@@ -48,6 +48,7 @@ Each line is a separate request. The complete allowlist is:
 | `snapshot` | None | Complete current state without subscription |
 | `subscribe` | None | Complete state and subsequent changes; idempotent |
 | `toggle_overview` | None | Request compositor-owned [overview](overview.md) entry/exit, deferred while input is busy |
+| `activate_fullscreen` | None | Activate the occupied fullscreen desktop on its target output; empty/headless slots fail |
 | `focus_output` | `output` | Focus a connected output |
 | `switch_workspace` | `output`, `workspace` | Focus output, then switch its group |
 | `focus_window` | `window` | Explicit core focus, including restore/reveal |
@@ -55,7 +56,7 @@ Each line is a separate request. The complete allowlist is:
 | `move_window_to_workspace` | `window`, `workspace` | Move an explicit normal window through core transfer policy without switching workspaces or focusing it |
 | `window_previews` | `windows` | Request a bounded batch of committed window images; requires a mapped panel owned by the requesting process |
 | `set_maximized` | `window`, `maximized` boolean | Set normal-window maximize state without explicitly changing focus |
-| `set_fullscreen` | `window`, `fullscreen` boolean | Set normal-window fullscreen state without revealing, restoring or explicitly focusing it |
+| `set_fullscreen` | `window`, `fullscreen` boolean | Replace/clear the single fullscreen occupant; a focused target activates, background targets remain dormant; minimized enters fail |
 | `set_minimized` | `window`, `minimized` boolean | Hide/restore a normal window; repair focus when needed |
 | `set_mode` | `output`, `mode` | Set current workspace's override on that output without stealing focus |
 | `clear_mode` | `output` | Clear that workspace/output override |
@@ -75,7 +76,7 @@ targets reject maximize/minimize/fullscreen without mutation. There are no spawn
 reload, script-action, or raw core-command requests. Close and workspace-transfer
 requests validate exact normal-window IDs; launchers and unknown/noncanonical
 targets fail without mutation. Transfers validate the destination before mutation,
-and sending a window to its current workspace succeeds as a no-op.
+and sending an ordinary window to its current workspace succeeds as a no-op; for the fullscreen occupant it exits fullscreen without changing ownership.
 
 ## Responses and ordering
 
@@ -110,11 +111,12 @@ All identity fields below are decimal strings, including identities inside array
 | `outputs` | `{id,name,area,workspace,effective_mode,mode_override}`; `area` is `{x,y,width,height}` in usable logical coordinates after reservations; override may be null |
 | `workspaces` | `{id,name,mode,windows}`; window IDs in stable workspace order, including hidden workspaces |
 | `groups` | `{outputs,workspace}`; outputs jointly presenting a workspace |
-| `windows` | `{id,title,app_id,workspace,output,role,floating,maximized,minimized,fullscreen,focused}` |
+| `windows` | `{id,title,app_id,workspace,output,role,floating,maximized,minimized,fullscreen,fullscreen_transient,focused}` |
 | `focused_output`, `focused_window` | ID or null |
 | `overview_open` | Boolean; active compositor-owned overview, excluding a deferred request |
+| `fullscreen_desktop` | null or `{window,mode:"desktop",output,active}`; output can be null when headless; separate from numbered workspaces |
 | `switcher` | null or `{output,windows,selected}` during the compositor's Alt-held gesture |
-| `capabilities` | String array; includes `animation_targets_v1` and `window_previews_v1` for the implemented adapter protocols |
+| `capabilities` | String array; includes `animation_targets_v1`, `window_previews_v1` and `fullscreen_desktop_v1` for the implemented adapter protocols |
 
 Window `output` is its saved home or null, not a visibility test. `role` is
 `normal` or `launcher`. `floating` is the saved exception flag, not the effective
@@ -123,8 +125,12 @@ fields and setters are additive v1 extensions; state transitions follow
 [desktop policy](desktop.md#maximize-and-minimize).
 
 Snapshots report desktop focus, not keyboard ownership held by a layer. Group
-presentation determines workspace visibility; clients MUST NOT infer it from a
-window's home alone. Switcher candidates include minimized normal windows; focus
+presentation describes underlying normal workspaces; `fullscreen_desktop`
+overrides only its target output while active. `fullscreen_transient` identifies
+related dialog windows sharing that presentation without another fullscreen flag.
+Clients MUST NOT infer visibility from home alone. The optional Quickshell example
+appends an `F` entry only on the slot output, activates it with the typed request,
+and keeps task activation routed through normal window focus. Switcher candidates include minimized normal windows; focus
 changes only upon acceptance, as specified in [input](input.md#alt-tab).
 
 ## Advisory panel icon targets

@@ -29,8 +29,9 @@ only directory allowed to depend on Smithay and Wayland types.
   absolute capped animation sampling, explicit callback-only deadlines, and
   identified host metadata or nominal timing. Keep animation sampling separate
   from client callback pacing.
-- `protocols.rs`: XDG surface lifecycle, metadata, popups, seat/selection handling,
-  and client move/resize requests.
+- `protocols.rs`: XDG lifecycle, metadata, popups, seat/selection and client gestures.
+  Revoke stale pre-map fullscreen epochs; map output preferences to presentation
+  targets without moving home ownership. Synchronize validated transient parents.
 - `decorations.rs`: XDG/KDE negotiation and committed-versus-pending SSD mode.
 - `titlebar.rs`: configurable shared titlebar geometry/hits, Unicode text and
   prepared-icon composition, and renderer-owned bounded per-visible-strip textures.
@@ -150,6 +151,8 @@ only directory allowed to depend on Smithay and Wayland types.
   Suppress SSD, borders and rounding only at a buffered fullscreen root commit;
   an ACK alone cannot switch displayed decoration. Preserve negotiated mode.
   Keep fullscreen-output Top layer ordering identical for rendering and hits.
+  Exclude unrelated applications/launchers on the active fullscreen output; share
+  its presentation with related dialogs and keep one stable black backing element.
 - Requested placement, client-committed geometry, and saved floating geometry are
   distinct. Account for nonzero XDG geometry offsets in rendering and hit tests.
 - Default negotiated XDG/KDE decorations to SSD, honor explicit CSD (and KDE none),

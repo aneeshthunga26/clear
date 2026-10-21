@@ -64,8 +64,10 @@ not add scrolling content.
 displacement from that baseline, not incremental deltas: repeating the same
 displacement MUST produce the same geometry. An axis is selected only when exactly
 one of its two edges is requested. A request with no selected axis, an unknown or
-hidden window, a launcher, a maximized/minimized window, or no supported tile
-boundary cannot start a session.
+hidden window, a launcher, a maximized/minimized/fullscreen window, an attached
+[fullscreen transient](desktop.md#fullscreen), or no supported tile boundary
+cannot start a session. Retained snap overrides use the
+[explicit detachment path](snapping.md#drag-input-and-presentation) before resize.
 
 | Window/mode | Supported resize |
 | --- | --- |
@@ -80,7 +82,7 @@ boundary cannot start a session.
 An unsupported axis of a corner resize is ignored if the other axis is supported.
 In pair/divider layouts, outer edges do not create a resize boundary. Pair resizing
 clamps both neighbors to feasible minimum sizes. Floating exceptions remain resizable in
-every mode and may grow offscreen.
+every mode subject to these state/refusal rules, and may grow offscreen.
 
 Tile resizing MUST change persistent proportions, never detach a tile, alter its
 floating flag, or overwrite saved floating geometry. Sizing is scoped to

@@ -26,7 +26,7 @@ SHELL = load("overview_shell", "vm-shell-smoke.py")
 WALLPAPER = load("overview_wallpaper", "vm-wallpaper-smoke.py")
 BLUR = load("overview_blur", "vm-blur-smoke.py")
 OPTICAL_CASES = ("translucent-gaussian", "translucent-kawase", "translucent-glass", "translucent-glass-blur")
-CASES = ("cards", "minimized", "cancelled", "exclusive-deferred", "alpha-subsurface", "ssd", "odd-outputs", "many-windows", "hidden-live", "rounded-blur", "wallpaper", "scaled-content", "live-cards", "live-minimized", "live-miniatures", "live-offscreen", "live-subsurface", "sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") + OPTICAL_CASES
+CASES = ("fullscreen-dialog-minimized", "fullscreen-desktop", "cards", "minimized", "cancelled", "exclusive-deferred", "alpha-subsurface", "ssd", "odd-outputs", "many-windows", "hidden-live", "rounded-blur", "wallpaper", "scaled-content", "live-cards", "live-minimized", "live-miniatures", "live-offscreen", "live-subsurface", "sharp-preview", "sharp-optics", "rounded-previews", "rounded-asymmetric") + OPTICAL_CASES
 
 
 def check_frame(path, case):
@@ -37,6 +37,15 @@ def check_frame(path, case):
         offset = (y * width + x) * 3
         return tuple(pixels[offset:offset + 3])
 
+    if case in ("fullscreen-desktop", "fullscreen-dialog-minimized"):
+        green = sum(pixel(x, y) == (48, 176, 80) for y in range(100, height) for x in range(width))
+        blue = sum(pixel(x, y) == (48, 96, 224) for y in range(100, height) for x in range(width))
+        miniature = sum(pixel(x, y) == (48, 176, 80) for y in range(0, 80) for x in range(width))
+        assert green > 10000 and blue == 0 and miniature > 200, (green, blue, miniature)
+        if case == "fullscreen-dialog-minimized":
+            yellow = sum(pixel(x, y) == (224, 192, 48) for y in range(100, height) for x in range(width))
+            assert yellow > 1000, yellow
+        return
     if case in OPTICAL_CASES:
         return check_optical_frame(pixel, case)
     if case in ("rounded-previews", "rounded-asymmetric"):
@@ -308,6 +317,20 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                 client.expect("exclusive configured", configured=("exclusive",))
                 client.command("map exclusive")
                 client.expect("exclusive owns keyboard", focus="exclusive")
+            if case in ("fullscreen-desktop", "fullscreen-dialog-minimized"):
+                identity = next(w["id"] for w in peer.state()["windows"] if w["app_id"] == "app")
+                peer.command("focus_window", window=identity)
+                client.command("fullscreen app")
+                client.expect("fullscreen occupies the dedicated desktop", fields={"app": {"fullscreen": True}}, focus="app")
+                assert peer.state()["fullscreen_desktop"]["window"] == identity
+                if case == "fullscreen-dialog-minimized":
+                    client.command("app-xdg-deferred dialog 250 180 1 0 e0c030 client")
+                    client.command("parent dialog app")
+                    client.command("start dialog")
+                    client.expect("fullscreen dialog takes focus", focus="dialog")
+                    client.command("minimize dialog")
+                    client.expect("minimized dialog returns focus to occupant", focus="app")
+                    assert next(w for w in peer.state()["windows"] if w["app_id"] == "dialog")["minimized"]
             before = peer.state()
             before_views = client.command("state")["views"]
             def memory_kib():

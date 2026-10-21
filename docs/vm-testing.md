@@ -70,16 +70,41 @@ Contract: [fullscreen policy](../specs/desktop.md#fullscreen),
 python3 -B scripts/vm-fullscreen-smoke.py --binary target/debug/clear
 ```
 
-Six bounded cases use real XDG/layer SHM clients and shell IPC: `xdg-entry`,
-`state-interleavings`, `initial-fullscreen`, `output-target`, `ssd-held`, and
-`launcher-rejected`. They check full bounds despite panel reservations, top-panel
+Ten bounded cases use real XDG/layer SHM clients and shell IPC: `xdg-entry`,
+`state-interleavings`, `initial-fullscreen`, `output-target`, `output-target-stretched`, `ssd-held`,
+`launcher-rejected`, `desktop-slot`, `premap-supersession`, and `transient-dialog`. They check full bounds despite panel reservations, top-panel
 occlusion with overlay priority, maximize/minimize restoration, first configure
 state, explicit output placement, decoration retention after an ACK with held
 commit, and launcher refusal. Each compositor runs for 16 seconds by default;
-allow two minutes overall. Repeat `--case NAME` to select cases and use
+allow about three minutes overall. Repeat `--case NAME` to select cases and use
 `--seconds 10..30` for the bounded runtime. Dependencies match the layer fixture.
 No physical clicks/keys, delayed ACKs, visual animation or native DRM are tested.
 Artifacts stay under `target/vm-fullscreen-smoke/` by default.
+
+Dedicated fullscreen desktop validation (private **local virtual KWin**, not a VM):
+
+- The original six and new slot/lifecycle fullscreen cases passed across `target/fullscreen-desktop-gpu/`,
+  `target/fullscreen-desktop-gpu-new/`, and `target/fullscreen-desktop-gpu-lifecycle/`.
+  Cases cover atomic replacement with a held outgoing buffer, dormant/active
+  suspension, invisible launcher refusal, opaque backing under transparent content,
+  and stale pre-map requests. Final focused release captures are under
+  `target/fullscreen-desktop-lifecycle-final/`. Cross-output return, animated
+  stretched-output override and dialog suspension passed in
+  `target/fullscreen-desktop-final-review/`.
+- Overview `fullscreen-desktop` and ordinary `cards` passed in
+  `target/fullscreen-desktop-overview/`; release `fullscreen-dialog-minimized`
+  passed in `target/fullscreen-desktop-overview-final/`. These check dedicated
+  tile/card pixels and minimized-dialog visibility without restoring policy.
+- Animation `fullscreen`, `fullscreen-held`, `workspace` and `overview-exit`
+  passed in `target/fullscreen-desktop-animations/` with intermediate pixel oracles.
+- Real Quickshell socket/panel smoke passed in `target/fullscreen-desktop-shell/`;
+  Node's 16 model tests and `qmllint` passed. Release idle `fullscreen` and
+  `animation-after-idle` passed in `target/fullscreen-desktop-idle/` (7 and 37
+  submissions respectively, followed by quiet settlement).
+- Cargo fmt/check/test and editor diagnostics passed, including single ownership,
+  restoration, cross-output return context, related dialogs, navigation/IPC and
+  shared stretched-motion extent tests. These are CPU/protocol/GPU checks; no
+  physical clicks/keys, delivered presentation timing or native output was tested.
 
 Animation foundation/fullscreen validation: Cargo fmt/check/test/build and editor
 warning diagnostics passed. All six fullscreen cases passed on private **local

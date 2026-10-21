@@ -1,6 +1,8 @@
 //! Transient, ID-only overview selection. Preview never computes placements.
 
-use crate::core::{Command, Desktop, OutputId, WindowId, WindowRole, WorkspaceId};
+use crate::core::{
+    Command, Desktop, OutputId, PresentationTarget, WindowId, WindowRole, WorkspaceId,
+};
 
 /// One global overview; authoritative ownership and focus remain in the desktop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,12 +13,15 @@ pub struct OverviewSession {
     pub selected: OverviewTarget,
     pub workspaces: Vec<WorkspaceId>,
     pub windows: Vec<WindowId>,
+    pub fullscreen: Option<WindowId>,
+    pub fullscreen_selected: bool,
 }
 
 /// A workspace tile or normal window card, including minimized windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverviewTarget {
     Workspace(WorkspaceId),
+    Fullscreen,
     Window(WindowId),
 }
 
@@ -47,6 +52,9 @@ impl OverviewSession {
                 .map_or(OverviewTarget::Workspace(workspace), OverviewTarget::Window),
             workspaces: Vec::new(),
             windows: Vec::new(),
+            fullscreen: None,
+            fullscreen_selected: desktop.presentation_for_output(output)
+                == Some(PresentationTarget::Fullscreen),
         };
         session.refresh(desktop);
         Some(session)
@@ -62,6 +70,14 @@ impl OverviewSession {
             self.output = output.id;
         }
         self.workspaces = desktop.workspaces().map(|w| w.id).collect();
+        self.fullscreen = desktop
+            .fullscreen_slot()
+            .filter(|s| s.output == Some(self.output))
+            .map(|s| s.window);
+        if self.fullscreen_selected && self.fullscreen.is_none() {
+            self.fullscreen_selected = false;
+            self.selected = OverviewTarget::Workspace(self.workspace);
+        }
         if !self.workspaces.contains(&self.workspace) {
             let Some(workspace) = desktop.workspace_for_output(self.output) else {
                 return false;
@@ -73,29 +89,40 @@ impl OverviewSession {
             OverviewTarget::Window(id) => self.windows.iter().position(|w| *w == id).unwrap_or(0),
             _ => 0,
         };
-        self.windows = desktop
-            .workspace(self.workspace)
-            .map_or_else(Vec::new, |w| {
-                w.windows()
-                    .iter()
-                    .copied()
-                    .filter(|id| {
-                        desktop
-                            .window(*id)
-                            .is_some_and(|w| w.role == WindowRole::Normal)
-                    })
-                    .collect()
-            });
+        self.windows = if self.fullscreen_selected {
+            self.fullscreen
+                .into_iter()
+                .chain(
+                    desktop
+                        .windows()
+                        .filter(|w| desktop.is_fullscreen_transient(w.id))
+                        .map(|w| w.id),
+                )
+                .collect()
+        } else {
+            desktop
+                .workspace(self.workspace)
+                .map_or_else(Vec::new, |w| {
+                    w.windows()
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            desktop.window(*id).is_some_and(|w| {
+                                w.role == WindowRole::Normal
+                                    && !w.fullscreen
+                                    && !desktop.is_fullscreen_transient(w.id)
+                            })
+                        })
+                        .collect()
+                })
+        };
         match self.selected {
             OverviewTarget::Window(id) if !self.windows.contains(&id) => {
                 self.selected = self
                     .windows
                     .get(old_index.min(self.windows.len().saturating_sub(1)))
                     .copied()
-                    .map_or(
-                        OverviewTarget::Workspace(self.workspace),
-                        OverviewTarget::Window,
-                    );
+                    .map_or(self.desktop_target(), OverviewTarget::Window);
             }
             OverviewTarget::Workspace(_) => {
                 self.selected = OverviewTarget::Workspace(self.workspace)
@@ -109,13 +136,42 @@ impl OverviewSession {
     pub fn select(&mut self, desktop: &Desktop, target: OverviewTarget) {
         match target {
             OverviewTarget::Workspace(id) if desktop.workspace(id).is_some() => {
+                self.fullscreen_selected = false;
                 self.workspace = id;
+                self.selected = target;
+                self.refresh(desktop);
+            }
+            OverviewTarget::Fullscreen
+                if desktop
+                    .fullscreen_slot()
+                    .is_some_and(|s| s.output == Some(self.output)) =>
+            {
+                self.fullscreen_selected = true;
                 self.selected = target;
                 self.refresh(desktop);
             }
             OverviewTarget::Window(id) if self.windows.contains(&id) => self.selected = target,
             _ => {}
         }
+    }
+
+    /// The desktop whose cards are being previewed, independent of card selection.
+    pub fn desktop_target(&self) -> OverviewTarget {
+        if self.fullscreen_selected {
+            OverviewTarget::Fullscreen
+        } else {
+            OverviewTarget::Workspace(self.workspace)
+        }
+    }
+
+    /// Ordered tiles, with the occupied fullscreen destination fixed at the end.
+    pub fn desktop_targets(&self) -> Vec<OverviewTarget> {
+        self.workspaces
+            .iter()
+            .copied()
+            .map(OverviewTarget::Workspace)
+            .chain(self.fullscreen.map(|_| OverviewTarget::Fullscreen))
+            .collect()
     }
 
     /// Move the UI to another output, without focusing or switching the desktop.
@@ -135,7 +191,8 @@ impl OverviewSession {
     ) -> bool {
         if !self.refresh(desktop)
             || !self.windows.contains(&window)
-            || destination == self.workspace
+            || desktop.is_fullscreen_transient(window)
+            || (destination == self.workspace && !self.fullscreen_selected)
             || desktop.workspace(destination).is_none()
         {
             return false;
@@ -163,13 +220,13 @@ impl OverviewSession {
             _ => None,
         };
         if let Some(step) = workspace_step {
-            let index = self
-                .workspaces
+            let targets = self.desktop_targets();
+            let index = targets
                 .iter()
-                .position(|w| *w == self.workspace)
+                .position(|t| *t == self.desktop_target())
                 .unwrap_or(0);
-            let index = (index as isize + step).rem_euclid(self.workspaces.len() as isize) as usize;
-            self.select(desktop, OverviewTarget::Workspace(self.workspaces[index]));
+            let index = (index as isize + step).rem_euclid(targets.len() as isize) as usize;
+            self.select(desktop, targets[index]);
             return;
         }
         let count = self.windows.len();
@@ -190,10 +247,10 @@ impl OverviewSession {
             (OverviewNavigation::Right, Some(i)) => Some(if i + 1 == count { 0 } else { i + 1 }),
             _ => None,
         };
-        self.selected = index.and_then(|i| self.windows.get(i)).copied().map_or(
-            OverviewTarget::Workspace(self.workspace),
-            OverviewTarget::Window,
-        );
+        self.selected = index
+            .and_then(|i| self.windows.get(i))
+            .copied()
+            .map_or(self.desktop_target(), OverviewTarget::Window);
     }
 
     /// Commit through the existing focus/restore or workspace-swap commands.
@@ -202,6 +259,9 @@ impl OverviewSession {
             return;
         }
         match self.selected {
+            OverviewTarget::Fullscreen => {
+                desktop.command(Command::ActivateFullscreen);
+            }
             OverviewTarget::Window(id) => {
                 desktop.command(Command::Focus(id));
             }

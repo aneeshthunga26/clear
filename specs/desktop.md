@@ -105,10 +105,11 @@ for the limits on their visible/input regions.
 
 Floating exceptions do not consume tiles or scrolling content in tiled modes.
 Launcher roles, snapped windows and maximized/minimized/fullscreen windows are
-also excluded from normal layout inputs. Placement order is back-to-front: tiles, normal floats,
-maximized windows, fullscreen windows, then launchers. A focused normal window
-may rise above a maximized neighbor on its output; fullscreen remains above that
-window. Launchers remain above all normal windows, including fullscreen.
+also excluded from normal layout inputs. Ordinary placement order is back-to-front:
+tiles, normal floats, maximized windows, then launchers. A focused normal window
+may rise above a maximized neighbor on its output. The dedicated
+[fullscreen presentation](#fullscreen) overrides ordinary placement on its target
+output and excludes unrelated launchers.
 
 ## Maximize and minimize
 
@@ -138,40 +139,73 @@ and [platform](platform.md#launcher-geometry).
 
 ## Fullscreen
 
-Fullscreen is an independent normal-window policy flag exposed by
-`ToggleFullscreen` for the focused window and `SetFullscreen(window, bool)` for
-an explicit window. Setters MUST NOT reveal a hidden workspace, transfer ownership,
-restore minimized state, or explicitly focus the window. Invalid IDs and launcher
-roles are harmless no-ops. A headless or hidden window MAY retain the flag before
-it receives a visible output placement.
+Clear has one fixed, occupied-only `Fullscreen` presentation destination across
+all outputs. `Desktop::fullscreen_slot` is its authoritative owner; a window's
+read-only `fullscreen` flag mirrors slot membership. There MUST NOT be two
+fullscreen occupants. This is desktop fullscreen; a low-latency/game presenter is
+not implemented.
 
-A visible fullscreen window MUST occupy and clip to its home output's full,
-nonempty `bounds`, without panel reservations or layout gaps. It MUST NOT span a
-stretched output group. Bounds updates and ordinary topology/home repair determine
-its current rectangle; disconnecting all outputs retains its flags and saved
-state while producing no placements. Empty full bounds produce no fullscreen
-placement, rather than an invalid size.
+`ToggleFullscreen` enters/exits for the focused normal window. An explicit
+`SetFullscreen(window, true)` activates an already focused window, while a hidden
+or background target installs a dormant occupant without revealing its workspace
+or changing focus. `request_fullscreen` also accepts a presentation-output
+preference and explicit activation. Invalid IDs, launchers and minimized targets
+MUST be rejected before displacing the existing occupant. Restore/focus a minimized
+window before entering. Repeated enter for the same window/output is idempotent.
+An exit for an older displaced window MUST NOT clear the current slot.
 
-Fullscreen MUST preserve workspace order, floating state, saved floating geometry,
-persistent layout proportions, and the underlying maximized flag. Setting or
-toggling maximize during fullscreen updates the restore state without changing
-fullscreen placement. Minimization hides fullscreen and preserves both fullscreen
-and maximized flags; explicit focus restores it to fullscreen. Exiting fullscreen
-while minimized leaves it minimized. Exiting while visible restores to maximized
-usable area or the current ordinary layout/saved floating rectangle as appropriate.
-Newly remapped windows start with fullscreen disabled.
+Entering another window replaces the occupant in one core mutation: the previous
+window exits fullscreen and resumes ordinary layout participation; only the new
+window retains the flag. Preserve both windows' home workspace/output, stable
+workspace order, saved floating rectangles, snap/maximize state and retained
+layout proportions. A presentation-output preference MUST NOT transfer home
+ownership. A disconnected preference falls back to the existing target, home,
+focused or first surviving output. Headless policy retains the slot without
+placements; ordinary topology repair may migrate disconnected home outputs.
 
-Fullscreen MUST bypass normal built-in and custom layout inputs, including
-scrolling content. Entering or leaving fullscreen invalidates resize sessions in
-its region, including a session that outlives a fullscreen/restore round trip.
-A fullscreen window cannot start an interactive resize. Layout proportions remain
-retained for restoration.
+`PresentationTarget::Fullscreen` is distinct from `Workspace(WorkspaceId)`.
+`workspace_for_output` and groups continue reporting the underlying normal
+workspace. `presentation_for_output` reports what is actually selected. The
+special desktop MUST NOT be inserted into the workspace map, numbered shortcut
+IDs, layout configuration or workspace-transfer destinations. Navigation appends
+it after ordinary desktops only on its target output and only while occupied.
+`ActivateFullscreen` reveals it there; `CycleDesktop` includes that target.
 
-Multiple fullscreen windows use deterministic stable placement order, with the
-globally focused fullscreen window placed above other fullscreen windows. Focusing
-an ordinary or maximized window does not lift it above fullscreen. Launchers still
-stack above fullscreen at the core boundary. Protocol layer ordering and hit
-authorization belong to the adapter.
+An active fullscreen desktop presents the occupant at that output's full,
+nonempty bounds, without reservations/gaps, never spanning a stretched group.
+Other outputs keep their normal presentations. Ordinary windows and launchers
+MUST NOT be placed on the overridden output. The occupant MUST NOT participate
+in home layouts or home overview cards even when dormant. Selecting a normal
+workspace hides the special presentation without unfullscreening its occupant;
+explicitly focusing the occupant activates it without switching its home workspace.
+Focusing an ordinary window on its output returns to ordinary presentation.
+
+Exiting an active slot restores the recorded invoking output, ordinary
+presentation and focus when the fullscreen target still owns global focus, with missing IDs repaired by normal policy.
+Exiting a dormant/background slot MUST NOT reveal or focus another desktop.
+Recompute restored geometry from current layouts, reservations and topology;
+never restore a stale saved placement. Minimize, explicit workspace/output
+transfer (including a transfer back to the same home workspace), removal and
+launcher reclassification release the slot first. Minimize retains the underlying
+maximize/snap/free state and then hides the window. Remapping starts without old
+fullscreen state. Changing maximize while fullscreen only updates restoration.
+
+Normal transient descendants of the occupant share its presentation and appear
+above it, without occupying another slot or changing ownership. Parent links
+MUST reject cycles and unknown parents; removing a parent clears direct child
+links. Related dialogs hide with a dormant slot and focusing one reactivates it.
+The adapter centers newly attached dialogs using committed size; their saved
+frames translate between home/target output origins without changing home.
+Independent move/resize/snap and overview transfers of these attached dialogs are
+refused while their parent occupies the slot. Popups/subsurfaces remain owned by
+the application tree. Unrelated windows and launchers stay in ordinary desktops.
+
+Fullscreen and its descendants bypass normal custom/built-in layout inputs and
+retain layout sizing for restoration. State/parent changes invalidate incompatible
+move/resize baselines. Bounds updates and output loss repair the target without
+creating invalid placements. The implementation and deterministic evidence are
+[fullscreen policy](../src/core/fullscreen.rs),
+[desktop tests](../tests/fullscreen_desktop.rs), and [core tests](../tests/core.rs).
 
 This section specifies desktop policy. XDG request/state handling, protocol
 capability advertisement, requested versus committed geometry, layer stacking,

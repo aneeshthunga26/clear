@@ -1,12 +1,13 @@
 # Fullscreen modes — implementation plan
 
-**Status: proposal; neither mode described here is implemented.** Reviewed against
-`531061d`. Clear currently has ordinary fullscreen flags and animated fullscreen
-transitions in its nested winit backend. The implemented contracts remain in
+**Status: desktop fullscreen is implemented; low-latency/game mode remains a
+proposal.** The dedicated occupied-only slot, restoration, typed navigation,
+overview/shell integration and asynchronous XDG lifecycle are specified in
 [desktop state](../specs/desktop.md#fullscreen),
-[platform lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures) and
-[animations](../specs/animations.md). This plan deliberately replaces parts of
-that policy; implementation must update those specifications in the same commits.
+[platform lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures),
+[overview](../specs/overview.md#fullscreen-desktop), [shell](../specs/shell.md) and
+[animations](../specs/animations.md). The sketches below retain the broader
+future two-mode design; only `desktop` is currently exposed.
 
 ## 1. Intended behavior
 
@@ -57,7 +58,8 @@ struct FullscreenSlot {
 }
 ```
 
-These are design sketches, not an already exported API. `Desktop` stores
+These are the broader two-mode design sketches; the current desktop-only API
+is defined in `src/core/fullscreen.rs`. `Desktop` stores
 `Option<FullscreenSlot>` and derives a window's public fullscreen boolean from
 slot membership. Do not retain independently writable fullscreen flags that can
 disagree with the slot.
@@ -421,7 +423,7 @@ from CPU tests or a nested FPS reading.
 ## 9. Code and source review anchors
 
 - [Current core flags/commands](../src/core/types.rs) and
-  [policy mutation/placement](../src/core/desktop.rs): independent fullscreen today.
+  [policy mutation/placement](../src/core/desktop.rs) and [slot ownership](../src/core/fullscreen.rs).
 - [XDG requests/commits](../src/platform/smithay/protocols.rs),
   [managed pre-map state](../src/platform/smithay/state.rs),
   [scene/configure/hits](../src/platform/smithay/scene.rs).

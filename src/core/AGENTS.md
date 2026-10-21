@@ -9,6 +9,8 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 - `geometry.rs`: backend-neutral logical rectangle operations.
 - `desktop.rs`: window/workspace ownership, output groups, focus, persistent
   geometry, mode overrides, and ordered placement computation.
+- `fullscreen.rs`: the single occupied-only fullscreen presentation, return/focus context,
+  transient relationships and output-local visibility; see [fullscreen](../../specs/desktop.md#fullscreen).
 - `resize.rs`: opaque baseline resize sessions, region lifecycle validation, and
   persistent per-workspace/output/mode sizing. Floating gestures edit only saved
   rectangles; tiled gestures edit only layout proportions.
@@ -49,22 +51,22 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
   committed size in their home output's usable area without shrinking them or
   changing saved floating state. Role classification belongs to runtime.
 - Maximize/minimize are independent window flags, not modes or client unmaps.
-  Fullscreen is an independent third flag preserving underlying maximize state.
+  Fullscreen is derived from a single presentation slot preserving home and maximize state.
   All exclude normal layout inputs without erasing saved geometry, order, or
   proportions. Half/quadrant snap overrides also bypass layouts without changing
   saved free geometry; invalidate resize baselines when overrides change.
   Maximized rectangles use only the home output's usable area;
-  fullscreen uses only its full bounds, never a stretched group's bounds.
+  fullscreen uses its effective presentation output's full bounds, never a stretched group.
+  Its occupant and related transients bypass ordinary layouts even when dormant.
   Minimized windows have no placements, focus-cycle entries, or remembered-focus
   eligibility. Explicit focus restores them; workspace switching does not.
   Launchers reject these states, and launcher reclassification clears all three.
   Full bounds and usable output area are independent. Full-bounds setters reject
   empty normalized rectangles; retain the legacy empty-output behavior without
   emitting empty fullscreen placements. See [desktop](../../specs/desktop.md#fullscreen).
-- Placements are back-to-front: tiles, floats, maximized windows, fullscreen,
-  then launchers. A focused normal window can rise above a maximized neighbor on
-  its visible output, but remains below fullscreen. Focused fullscreen rises above
-  other fullscreen windows; stable policy order resolves the rest.
+- An active fullscreen output presents only the occupant and its normal transient
+  descendants. Other outputs retain ordinary tile/float/maximize/launcher order.
+  Preserve underlying groups; use presentation queries for actual visibility.
   The adapter owns protocol layer stacking and visible output-group clips.
 - Keep custom-layout result validation and built-in fallback at this boundary,
   even though the scripting host also validates its output.

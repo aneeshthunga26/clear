@@ -177,3 +177,21 @@ test("window capture batches keep exact IDs and reject malformed image responses
         assert.throws(() => protocol.decodeMessage(JSON.stringify({version: 1, type: "window_previews", id: 3, frames})));
     }
 });
+
+test("fullscreen desktop navigation is occupied-only and preserves home ownership", () => {
+    const current = copyState();
+    const owner = current.windows[0];
+    owner.fullscreen = true;
+    owner.role = "normal";
+    owner.workspace = "2";
+    current.fullscreen_desktop = { window: owner.id, mode: "desktop", output: "2", active: true };
+    assert.equal(protocol.desktopEntries(current, current.outputs[1]).at(-1).fullscreen, true);
+    assert.equal(protocol.desktopEntries(current, current.outputs[2]).length, 2);
+    assert.equal(current.workspaces.length, 2);
+    assert.equal(protocol.visibleWindows(current, current.outputs[1])[0].id, owner.id);
+    assert.equal(protocol.focusedTitle(current, current.outputs[1]), owner.title);
+    current.fullscreen_desktop.active = false;
+    assert.equal(protocol.visibleWindows(current, current.outputs[2]).length, 0);
+    current.fullscreen_desktop = null;
+    assert.equal(protocol.desktopEntries(current, current.outputs[1]).length, 2);
+});

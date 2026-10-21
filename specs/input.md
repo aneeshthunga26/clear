@@ -28,6 +28,7 @@ Extra parameters MUST be rejected even for parameterless actions.
 | Action tags | Additional fields |
 | --- | --- |
 | `toggle_overview`, `alt_tab`, `focus_next`, `focus_previous`, `cycle_output` | None |
+| `activate_fullscreen`, `workspace_next`, `workspace_previous` | None |
 | `switch_workspace`, `move_to_workspace` | `workspace`: positive `u64` |
 | `move_to_output` | `output`: `u64`; runtime target must exist |
 | `set_workspace_mode`, `set_output_mode` | `mode`: nonblank string, at most 256 bytes |
@@ -77,11 +78,20 @@ the seat's normal keyboard path.
 [fullscreen policy](desktop.md#fullscreen). It accepts no arguments and has no
 default shortcut; a custom binding such as `leader+Shift+f` may assign it.
 
+`activate_fullscreen` reveals the occupied special desktop; empty/headless slots
+are safe no-ops. `workspace_next` / `workspace_previous` cycle ordinary desktops
+and the occupied fullscreen tile on the focused output. Numbered shortcuts still
+select ordinary workspaces. These actions have no default bindings.
+
 ## Alt-Tab
 
 The first press snapshots normal windows in active-workspace order, including
 minimized windows and windows on other outputs of the stretched group, excluding
-launchers. It selects the next candidate after focus, or the first if focus is not
+launchers and windows assigned to the fullscreen presentation. On the active
+fullscreen desktop it also includes the occupant and related dialogs after the
+return desktop's normal candidates. Accepting a normal candidate hides the slot
+without unfullscreening it; cancellation preserves presentation and focus.
+It selects the next candidate after focus, or the first if focus is not
 a candidate. Further presses cycle that candidate order without changing focus.
 
 Physical Alt release commits the selection through explicit desktop focus, which
@@ -105,7 +115,8 @@ the window to the output crossed by the pointer.
 Super+right selects a corner by the pointer's quadrant of the frame. Only supported
 internal tile boundaries move. [Floating snapping](snapping.md) adds edge/corner
 previews, release-to-snap, move cancellation and snapped/maximized drag-out.
-Maximized windows reject resize until restored; fullscreen windows and launchers
+Maximized windows reject resize until restored; fullscreen occupants, attached
+fullscreen transients and launchers
 reject ordinary move/resize gestures. Client XDG move/resize requests require a valid pointer grab
 serial and a grab origin owned by the requesting client; merely sending a request
 does not authorize it.

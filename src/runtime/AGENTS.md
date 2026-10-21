@@ -20,7 +20,8 @@ objects out of this module; return effects for the platform to execute.
   poses for visible effects.
 - `presentation.rs` owns pure validated snapshot diffs, retained-image request IDs,
   workspace/window transition tracks, and immutable sampled frames. Policy and
-  GPU ownership stay with core and the adapter. Only acknowledge actual submitted
+  GPU ownership stay with core and the adapter. Animation groups use typed
+  output-local presentation targets, independently of retained home workspaces. Only acknowledge actual submitted
   draws, preserving captured phase and opaque track revision metadata; retirement
   requires an acknowledged terminal frame, even after config settlement.
   `is_animating` includes a pending final redraw. Keep overview composition and
@@ -79,7 +80,9 @@ objects out of this module; return effects for the platform to execute.
   reload and use the built-in layout fallback rather than failing the compositor.
 - Spawning, closing clients, and shutdown are explicit effects, not OS/protocol
   operations performed by policy code.
-- Pending Alt-Tab selection contains normal windows on the focused workspace.
+- Pending Alt-Tab selection contains normal windows on the underlying focused workspace.
+  On active fullscreen include its occupant/transient dialogs; normal acceptance
+  hides the special presentation without releasing the slot.
   Advancing it must not change focus; finish commits the selected window and
   cancel preserves focus. Minimized windows remain candidates and restore only
   when explicit focus is committed; cancelling never restores them. Maximize and

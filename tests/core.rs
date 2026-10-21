@@ -95,10 +95,21 @@ fn assert_invariants(desktop: &Desktop) {
     );
     let visible: BTreeSet<_> = desktop
         .windows()
-        .filter(|window| presented.contains(&window.workspace) && !window.minimized)
+        .filter(|window| {
+            !window.minimized
+                && desktop.outputs().any(|o| {
+                    desktop.window_presented_on(window.id, o.id)
+                        && (window.fullscreen || window.output == Some(o.id))
+                })
+        })
         .map(|window| window.id)
         .collect();
     assert_eq!(ids(&placements), visible, "hidden or lost placement");
+    assert!(desktop.windows().filter(|w| w.fullscreen).count() <= 1);
+    assert_eq!(
+        desktop.windows().find(|w| w.fullscreen).map(|w| w.id),
+        desktop.fullscreen_slot().map(|s| s.window)
+    );
     let focused: Vec<_> = placements
         .iter()
         .filter(|placement| placement.focused)
@@ -111,7 +122,10 @@ fn assert_invariants(desktop: &Desktop) {
     for placement in placements {
         let window = desktop.window(placement.window).unwrap();
         if window.fullscreen {
-            let bounds = desktop.output(window.output.unwrap()).unwrap().bounds;
+            let bounds = desktop
+                .output(desktop.presentation_output(window.id).unwrap())
+                .unwrap()
+                .bounds;
             assert!(!bounds.is_empty());
             assert_eq!(placement.rect, bounds);
             assert_eq!(placement.clip, Some(bounds));
@@ -131,14 +145,14 @@ fn assert_invariants(desktop: &Desktop) {
         assert!(connected.contains(&output));
         if let Some(id) = desktop.focused_window() {
             let window = desktop.window(id).unwrap();
-            assert_eq!(window.output, Some(output));
+            assert_eq!(desktop.presentation_output(id), Some(output));
             assert!(!window.minimized);
-            assert_eq!(Some(window.workspace), desktop.workspace_for_output(output));
+            assert!(desktop.window_presented_on(id, output));
         } else {
             assert!(!desktop.windows().any(|window| {
                 window.output == Some(output)
                     && !window.minimized
-                    && Some(window.workspace) == desktop.workspace_for_output(output)
+                    && desktop.window_presented_on(window.id, output)
             }));
         }
     }
@@ -1870,6 +1884,8 @@ fn fullscreen_bounds_are_independent_of_reservations_and_repair_on_topology_chan
     );
     d.command(Command::StretchAll);
     d.command(Command::MoveToOutput(OutputId(2)));
+    assert!(!d.window(WindowId(3)).unwrap().fullscreen);
+    d.command(Command::ToggleFullscreen);
     assert_eq!(d.placements().last().unwrap().rect, right);
     assert_eq!(d.window(WindowId(3)).unwrap().output, Some(OutputId(2)));
     d.remove_output(OutputId(2));
@@ -1896,16 +1912,13 @@ fn fullscreen_preserves_underlying_maximize_and_minimize_interleavings() {
     );
     d.command(Command::SetMinimized(WindowId(3), true));
     assert!(!ids(&d.placements()).contains(&WindowId(3)));
-    assert!(d.window(WindowId(3)).unwrap().fullscreen);
+    assert!(!d.window(WindowId(3)).unwrap().fullscreen);
     assert!(d.window(WindowId(3)).unwrap().maximized);
     d.command(Command::SwitchWorkspace(WorkspaceId(2)));
     d.command(Command::SwitchWorkspace(WorkspaceId(1)));
     assert!(d.window(WindowId(3)).unwrap().minimized);
     d.command(Command::Focus(WindowId(3)));
-    assert_eq!(
-        d.placements().last().unwrap().rect,
-        Rect::new(0, 0, 1000, 800)
-    );
+    assert_eq!(d.placements().last().unwrap().rect, area);
     d.command(Command::SetFullscreen(WindowId(3), false));
     assert_eq!(d.placements().last().unwrap().rect, area);
     d.command(Command::SetFullscreen(WindowId(3), true));
@@ -1958,19 +1971,24 @@ fn fullscreen_script_exclusion_and_stack_are_deterministic() {
         calls += 1;
         assert_eq!(
             context.windows.iter().map(|w| w.id).collect::<Vec<_>>(),
-            vec![WindowId(4)]
+            vec![WindowId(1), WindowId(4)]
         );
         None
     });
     assert_eq!(calls, 1);
     assert_eq!(
         p.iter().map(|p| p.window).collect::<Vec<_>>(),
-        vec![WindowId(2), WindowId(4), WindowId(1), WindowId(3)]
+        vec![WindowId(1), WindowId(2), WindowId(4)]
     );
     d.command(Command::Focus(WindowId(1)));
     assert_eq!(d.placements().last().unwrap().window, WindowId(1));
     d.command(Command::Focus(WindowId(4)));
-    assert_eq!(d.placements().last().unwrap().window, WindowId(3));
+    assert!(!d.fullscreen_slot().unwrap().active);
+    assert_eq!(d.placements().last().unwrap().window, WindowId(4));
+    d.command(Command::ActivateFullscreen);
+    assert_eq!(d.placements().len(), 1);
+    assert_eq!(d.placements()[0].window, WindowId(3));
+    d.command(Command::SwitchWorkspace(WorkspaceId(1)));
     d.set_window_role(WindowId(2), WindowRole::Launcher);
     assert_eq!(d.placements().last().unwrap().window, WindowId(2));
     let first = d.placements();
@@ -1984,6 +2002,7 @@ fn fullscreen_on_hidden_or_headless_windows_does_not_reveal_or_transfer_them() {
     d.command(Command::SetFullscreen(WindowId(1), true));
     assert!(d.placements().is_empty());
     output(&mut d, 1);
+    d.command(Command::ActivateFullscreen);
     assert_eq!(
         d.placements().last().unwrap().rect,
         Rect::new(0, 0, 1000, 800)

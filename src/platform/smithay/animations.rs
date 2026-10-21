@@ -14,7 +14,7 @@ use super::{
     },
 };
 use crate::{
-    core::{OutputId, Rect, WindowId, WindowRole, WorkspaceId},
+    core::{OutputId, Rect, WindowId, WindowRole},
     decoration::{Theme, TitlebarTheme},
     runtime::presentation::{
         GroupState, OutputState, PresentationFrame, PresentationPlanner, PresentationSnapshot,
@@ -83,7 +83,7 @@ pub(super) struct WindowAnimations {
     reset_pending: bool,
     theme: Option<Theme>,
     topology: Vec<(OutputId, Rect)>,
-    policy_workspaces: BTreeMap<OutputId, WorkspaceId>,
+    policy_workspaces: BTreeMap<OutputId, crate::core::PresentationTarget>,
     pending_workspace_outputs: BTreeSet<OutputId>,
 }
 
@@ -318,7 +318,7 @@ impl Compositor {
         let workspaces: BTreeMap<_, _> = snapshot
             .groups
             .iter()
-            .flat_map(|g| g.outputs.iter().map(move |o| (*o, g.workspace)))
+            .flat_map(|g| g.outputs.iter().map(move |o| (*o, g.presentation)))
             .collect();
         if !suppressed
             && !reset
@@ -394,7 +394,7 @@ impl Compositor {
                 .filter(|w| w.role == WindowRole::Normal)
                 .filter_map(|w| {
                     let entry = self.windows.get(&w.id)?;
-                    let output = w.output?;
+                    let output = self.runtime.desktop.presentation_output(w.id)?;
                     Some(WindowState {
                         key: WindowKey {
                             window: w.id,
@@ -405,6 +405,7 @@ impl Compositor {
                         minimized: w.minimized,
                         maximized: w.maximized,
                         fullscreen: w.fullscreen,
+                        fullscreen_transient: self.runtime.desktop.is_fullscreen_transient(w.id),
                         home_output: output,
                         workspace: w.workspace,
                         placement: self.placements.iter().find(|p| p.window == w.id).cloned(),
@@ -427,13 +428,42 @@ impl Compositor {
             groups: self
                 .runtime
                 .desktop
-                .groups()
-                .iter()
-                .filter_map(|g| {
+                .outputs()
+                .filter_map(|o| {
+                    let presentation = self.runtime.desktop.presentation_for_output(o.id)?;
+                    let motion_bounds =
+                        if matches!(presentation, crate::core::PresentationTarget::Workspace(_)) {
+                            let group = self
+                                .runtime
+                                .desktop
+                                .groups()
+                                .iter()
+                                .find(|g| g.outputs.contains(&o.id))?;
+                            let mut outputs = self
+                                .runtime
+                                .desktop
+                                .outputs()
+                                .filter(|m| group.outputs.contains(&m.id));
+                            let first = outputs.next()?.bounds;
+                            Some(outputs.fold(first, |a, m| {
+                                let b = m.bounds;
+                                let x = a.x.min(b.x);
+                                let y = a.y.min(b.y);
+                                Rect::new(
+                                    x,
+                                    y,
+                                    a.right().max(b.right()).saturating_sub(x),
+                                    a.bottom().max(b.bottom()).saturating_sub(y),
+                                )
+                            }))
+                        } else {
+                            None
+                        };
                     Some(GroupState {
-                        id: g.outputs.first()?.0,
-                        workspace: g.workspace,
-                        outputs: g.outputs.clone(),
+                        id: o.id.0,
+                        presentation,
+                        outputs: vec![o.id],
+                        motion_bounds,
                     })
                 })
                 .collect(),
@@ -551,10 +581,13 @@ impl Compositor {
             .images
             .keys()
             .filter_map(|key| {
-                self.runtime
-                    .desktop
-                    .window(key.window)
-                    .map(|window| (*key, window.fullscreen))
+                self.runtime.desktop.window(key.window).map(|window| {
+                    (
+                        *key,
+                        window.fullscreen
+                            || self.runtime.desktop.is_fullscreen_transient(window.id),
+                    )
+                })
             })
             .collect();
         let mut frame = animations.planner.sample(now, &self.runtime.animations);
@@ -595,6 +628,13 @@ impl Compositor {
                 .map(|g| g.outputs.as_slice())
                 .unwrap_or(std::slice::from_ref(&sample.output))
                 .iter()
+                .filter(|id| {
+                    sample.outgoing
+                        || self
+                            .runtime
+                            .desktop
+                            .window_presented_on(sample.key.window, **id)
+                })
                 .filter_map(|id| self.outputs.iter().find(|o| o.id == *id).map(|o| o.rect))
                 .collect();
             let visual = AnimatedWindow {
@@ -605,7 +645,13 @@ impl Compositor {
                 committed_titlebar: cached.titlebar.clone(),
                 committed_ssd: cached.ssd,
                 fullscreen_priority: match sample.source {
-                    PresentationSource::Live(_) => fullscreen,
+                    PresentationSource::Live(_) => {
+                        fullscreen
+                            || self
+                                .runtime
+                                .desktop
+                                .is_fullscreen_transient(sample.key.window)
+                    }
                     PresentationSource::Retained(id) => animations
                         .retained_priority
                         .get(&id)
@@ -793,6 +839,7 @@ mod tests {
                 minimized: false,
                 maximized: false,
                 fullscreen: false,
+                fullscreen_transient: false,
                 home_output: OutputId(1),
                 workspace: WorkspaceId(1),
                 placement: Some(Placement {
@@ -812,8 +859,9 @@ mod tests {
             }],
             groups: vec![GroupState {
                 id: 1,
-                workspace: WorkspaceId(1),
+                presentation: crate::core::PresentationTarget::Workspace(WorkspaceId(1)),
                 outputs: vec![OutputId(1)],
+                motion_bounds: None,
             }],
         };
         bridge

@@ -29,7 +29,10 @@ cargo run -- --config examples/single-monitor.toml --command foot
 In this example, Ctrl+Alt+W toggles overview, Ctrl+Alt+1/2/3 switches
 workspaces, Ctrl+Alt+Up maximizes, Ctrl+Alt+Down minimizes, and
 Ctrl+Alt+Shift+F toggles fullscreen. See [animation controls](specs/animations.md#configuration)
-for speed, sampling rate, and per-effect settings. Set top-level `show_fps = true`
+for speed, sampling rate, and per-effect settings.
+[Dedicated fullscreen](specs/desktop.md#fullscreen) uses one occupied-only desktop;
+select it through overview or the optional shell, or bind `activate_fullscreen`.
+Set top-level `show_fps = true`
 for the [frame-rate overlay](specs/rendering.md#fps-overlay). Use `cargo run
 --release --` with the same arguments for optimized rendering.
 

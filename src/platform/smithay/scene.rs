@@ -250,6 +250,8 @@ impl Compositor {
         }
         self.dirty = false;
         self.shell_dirty = true;
+        self.revoke_stale_fullscreen_intents();
+        self.sync_transient_parents();
         self.runtime.refresh_overview();
         if self.runtime.overview.is_none() {
             self.overview_press = None;
@@ -338,10 +340,23 @@ impl Compositor {
                     }
                     if window.fullscreen {
                         pending.states.set(xdg_toplevel::State::Fullscreen);
+                        if let Some(output) = self
+                            .runtime
+                            .desktop
+                            .presentation_output(*id)
+                            .and_then(|o| self.runtime.desktop.output(o))
+                        {
+                            pending.size = Some((output.bounds.width, output.bounds.height).into());
+                        }
                     } else {
                         pending.states.unset(xdg_toplevel::State::Fullscreen);
                     }
-                    if window.minimized && !overview_live.contains(id) {
+                    if (window.minimized
+                        || ((window.fullscreen
+                            || self.runtime.desktop.is_fullscreen_transient(*id))
+                            && !placements.iter().any(|p| p.window == *id)))
+                        && !overview_live.contains(id)
+                    {
                         pending.states.set(xdg_toplevel::State::Suspended);
                     } else {
                         pending.states.unset(xdg_toplevel::State::Suspended);
@@ -558,7 +573,7 @@ impl Compositor {
             .iter()
             .filter_map(|p| self.runtime.desktop.window(p.window))
             .filter(|w| w.fullscreen)
-            .filter_map(|w| w.output)
+            .filter_map(|w| self.runtime.desktop.presentation_output(w.id))
             .chain(
                 self.window_animations
                     .outgoing()
@@ -582,6 +597,7 @@ impl Compositor {
     fn elevated_window(&self, id: WindowId, fullscreen_outputs: &BTreeSet<OutputId>) -> bool {
         self.runtime.desktop.window(id).is_some_and(|w| {
             w.fullscreen
+                || self.runtime.desktop.is_fullscreen_transient(id)
                 || (w.role == WindowRole::Launcher
                     && w.output.is_some_and(|o| fullscreen_outputs.contains(&o)))
         })
@@ -882,6 +898,14 @@ impl Compositor {
         let mut groups = Vec::new();
         let mut drawn = BTreeSet::new();
         let mut drawn_workspaces = BTreeSet::new();
+        if self
+            .runtime
+            .desktop
+            .fullscreen_slot()
+            .is_none_or(|s| !s.active)
+        {
+            self.fullscreen_backing = None;
+        }
         titlebars.retain(|id| self.windows.get(&id).is_some_and(|entry| entry.uses_ssd()));
         let full_outputs = self.fullscreen_outputs();
         let reveal = self.overview_shell_reveal();
@@ -913,6 +937,40 @@ impl Compositor {
 
         for elevated in [true, false] {
             if !elevated {
+                // Fullscreen has an opaque output-local backing, including
+                // transparent/undersized clients and asynchronous held buffers.
+                if let Some(slot) = self.runtime.desktop.fullscreen_slot().filter(|s| s.active)
+                    && let Some(output) = slot.output.and_then(|o| self.runtime.desktop.output(o))
+                    && !self.overview_present()
+                {
+                    let start = elements.len();
+                    if self
+                        .fullscreen_backing
+                        .as_ref()
+                        .is_none_or(|(bounds, _)| *bounds != output.bounds)
+                    {
+                        self.fullscreen_backing = Some((
+                            output.bounds,
+                            SolidColorBuffer::new(
+                                (output.bounds.width, output.bounds.height),
+                                [0.0, 0.0, 0.0, 1.0],
+                            ),
+                        ));
+                    }
+                    let buffer = &self.fullscreen_backing.as_ref().unwrap().1;
+                    elements.push(SceneElement::Border(SolidColorRenderElement::from_buffer(
+                        buffer,
+                        (output.bounds.x, output.bounds.y),
+                        1.0,
+                        1.0,
+                        Kind::Unspecified,
+                    )));
+                    groups.push(SceneGroup {
+                        elements: start..elements.len(),
+                        mask: None,
+                        clip: physical(output.bounds),
+                    });
+                }
                 self.layer_elements_filtered(
                     renderer,
                     &[Layer::Top],
@@ -1602,7 +1660,7 @@ fn placement_clips(
     // groups and gaps between monitors must stay invisible. Both hit-testing
     // and rendering consume these clips, including for separate popup trees.
     outputs
-        .filter(|(id, _)| desktop.workspace_for_output(*id) == Some(window.workspace))
+        .filter(|(id, _)| desktop.window_presented_on(window.id, *id))
         .filter_map(|(_, rect)| {
             let rect = viewport.map_or(Some(logical(rect)), |clip| {
                 logical(rect).intersection(logical(clip))

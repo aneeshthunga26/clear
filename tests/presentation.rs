@@ -1,6 +1,6 @@
 use clear::{
     config::{AnimationEffect, AnimationsConfig},
-    core::{OutputId, Placement, Rect, WindowId, WorkspaceId},
+    core::{OutputId, Placement, PresentationTarget, Rect, WindowId, WorkspaceId},
     runtime::{animation::AnimationEngine, presentation::*},
 };
 use std::time::Duration;
@@ -21,6 +21,7 @@ fn window(id: u64, workspace: u64, rect: Option<Rect>) -> WindowState {
         minimized: false,
         maximized: false,
         fullscreen: false,
+        fullscreen_transient: false,
         home_output: OutputId(1),
         workspace: WorkspaceId(workspace),
         placement: rect.map(|rect| Placement {
@@ -44,8 +45,9 @@ fn snapshot(windows: Vec<WindowState>) -> PresentationSnapshot {
         }],
         groups: vec![GroupState {
             id: 1,
-            workspace: WorkspaceId(1),
+            presentation: PresentationTarget::Workspace(WorkspaceId(1)),
             outputs: vec![OutputId(1)],
+            motion_bounds: None,
         }],
     }
 }
@@ -223,6 +225,7 @@ fn maximize_fullscreen_and_restore_select_their_own_geometry_laws() {
         Some(AnimationEffect::Maximize)
     );
     s.windows[0].fullscreen = true;
+    s.groups[0].presentation = PresentationTarget::Fullscreen;
     s.windows[0].placement.as_mut().unwrap().rect = Rect::new(0, 0, 800, 600);
     p.reconcile(s, &[], t(0.1), &mut e).unwrap();
     assert_eq!(
@@ -240,7 +243,7 @@ fn maximize_fullscreen_and_restore_select_their_own_geometry_laws() {
 fn workspace_states() -> (PresentationSnapshot, PresentationSnapshot) {
     let before = snapshot(vec![window(1, 1, Some(rect())), window(2, 2, None)]);
     let mut after = before.clone();
-    after.groups[0].workspace = WorkspaceId(2);
+    after.groups[0].presentation = PresentationTarget::Workspace(WorkspaceId(2));
     after.windows[0].placement = None;
     after.windows[1].placement = Some(Placement {
         window: WindowId(2),
@@ -776,4 +779,66 @@ fn explicit_settlement_requires_a_drawn_live_terminal_frame_at_its_revision() {
     p.retire_finished(t(0.025), &mut e);
     assert!(e.is_empty());
     assert_eq!(p.sample(t(0.025), &e).windows[0].pose.rect.x, 100.0);
+}
+
+#[test]
+fn stretched_motion_shares_travel_extent_but_fullscreen_switches_only_its_output() {
+    let extent = Rect::new(0, 0, 1400, 600);
+    let mut base = snapshot(vec![window(1, 1, Some(rect()))]);
+    base.outputs.push(OutputState {
+        id: OutputId(2),
+        bounds: Rect::new(800, 0, 600, 600),
+        panel: None,
+        physical_scale: 1.0,
+    });
+    base.groups[0].motion_bounds = Some(extent);
+    base.groups.push(GroupState {
+        id: 2,
+        presentation: PresentationTarget::Workspace(WorkspaceId(1)),
+        outputs: vec![OutputId(2)],
+        motion_bounds: Some(extent),
+    });
+    let mut second = window(2, 1, Some(Rect::new(850, 100, 200, 150)));
+    second.home_output = OutputId(2);
+    second.placement.as_mut().unwrap().clip = Some(Rect::new(800, 0, 600, 600));
+    base.windows.push(second);
+    let (mut planner, mut engine) = setup(base.clone());
+    let mut switched = base.clone();
+    for group in &mut switched.groups {
+        group.presentation = PresentationTarget::Workspace(WorkspaceId(2));
+    }
+    for window in &mut switched.windows {
+        window.workspace = WorkspaceId(2);
+    }
+    planner
+        .reconcile(switched, &[], t(0.0), &mut engine)
+        .unwrap();
+    let frame = planner.sample(t(0.0), &engine);
+    assert_eq!(frame.workspaces.len(), 2);
+    assert!(
+        frame
+            .workspaces
+            .iter()
+            .all(|g| g.incoming_offset == (1400., 0.))
+    );
+
+    let (mut planner, mut engine) = setup(base.clone());
+    let mut fullscreen = base;
+    fullscreen.groups[0].presentation = PresentationTarget::Fullscreen;
+    fullscreen.groups[0].motion_bounds = None;
+    fullscreen.windows[0].fullscreen = true;
+    fullscreen.windows[0].placement.as_mut().unwrap().rect = Rect::new(0, 0, 800, 600);
+    planner
+        .reconcile(fullscreen, &[], t(0.0), &mut engine)
+        .unwrap();
+    let frame = planner.sample(t(0.0), &engine);
+    assert_eq!(frame.workspaces.len(), 1);
+    assert_eq!(frame.workspaces[0].outputs, vec![OutputId(1)]);
+    assert_eq!(frame.workspaces[0].incoming_offset, (800., 0.));
+    assert!(
+        frame
+            .windows
+            .iter()
+            .any(|w| w.key == key(2) && w.effect.is_none())
+    );
 }

@@ -2004,6 +2004,7 @@ impl Compositor {
         button: u32,
     ) {
         if self.overview_present()
+            || self.runtime.desktop.is_fullscreen_transient(id)
             || self.runtime.overview_requested
             || self.drag.is_some()
             || self.outputs.iter().any(|output| {

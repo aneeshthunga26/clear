@@ -7,12 +7,15 @@ From the repository root:
 
 ```sh
 cargo build --locked
-./target/debug/clear --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
+./target/debug/clear --config examples/single-monitor.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
 The floating top panel on each output offers workspace buttons, grouped applications,
 mode controls with SVG icons, a StatusNotifier tray, status controls, a two-line
 clock, and a notification button.
+An occupied [fullscreen desktop](../../specs/desktop.md#fullscreen) adds an `F`
+button on its target output. The button activates that presentation; ordinary
+workspace buttons keep their normal IDs, and dock activation follows window focus.
 Hover an application to see cards for all of its open windows, including windows
 on other workspaces; click a card to reveal and focus it. Left click an app icon
 to focus its first window or launch its desktop entry. Right click for the app's
@@ -52,7 +55,7 @@ notification daemon is running, start the entire nested session on one private
 bus:
 
 ```sh
-dbus-run-session -- ./target/debug/clear --config examples/vm.toml --command quickshell -p examples/quickshell/shell.qml
+dbus-run-session -- ./target/debug/clear --config examples/single-monitor.toml --command quickshell -p examples/quickshell/shell.qml
 ```
 
 The overview button requests Clear’s [compositor-owned overview](../../specs/overview.md);
@@ -137,7 +140,7 @@ blur_radius = 2
 blur_passes = 3
 ```
 
-These are the settings in `examples/vm.toml`; blur is not required to use this shell.
+These are the settings in `examples/single-monitor.toml`; blur is not required to use this shell.
 The QML adds no blur shaders or effects. See the
 [rendering specification](../../specs/rendering.md) for accepted values, defaults,
 filter units, composition, and resource limits, and

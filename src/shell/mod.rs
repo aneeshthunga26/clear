@@ -39,6 +39,8 @@ pub enum RequestKind {
     #[serde(deserialize_with = "empty_request")]
     ToggleOverview,
     #[serde(deserialize_with = "empty_request")]
+    ActivateFullscreen,
+    #[serde(deserialize_with = "empty_request")]
     AnimationPanels,
     SetAnimationTargets {
         panel: String,
@@ -116,6 +118,16 @@ pub struct Snapshot {
     pub switcher: Option<SwitcherSnapshot>,
     /// Whether compositor-owned overview input/UI is active.
     pub overview_open: bool,
+    pub fullscreen_desktop: Option<FullscreenDesktopSnapshot>,
+}
+
+/// The special presentation destination; not a numbered workspace or second owner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FullscreenDesktopSnapshot {
+    pub window: String,
+    pub mode: String,
+    pub output: Option<String>,
+    pub active: bool,
 }
 
 /// Pending Alt-Tab candidates and selected window, without changing focus yet.
@@ -177,6 +189,7 @@ pub struct WindowSnapshot {
     pub floating: bool,
     pub maximized: bool,
     pub fullscreen: bool,
+    pub fullscreen_transient: bool,
     pub minimized: bool,
     pub focused: bool,
 }
@@ -185,7 +198,19 @@ pub struct WindowSnapshot {
 pub fn snapshot(runtime: &Runtime) -> Snapshot {
     let desktop = &runtime.desktop;
     Snapshot {
-        capabilities: vec!["animation_targets_v1".into(), "window_previews_v1".into()],
+        fullscreen_desktop: desktop
+            .fullscreen_slot()
+            .map(|s| FullscreenDesktopSnapshot {
+                window: s.window.0.to_string(),
+                mode: "desktop".into(),
+                output: s.output.map(|o| o.0.to_string()),
+                active: s.active,
+            }),
+        capabilities: vec![
+            "animation_targets_v1".into(),
+            "window_previews_v1".into(),
+            "fullscreen_desktop_v1".into(),
+        ],
         outputs: desktop
             .outputs()
             .map(|output| {
@@ -247,6 +272,7 @@ pub fn snapshot(runtime: &Runtime) -> Snapshot {
                 floating: window.floating,
                 maximized: window.maximized,
                 fullscreen: window.fullscreen,
+                fullscreen_transient: desktop.is_fullscreen_transient(window.id),
                 minimized: window.minimized,
                 focused: desktop.focused_window() == Some(window.id),
             })
@@ -306,6 +332,17 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
     validate_version(request.version)?;
     match &request.request {
         RequestKind::Snapshot | RequestKind::Subscribe => {}
+        RequestKind::ActivateFullscreen => {
+            if runtime
+                .desktop
+                .fullscreen_slot()
+                .and_then(|s| s.output)
+                .is_none()
+            {
+                return Err("fullscreen desktop is empty or has no connected output".into());
+            }
+            runtime.desktop.command(Command::ActivateFullscreen);
+        }
         RequestKind::AnimationPanels | RequestKind::SetAnimationTargets { .. } => {
             return Err("animation targets require compositor panel ownership validation".into());
         }
@@ -373,6 +410,16 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
                 return Err(
                     "launcher windows remain client-sized and reject window state requests".into(),
                 );
+            }
+            if matches!(
+                &request.request,
+                RequestKind::SetFullscreen {
+                    fullscreen: true,
+                    ..
+                }
+            ) && window.minimized
+            {
+                return Err("restore a minimized window before entering fullscreen".into());
             }
             let command = match &request.request {
                 RequestKind::SetMaximized { maximized, .. } => {

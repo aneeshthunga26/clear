@@ -8,7 +8,7 @@ use std::{
 use super::animation::{AnimationEngine, AnimationPose, AnimationRect};
 use crate::{
     config::AnimationEffect,
-    core::{OutputId, Placement, Rect, WindowId, WorkspaceId},
+    core::{OutputId, Placement, PresentationTarget, Rect, WindowId, WorkspaceId},
 };
 
 /// Identity of a single mapped generation; remapping never reuses a retained source.
@@ -27,6 +27,7 @@ pub struct WindowState {
     pub minimized: bool,
     pub maximized: bool,
     pub fullscreen: bool,
+    pub fullscreen_transient: bool,
     pub home_output: OutputId,
     pub workspace: WorkspaceId,
     pub placement: Option<Placement>,
@@ -52,8 +53,10 @@ pub struct OutputState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupState {
     pub id: u64,
-    pub workspace: WorkspaceId,
+    pub presentation: PresentationTarget,
     pub outputs: Vec<OutputId>,
+    /// Shared ordinary-workspace travel extent when a stretched group is split into output-local records.
+    pub motion_bounds: Option<Rect>,
 }
 
 /// Reconciled policy and mapping state, in back-to-front placement order.
@@ -147,8 +150,8 @@ pub struct SampledWindow {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkspaceMotion {
     pub group: u64,
-    pub from_workspace: WorkspaceId,
-    pub to_workspace: WorkspaceId,
+    pub from_workspace: PresentationTarget,
+    pub to_workspace: PresentationTarget,
     pub outputs: Vec<OutputId>,
     pub incoming_offset: (f64, f64),
     pub outgoing_offset: (f64, f64),
@@ -181,8 +184,8 @@ struct Motion {
 struct GroupMotion {
     incoming_track: u64,
     outgoing_track: u64,
-    from: WorkspaceId,
-    to: WorkspaceId,
+    from: PresentationTarget,
+    to: PresentationTarget,
     outputs: Vec<OutputId>,
     delta: (f64, f64),
 }
@@ -306,7 +309,7 @@ impl PresentationPlanner {
         let mut switches = BTreeMap::new();
         for group in &snapshot.groups {
             if let Some(prior) = previous.groups.iter().find(|g| g.id == group.id) {
-                if prior.workspace != group.workspace {
+                if prior.presentation != group.presentation {
                     let direction = causes
                         .iter()
                         .find_map(|c| match c {
@@ -316,7 +319,7 @@ impl PresentationPlanner {
                             } if *id == group.id => Some(*direction),
                             _ => None,
                         })
-                        .unwrap_or(if group.workspace > prior.workspace {
+                        .unwrap_or(if group.presentation > prior.presentation {
                             WorkspaceDirection::RIGHT
                         } else {
                             WorkspaceDirection::LEFT
@@ -325,8 +328,8 @@ impl PresentationPlanner {
                     switches.insert(
                         group.id,
                         (
-                            prior.workspace,
-                            group.workspace,
+                            prior.presentation,
+                            group.presentation,
                             (
                                 direction.x * f64::from(bounds.width),
                                 direction.y * f64::from(bounds.height),
@@ -380,7 +383,7 @@ impl PresentationPlanner {
                     }
                 }
             }
-            let shown_offset = |workspace: WorkspaceId| {
+            let shown_offset = |workspace: PresentationTarget| {
                 shown.as_ref().and_then(|(m, _, phase)| {
                     if m.to_workspace == workspace {
                         Some((m.incoming_offset, *phase))
@@ -1122,6 +1125,9 @@ fn group_for_output(s: &PresentationSnapshot, id: OutputId) -> Option<&GroupStat
     s.groups.iter().find(|g| g.outputs.contains(&id))
 }
 fn group_bounds(g: &GroupState, s: &PresentationSnapshot) -> Rect {
+    if let Some(bounds) = g.motion_bounds {
+        return bounds;
+    }
     let outputs: Vec<_> = s
         .outputs
         .iter()
@@ -1207,7 +1213,6 @@ fn validate_snapshot(s: &PresentationSnapshot) -> Result<(), String> {
     let mut windows = BTreeSet::new();
     let mut outputs = BTreeSet::new();
     let mut groups = BTreeSet::new();
-    let mut workspaces = BTreeSet::new();
     let mut memberships = BTreeSet::new();
     for o in &s.outputs {
         if !outputs.insert(o.id)
@@ -1221,7 +1226,15 @@ fn validate_snapshot(s: &PresentationSnapshot) -> Result<(), String> {
     }
     for g in &s.groups {
         if !groups.insert(g.id)
-            || !workspaces.insert(g.workspace)
+            || g.motion_bounds.is_some_and(|bounds| {
+                !valid_rect(bounds)
+                    || g.outputs.iter().any(|id| {
+                        s.outputs
+                            .iter()
+                            .find(|o| o.id == *id)
+                            .is_some_and(|o| o.bounds.intersection(bounds) != Some(o.bounds))
+                    })
+            })
             || g.outputs.is_empty()
             || g.outputs
                 .iter()
@@ -1256,7 +1269,14 @@ fn validate_snapshot(s: &PresentationSnapshot) -> Result<(), String> {
             return Err("visible presentation window needs a connected home output".into());
         }
         if w.visible()
-            && group_for_output(s, w.home_output).is_none_or(|g| g.workspace != w.workspace)
+            && group_for_output(s, w.home_output).is_none_or(|g| {
+                g.presentation
+                    != if w.fullscreen || w.fullscreen_transient {
+                        PresentationTarget::Fullscreen
+                    } else {
+                        PresentationTarget::Workspace(w.workspace)
+                    }
+            })
         {
             return Err(
                 "visible presentation window must belong to its home output's presented workspace"

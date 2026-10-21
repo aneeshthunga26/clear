@@ -26,6 +26,7 @@ use std::{collections::BTreeMap, sync::Arc};
 pub(super) enum WallpaperDestination {
     Canvas,
     Miniature(WorkspaceId),
+    FullscreenMiniature,
     Zoom,
     Background,
 }

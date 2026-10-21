@@ -50,6 +50,12 @@ function groupForOutput(state, output) {
 }
 
 function focusedTitle(state, output) {
+    var fullscreen = state && state.fullscreen_desktop;
+    if (fullscreen && fullscreen.active && output && fullscreen.output === output.id) {
+        if (state.focused_output !== output.id) return "";
+        var occupant = state.windows.find(function(window) { return window.id === state.focused_window && (window.id === fullscreen.window || window.fullscreen_transient); });
+        return occupant ? (occupant.title || occupant.app_id || "Untitled") : "";
+    }
     var group = groupForOutput(state, output);
     if (!group || state.focused_output === null
             || group.outputs.indexOf(state.focused_output) === -1)
@@ -68,9 +74,22 @@ function nextMode(current) {
 function visibleWindows(state, output) {
     var group = groupForOutput(state, output);
     if (!group) return [];
+    var fullscreen = state.fullscreen_desktop;
     return state.windows.filter(function(window) {
-        return window.workspace === group.workspace && window.role === "normal" && !window.minimized;
+        if (fullscreen && fullscreen.active && fullscreen.output === output.id)
+            return !window.minimized && (window.id === fullscreen.window || window.fullscreen_transient);
+        return window.workspace === group.workspace && window.role === "normal" && !window.minimized && !window.fullscreen && !window.fullscreen_transient;
     });
+}
+
+function desktopEntries(state, output) {
+    if (!state || !output) return [];
+    var entries = state.workspaces.map(function(workspace) {
+        return {id: workspace.id, name: workspace.name, fullscreen: false};
+    });
+    if (state.fullscreen_desktop && state.fullscreen_desktop.output === output.id)
+        entries.push({id: "fullscreen", name: "Fullscreen", fullscreen: true});
+    return entries;
 }
 
 function appGroups(state, output, pins) {
