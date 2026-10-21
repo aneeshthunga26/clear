@@ -33,7 +33,7 @@ Extra parameters MUST be rejected even for parameterless actions.
 | `move_to_output` | `output`: `u64`; runtime target must exist |
 | `set_workspace_mode`, `set_output_mode` | `mode`: nonblank string, at most 256 bytes |
 | `clear_output_mode`, `cycle_mode`, `stretch_all`, `unstretch` | None |
-| `toggle_floating`, `toggle_maximized`, `toggle_fullscreen`, `minimize` | None |
+| `toggle_floating`, `toggle_maximized`, `toggle_fullscreen`, `toggle_fullscreen_low_latency`, `minimize` | None |
 | `scroll` | `amount`: `i32` logical pixels |
 | `close_focused`, `quit`, `reload` | None |
 | `spawn` | `command`: executable and argument array |
@@ -77,6 +77,12 @@ the seat's normal keyboard path.
 `toggle_fullscreen` targets the focused normal window through the
 [fullscreen policy](desktop.md#fullscreen). It accepts no arguments and has no
 default shortcut; a custom binding such as `leader+Shift+f` may assign it.
+
+`toggle_fullscreen_low_latency` is a parameterless action without a default
+binding. It enters low latency or changes the focused desktop-mode occupant in
+place; repeating it exits low latency. Ordinary `toggle_fullscreen` exits either
+mode. Bindings and Rhai use the same runtime mode selection; the monitor/config
+examples assign `leader+Shift+g` to the explicit action.
 
 `activate_fullscreen` reveals the occupied special desktop; empty/headless slots
 are safe no-ops. `workspace_next` / `workspace_previous` cycle ordinary desktops

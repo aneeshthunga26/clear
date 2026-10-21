@@ -110,7 +110,8 @@ fn fullscreen_ipc_is_strict_atomic_and_does_not_reveal_or_restore_hidden_windows
                     id: 2,
                     request: RequestKind::SetFullscreen {
                         window: window.into(),
-                        fullscreen: true
+                        fullscreen: true,
+                        mode: None
                     },
                 }
             )
@@ -118,4 +119,97 @@ fn fullscreen_ipc_is_strict_atomic_and_does_not_reveal_or_restore_hidden_windows
         );
         assert_eq!(serde_json::to_value(snapshot(&runtime)).unwrap(), before);
     }
+}
+
+#[test]
+fn low_latency_selection_and_in_place_switch_preserve_return_state() {
+    use clear::core::FullscreenMode;
+    let mut r = runtime();
+    r.config = Config::from_source("[fullscreen]\ndefault_mode='low-latency'\n[[fullscreen.rules]]\napp_id='app'\nmode='desktop'").unwrap();
+    r.action(Action::ToggleFullscreen);
+    let before = r.desktop.fullscreen_slot().unwrap().clone();
+    assert_eq!(before.mode, FullscreenMode::Desktop);
+    r.action(Action::ToggleFullscreenLowLatency);
+    let after = r.desktop.fullscreen_slot().unwrap();
+    assert_eq!(after.mode, FullscreenMode::LowLatency);
+    assert_eq!(after.return_workspace, before.return_workspace);
+    assert_eq!(after.return_output, before.return_output);
+    assert_eq!(after.return_focus, before.return_focus);
+    assert_eq!(after.window, before.window);
+    assert_eq!(after.output, before.output);
+    assert_eq!(after.revision, before.revision);
+    // Configuration changes affect future entries, not the occupied slot or repeated enters.
+    r.config.fullscreen.default_mode = FullscreenMode::Desktop;
+    r.request_fullscreen(WindowId(1), None, true, None);
+    assert_eq!(
+        r.desktop.fullscreen_slot().unwrap().mode,
+        FullscreenMode::LowLatency
+    );
+    r.action(Action::ToggleFullscreenLowLatency);
+    assert!(r.desktop.fullscreen_slot().is_none());
+    r.config.fullscreen.rules.clear();
+    r.config.fullscreen.default_mode = FullscreenMode::LowLatency;
+    r.action(Action::ToggleFullscreen);
+    assert_eq!(
+        r.desktop.fullscreen_slot().unwrap().mode,
+        FullscreenMode::LowLatency
+    );
+    r.action(Action::ToggleFullscreen);
+    assert!(r.desktop.fullscreen_slot().is_none());
+    let mut host =
+        ScriptHost::from_source("fn game() { [#{ action: \"toggle_fullscreen_low_latency\" }] }")
+            .unwrap();
+    assert_eq!(
+        host.action("game").unwrap(),
+        vec![Action::ToggleFullscreenLowLatency]
+    );
+}
+
+#[test]
+fn low_latency_config_is_strict_bounded_and_exact() {
+    use clear::core::FullscreenMode;
+    assert_eq!(
+        Config::default().fullscreen.default_mode,
+        FullscreenMode::Desktop
+    );
+    let config =
+        Config::from_source("[[fullscreen.rules]]\napp_id='Game'\nmode='low-latency'").unwrap();
+    assert_eq!(
+        config.fullscreen.mode_for("Game"),
+        FullscreenMode::LowLatency
+    );
+    assert_eq!(config.fullscreen.mode_for("game"), FullscreenMode::Desktop);
+    for source in [
+        "[fullscreen]\ndefault_mode='game'".to_owned(),
+        "[fullscreen]\ndirect_scanout=true".into(),
+        "[[fullscreen.rules]]\napp_id=''\nmode='desktop'".into(),
+        "[[fullscreen.rules]]\napp_id='app'\nmode='desktop'\n[[fullscreen.rules]]\napp_id='app'\nmode='low-latency'".into(),
+        format!("[[fullscreen.rules]]\napp_id='{}'\nmode='desktop'", "a".repeat(256)),
+        (0..257).map(|i| format!("[[fullscreen.rules]]\napp_id='app{i}'\nmode='desktop'\n")).collect(),
+    ] { assert!(Config::from_source(&source).is_err(), "{source}"); }
+}
+
+#[test]
+fn low_latency_ipc_modes_are_atomic_and_background_entry_stays_dormant() {
+    let mut r = runtime();
+    r.desktop.command(Command::SwitchWorkspace(WorkspaceId(3)));
+    let enter = parse_request(br#"{"version":1,"id":1,"request":{"type":"set_fullscreen","window":"1","fullscreen":true,"mode":"low-latency"}}"#).unwrap();
+    execute(&mut r, &enter).unwrap();
+    let state = snapshot(&r);
+    let slot = state.fullscreen_desktop.unwrap();
+    assert_eq!(slot.mode, "low-latency");
+    assert!(!slot.active);
+    assert_eq!(
+        r.desktop.window(WindowId(1)).unwrap().workspace,
+        WorkspaceId(1)
+    );
+    let before = snapshot(&r);
+    let invalid_exit = parse_request(br#"{"version":1,"id":2,"request":{"type":"set_fullscreen","window":"1","fullscreen":false,"mode":"desktop"}}"#).unwrap();
+    assert!(execute(&mut r, &invalid_exit).is_err());
+    assert_eq!(snapshot(&r), before);
+    assert!(parse_request(br#"{"version":1,"id":2,"request":{"type":"set_fullscreen","window":"1","fullscreen":true,"mode":"game"}}"#).is_err());
+    r.desktop.activate_fullscreen();
+    r.desktop.command(Command::SetMinimized(WindowId(1), true));
+    assert!(r.desktop.fullscreen_slot().is_none());
+    assert!(execute(&mut r, &enter).is_err());
 }

@@ -8,6 +8,7 @@ mod fps;
 mod frame_scheduler;
 mod input;
 mod layers;
+mod low_latency;
 mod overview;
 mod overview_animation;
 mod overview_drag;
@@ -176,7 +177,7 @@ pub fn run(options: Options) -> Result<(), Box<dyn std::error::Error>> {
             state.fail(format!("schedule deadline: {error}"));
         }
     })?;
-    backend.report();
+    backend.report(&state);
     for child in &mut state.children {
         let _ = child.kill();
         let _ = child.wait();

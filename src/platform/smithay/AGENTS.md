@@ -18,6 +18,10 @@ only directory allowed to depend on Smithay and Wayland types.
   beneath revealed shell trees before backdrop filtering so their blur samples the live preview.
   Skip ordinary scene preparation only after a complete overview backing exists,
   retaining renderer cache housekeeping. Filter only scenes with masked trees.
+- `low_latency.rs`: eligibility/reason diagnostics and minimal nested complete-frame
+  drawing. Bypass repair history rather than passing age zero to the tracker; keep
+  normal outputs clipped and rebuild repair history on recovery. See
+  [rendering](../../../specs/rendering.md#low-latency-fullscreen).
 - `fps.rs`: optional submitted-frame diagnostics with a single cached texture,
   drawn after filtering/overview, with one idle indication per quiet episode.
   Measure successful submission intervals without affecting pacing;
@@ -30,7 +34,8 @@ only directory allowed to depend on Smithay and Wayland types.
   identified host metadata or nominal timing. Keep animation sampling separate
   from client callback pacing.
 - `protocols.rs`: XDG lifecycle, metadata, popups, seat/selection and client gestures.
-  Revoke stale pre-map fullscreen epochs; map output preferences to presentation
+  Use a cheap structural stamp for effective low-latency trees without bypassing
+  applied transactions/import bookkeeping. Revoke stale pre-map fullscreen epochs; map output preferences to presentation
   targets without moving home ownership. Synchronize validated transient parents.
 - `decorations.rs`: XDG/KDE negotiation and committed-versus-pending SSD mode.
 - `titlebar.rs`: configurable shared titlebar geometry/hits, Unicode text and

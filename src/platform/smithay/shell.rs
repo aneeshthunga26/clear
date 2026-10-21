@@ -40,6 +40,18 @@ impl Compositor {
             .min()
     }
 
+    fn shell_state_snapshot(&self) -> shell::Snapshot {
+        let mut state = shell::snapshot(&self.runtime);
+        if let Some(slot) = state.fullscreen_desktop.as_mut() {
+            let (path, reason) = self.fullscreen_path();
+            slot.presentation = Some(shell::FullscreenPresentationSnapshot {
+                path: path.into(),
+                reason: reason.into(),
+            });
+        }
+        state
+    }
+
     pub fn dispatch_shell(&mut self) {
         self.expire_shell_previews();
         self.refresh_animation_targets();
@@ -140,7 +152,7 @@ impl Compositor {
                     }
                     server.reply(
                         client,
-                        shell::encode_snapshot(request.id, &shell::snapshot(&self.runtime)),
+                        shell::encode_snapshot(request.id, &self.shell_state_snapshot()),
                     );
                 }
                 _ => {
@@ -154,8 +166,16 @@ impl Compositor {
                 }
             }
         }
-        if server.has_subscribers() && (self.shell_dirty || self.shell_snapshot.is_none()) {
-            let snapshot = shell::snapshot(&self.runtime);
+        let path_changed = self
+            .shell_snapshot
+            .as_ref()
+            .and_then(|s| s.fullscreen_desktop.as_ref())
+            .and_then(|s| s.presentation.as_ref())
+            .is_some_and(|p| (p.path.as_str(), p.reason.as_str()) != self.fullscreen_path());
+        if server.has_subscribers()
+            && (self.shell_dirty || self.shell_snapshot.is_none() || path_changed)
+        {
+            let snapshot = self.shell_state_snapshot();
             if self.shell_snapshot.as_ref() != Some(&snapshot) {
                 server.publish(shell::encode_update(&snapshot));
                 self.shell_snapshot = Some(snapshot);

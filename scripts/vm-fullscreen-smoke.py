@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded real-XDG fullscreen protocol/GPU checks on a private virtual KWin host.
 
-Builds only the SHM fixture; prepare the Rust binary separately. Six cases cover
+Builds only the SHM fixture; prepare the Rust binary separately. Cases cover
 reserved/full output geometry, layer priority, IPC/maximize/minimize restore,
 pre-map requests, an explicit right-output target, ACKed but uncommitted SSD
 entry, and launcher rejection. Artifacts include protocol commands/state and
@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 
@@ -37,6 +38,13 @@ CASES = (
     "desktop-slot",
     "premap-supersession",
     "transient-dialog",
+    "low-latency-steady",
+    "low-latency-mixed",
+    "low-latency-recovery",
+    "low-latency-overlay",
+    "low-latency-held",
+    "low-latency-tree",
+    "low-latency-initial",
 )
 CONFIG = """gaps = 0
 [theme]
@@ -106,6 +114,97 @@ def drive(client, peer, case, checks):
             focus="app",
         )
         checks.append({"check": label + " policy", "window": policy(peer, "app", fullscreen=True)})
+
+    if case.startswith("low-latency-"):
+        if case == "low-latency-initial":
+            client.command("app-fullscreen app 640 480 0 0 30b050")
+            expect("initial fullscreen uses current app rule", sizes={"app": (640, 480)}, fields={"app": {"committed_fullscreen": True}}, focus="app")
+            identity = window(peer, "app")["id"]
+        elif case == "low-latency-tree":
+            client.command("app app 640 480 0 7 30b050")
+            expect("offset app", sizes={"app": (640, 448)}, focus="app")
+            identity = window(peer, "app")["id"]
+        else:
+            identity = app()
+        def path(expected, reason=None):
+            def matches():
+                slot = peer.state()["fullscreen_desktop"]
+                return slot if slot and slot["mode"] == "low-latency" and slot["presentation"]["path"] == expected and (reason is None or slot["presentation"]["reason"] == reason) else None
+            result = SHELL.wait_for(matches, f"{expected} {reason}", seconds=3)
+            checks.append({"check": "effective path", "slot": result})
+        if case == "low-latency-held":
+            client.command("hold app")
+            client.command("fullscreen app")
+            expect("held content cannot enter minimal presenter", configure_sizes={"app": (640, 480)}, fields={"app": {"committed_fullscreen": False, "hold_commit": True}})
+            path("normal-overlay", "pending-commit")
+            client.command("commit app")
+            expect("committed content enables presenter", sizes={"app": (640, 480)}, fields={"app": {"committed_fullscreen": True}})
+        elif case == "low-latency-mixed":
+            client.command("app other 640 480 0 0 3060e0")
+            expect("second ordinary app", sizes={"app": (320, 448), "other": (320, 448)})
+            peer.command("focus_window", window=identity)
+            client.command("fullscreen app right")
+            expect("minimal right output with normal left", sizes={"app": (640, 480), "other": (640, 448)}, fields={"app": {"committed_fullscreen": True}}, focus="app")
+        elif case != "low-latency-initial":
+            full()
+        path("full-frame-composed", "nested")
+        client.command("color-undamaged app 30b050")
+        if case == "low-latency-tree":
+            client.command("subsurface child app 60 40 80 100 e04030")
+            client.command("subsurface-sync syncchild app 70 50 200 210 20c0d0")
+            client.command("color syncchild 3060e0")
+            client.command("commit app")
+            client.command("callbacks app")
+            time.sleep(0.4)
+            client.command("stop-frames app")
+            return (640, 480), [(0, 0, APP), (85 - 7, 105 - 7, PANEL), (205 - 7, 215 - 7, OTHER), (639, 479, APP)]
+        if case == "low-latency-steady":
+            client.command("animate app")
+            time.sleep(0.7)
+            client.command("stop-frames app")
+            before = client.command("state")["views"]["app"]["frame_count"]
+            client.command("callbacks app")
+            time.sleep(0.7)
+            after = client.command("state")["views"]["app"]["frame_count"]
+            assert after - before >= 15, (before, after)
+            client.command("stop-frames app")
+            client.command("color-undamaged app 30b050")
+            # Transparent content must reveal black, with no wallpaper/panel underneath.
+            client.command("alpha app 0")
+            return (640, 480), [(0, 0, (0, 0, 0)), (320, 240, (0, 0, 0)), (639, 479, (0, 0, 0))]
+        if case == "low-latency-recovery":
+            peer.command("toggle_overview")
+            SHELL.wait_for(lambda: peer.state()["overview_open"], "overview entry")
+            path("normal-overlay", "overview")
+            peer.command("toggle_overview")
+            SHELL.wait_for(lambda: not peer.state()["overview_open"], "overview exit")
+            path("full-frame-composed", "nested")
+            peer.command("set_fullscreen", window=identity, fullscreen=True, mode="desktop")
+            assert peer.state()["fullscreen_desktop"]["mode"] == "desktop"
+            client.command("unfullscreen app")
+            expect("normal damage history restored", sizes={"app": (640, 448)}, fields={"app": {"committed_fullscreen": False}})
+            client.command("color app 3060e0")
+            return (640, 480), [(10, 10, PANEL), (10, 40, OTHER), (630, 470, OTHER)]
+        if case == "low-latency-overlay":
+            client.command("layer overlay 3 100 50 0 0 20c0d0")
+            expect("overlay configured", configured=("overlay",))
+            client.command("map overlay")
+            expect("overlay mapped", sizes={"overlay": (100, 50)})
+            path("normal-overlay", "overlay")
+            client.command("unmap overlay")
+            path("full-frame-composed", "nested")
+            client.command("app dialog 200 100 1 0 e04030")
+            client.command("parent dialog app")
+            expect("related dialog mapped", sizes={"dialog": (200, 100)})
+            path("normal-overlay", "dialog")
+            client.command("unmap dialog")
+            path("full-frame-composed", "nested")
+            client.command("popup popup app 20 30 90 60 20c0d0")
+            expect("app popup in minimal scene", sizes={"popup": (90, 60)})
+            return (640, 480), [(25, 35, (32, 192, 208)), (320, 240, APP)]
+        if case == "low-latency-mixed":
+            return (1280, 480), [(10, 10, PANEL), (10, 40, OTHER), (630, 470, OTHER), (640, 0, APP), (1279, 479, APP)]
+        return (640, 480), [(0, 0, APP), (639, 479, APP)]
 
     if case == "desktop-slot":
         identity = app()
@@ -369,7 +468,13 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
     directory = artifacts / case
     directory.mkdir(parents=True, exist_ok=True)
     config = directory / "config.toml"
-    config.write_text(CONFIG + (RIGHT if case in ("output-target", "output-target-stretched") else "") + ("\n[animations]\nenabled = true\n" if case == "output-target-stretched" else ""))
+    extra = ""
+    if case.startswith("low-latency-"):
+        extra = '\n[fullscreen]\ndefault_mode = "desktop"\n[[fullscreen.rules]]\napp_id = "app"\nmode = "low-latency"\n[animations]\nenabled = true\n'
+    base_config = CONFIG
+    if case == "low-latency-mixed":
+        base_config = base_config.replace('background = [0.0, 0.0, 0.0, 1.0]', 'background = [0.0, 0.0, 0.0, 1.0]\nblur_radius = 2\nblur_method = "kawase"\nblur_passes = 3\n[theme.liquid_glass]\nenabled = true')
+    config.write_text(base_config + (RIGHT if case in ("output-target", "output-target-stretched", "low-latency-mixed") else "") + ("\n[animations]\nenabled = true\n" if case == "output-target-stretched" else "") + extra)
     frame = directory / "frame.ppm"
     frame.unlink(missing_ok=True)
     name = f"clear-fullscreen-{os.getpid()}-{case}"
@@ -388,7 +493,7 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
                     "--exit-after", str(args.seconds),
                     "--capture", str(frame),
                 ],
-                env=dict(env, WAYLAND_DISPLAY=host_name),
+                env=dict(env, WAYLAND_DISPLAY=host_name, CLEAR_RENDER_STATS="1"),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -421,6 +526,17 @@ def run_case(args, fixture, artifacts, env, runtime, host_name, case):
             log.flush()
             text = (directory / "clear.log").read_text()
             assert "clear: stopped" in text and "panicked" not in text
+            if case.startswith("low-latency-"):
+                stats = json.loads(next(line.removeprefix("clear: render stats ") for line in text.splitlines() if line.startswith("clear: render stats ")))
+                assert stats["low_latency_submissions"] > 0, stats
+                assert stats["low_latency_commits"] > 0, stats
+                assert stats["repair_calls"] < stats["submissions"], stats
+                if case == "low-latency-steady":
+                    assert stats["callback_only"] >= 15, stats
+                    assert stats["policy_reconciliations"] < stats["low_latency_commits"], stats
+                    assert stats["last_scene_submission_ms"] < 6000, stats
+                    assert stats["submissions"] < 180 and stats["loop_turns"] < 800, stats
+                checks.append({"check": "presenter instrumentation", "stats": stats})
         finally:
             if peer is not None:
                 peer.close()

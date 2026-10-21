@@ -56,7 +56,7 @@ Each line is a separate request. The complete allowlist is:
 | `move_window_to_workspace` | `window`, `workspace` | Move an explicit normal window through core transfer policy without switching workspaces or focusing it |
 | `window_previews` | `windows` | Request a bounded batch of committed window images; requires a mapped panel owned by the requesting process |
 | `set_maximized` | `window`, `maximized` boolean | Set normal-window maximize state without explicitly changing focus |
-| `set_fullscreen` | `window`, `fullscreen` boolean | Replace/clear the single fullscreen occupant; a focused target activates, background targets remain dormant; minimized enters fail |
+| `set_fullscreen` | `window`, `fullscreen` boolean, optional `mode` | Replace/clear the single fullscreen occupant; a focused target activates, background targets remain dormant; minimized enters fail |
 | `set_minimized` | `window`, `minimized` boolean | Hide/restore a normal window; repair focus when needed |
 | `set_mode` | `output`, `mode` | Set current workspace's override on that output without stealing focus |
 | `clear_mode` | `output` | Clear that workspace/output override |
@@ -114,9 +114,27 @@ All identity fields below are decimal strings, including identities inside array
 | `windows` | `{id,title,app_id,workspace,output,role,floating,maximized,minimized,fullscreen,fullscreen_transient,focused}` |
 | `focused_output`, `focused_window` | ID or null |
 | `overview_open` | Boolean; active compositor-owned overview, excluding a deferred request |
-| `fullscreen_desktop` | null or `{window,mode:"desktop",output,active}`; output can be null when headless; separate from numbered workspaces |
+| `fullscreen_desktop` | null or `{window,mode,output,active,presentation}`; output can be null when headless; separate from numbered workspaces |
 | `switcher` | null or `{output,windows,selected}` during the compositor's Alt-held gesture |
-| `capabilities` | String array; includes `animation_targets_v1`, `window_previews_v1` and `fullscreen_desktop_v1` for the implemented adapter protocols |
+| `capabilities` | String array; includes `animation_targets_v1`, `window_previews_v1` `fullscreen_desktop_v1` and `fullscreen_low_latency_v1` for the implemented adapter protocols |
+
+`set_fullscreen` accepts `mode: "desktop" | "low-latency"` only for enter
+operations. Unknown modes or a supplied non-null mode on exit MUST fail before
+mutation. Omitted/null mode resolves current-occupant mode or configured rules/default.
+Minimized/launcher/unknown targets still fail atomically. Changing the current
+occupant's mode preserves return context and activation semantics.
+
+`fullscreen_desktop.mode` reports requested mode. The implemented adapter fills
+`presentation: {path, reason}` separately. Paths/reasons are:
+
+- `normal` / `desktop` for desktop mode.
+- `full-frame-composed` / `nested` for the minimal nested presenter.
+- `normal-overlay` with `headless`, `dormant`, `overview`, `switcher`,
+  `shell-preview`, `dialog`, `overlay` or `pending-commit`, in that priority order,
+  while the requested low-latency mode cannot use that presenter.
+
+Backend-independent `shell::snapshot` leaves `presentation` null; wire snapshots
+and subscriptions from the adapter resolve it. No direct-scanout path is exposed.
 
 Window `output` is its saved home or null, not a visibility test. `role` is
 `normal` or `launcher`. `floating` is the saved exception flag, not the effective

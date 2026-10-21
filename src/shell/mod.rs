@@ -10,7 +10,7 @@ pub use animation_targets::{AnimationTarget, PanelSnapshot, TargetRect};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    core::{Command, Mode, OutputId, WindowRole},
+    core::{Command, FullscreenMode, Mode, OutputId, WindowRole},
     runtime::Runtime,
 };
 
@@ -74,6 +74,8 @@ pub enum RequestKind {
     SetFullscreen {
         window: String,
         fullscreen: bool,
+        #[serde(default)]
+        mode: Option<FullscreenMode>,
     },
     SetMinimized {
         window: String,
@@ -128,6 +130,15 @@ pub struct FullscreenDesktopSnapshot {
     pub mode: String,
     pub output: Option<String>,
     pub active: bool,
+    /// Adapter-resolved path; absent in backend-independent snapshots.
+    pub presentation: Option<FullscreenPresentationSnapshot>,
+}
+
+/// Requested mode stays separate from the actual backend presenter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FullscreenPresentationSnapshot {
+    pub path: String,
+    pub reason: String,
 }
 
 /// Pending Alt-Tab candidates and selected window, without changing focus yet.
@@ -202,14 +213,16 @@ pub fn snapshot(runtime: &Runtime) -> Snapshot {
             .fullscreen_slot()
             .map(|s| FullscreenDesktopSnapshot {
                 window: s.window.0.to_string(),
-                mode: "desktop".into(),
+                mode: s.mode.as_str().into(),
                 output: s.output.map(|o| o.0.to_string()),
                 active: s.active,
+                presentation: None,
             }),
         capabilities: vec![
             "animation_targets_v1".into(),
             "window_previews_v1".into(),
             "fullscreen_desktop_v1".into(),
+            "fullscreen_low_latency_v1".into(),
         ],
         outputs: desktop
             .outputs()
@@ -425,8 +438,24 @@ pub fn execute(runtime: &mut Runtime, request: &Request) -> Result<(), String> {
                 RequestKind::SetMaximized { maximized, .. } => {
                     Command::SetMaximized(window.id, *maximized)
                 }
-                RequestKind::SetFullscreen { fullscreen, .. } => {
-                    Command::SetFullscreen(window.id, *fullscreen)
+                RequestKind::SetFullscreen {
+                    fullscreen, mode, ..
+                } => {
+                    if !fullscreen && mode.is_some() {
+                        return Err("mode is only valid when entering fullscreen".into());
+                    }
+                    let id = window.id;
+                    if *fullscreen {
+                        runtime.request_fullscreen(
+                            id,
+                            None,
+                            runtime.desktop.focused_window() == Some(id),
+                            *mode,
+                        );
+                    } else {
+                        runtime.desktop.leave_fullscreen(id);
+                    }
+                    return Ok(());
                 }
                 RequestKind::SetMinimized { minimized, .. } => {
                     Command::SetMinimized(window.id, *minimized)

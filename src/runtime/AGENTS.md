@@ -5,6 +5,8 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 ## Responsibilities and boundaries
 
 `mod.rs` connects configuration, compiled bindings, desktop commands, and Rhai.
+It resolves fullscreen mode selection through explicit request, exact app rule
+and default, preserving the mode/return state of existing occupants.
 It also defines backend-neutral launch `Options`. Keep Smithay and protocol
 objects out of this module; return effects for the platform to execute.
 

@@ -154,3 +154,15 @@ height = 600
 # set_output_mode (mode), clear_output_mode, cycle_mode, stretch_all, unstretch,
 # toggle_floating, toggle_maximized, minimize, scroll (amount), close_focused, reload.
 # Built-in mode names and output IDs are resolved by the platform.
+
+# Ordinary client fullscreen stays in desktop mode. Match game app IDs exactly.
+[fullscreen]
+default_mode = "desktop" # desktop | low-latency
+# [[fullscreen.rules]]
+# app_id = "your-game-app-id"
+# mode = "low-latency"
+
+# Explicitly switch the focused window to low-latency mode; repeat to exit.
+[[bindings]]
+key = "leader+Shift+g"
+action = "toggle_fullscreen_low_latency"

@@ -58,7 +58,9 @@ plain Unix IO and must not import Smithay, Wayland, Qt, or Quickshell.
   maximize state. Do not add separate shell policy or undo core focus decisions.
 - The additive `fullscreen_desktop` snapshot is separate from numbered workspaces.
   `activate_fullscreen` validates an occupied connected slot. Keep home `output`
-  distinct from its target; transient dialogs share visibility without another occupant.
+  distinct from its target; requested mode and adapter-resolved presentation diagnostics
+  are separate. Optional `set_fullscreen.mode` is valid only on entry;
+  transient dialogs share visibility without another occupant.
 - Snapshot/subscribe execution is a no-op; the transport supplies their responses.
   Snapshot responses carry an ID and `state`; unsolicited `state` responses omit
   the ID. Error responses carry `message` and an ID or JSON null.

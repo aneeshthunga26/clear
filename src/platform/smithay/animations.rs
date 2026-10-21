@@ -85,6 +85,7 @@ pub(super) struct WindowAnimations {
     topology: Vec<(OutputId, Rect)>,
     policy_workspaces: BTreeMap<OutputId, crate::core::PresentationTarget>,
     pending_workspace_outputs: BTreeSet<OutputId>,
+    low_latency_outputs: BTreeSet<OutputId>,
 }
 
 impl WindowAnimations {
@@ -336,11 +337,39 @@ impl Compositor {
             }
         }
         animations.policy_workspaces = workspaces;
-        let causes: Vec<_> = if suppressed || reset || grabbed {
+        let direct_outputs: BTreeSet<_> = self.requested_low_latency_output().into_iter().collect();
+        let affected: BTreeSet<_> = direct_outputs
+            .union(&animations.low_latency_outputs)
+            .copied()
+            .collect();
+        let mut causes: Vec<_> = if suppressed || reset || grabbed {
             vec![TransitionCause::Settle]
         } else {
             Vec::new()
         };
+        causes.extend(affected.iter().copied().map(TransitionCause::SettleOutput));
+        animations.low_latency_outputs = direct_outputs;
+        for output in &affected {
+            animations.pending_workspace_outputs.remove(output);
+        }
+        let direct_keys: Vec<_> = animations
+            .images
+            .keys()
+            .chain(animations.submitted_images.keys())
+            .copied()
+            .filter(|key| {
+                self.runtime
+                    .desktop
+                    .presentation_output(key.window)
+                    .is_some_and(|o| affected.contains(&o))
+            })
+            .collect();
+        for key in direct_keys {
+            animations.forget_window(key);
+        }
+        animations
+            .presented_workspaces
+            .retain(|m| !m.outputs.iter().any(|o| affected.contains(o)));
         if suppressed || reset || grabbed {
             animations.drop_images();
         }
@@ -500,6 +529,10 @@ impl Compositor {
         let candidates: Vec<_> = self
             .placements
             .iter()
+            .filter(|p| {
+                self.requested_low_latency_output()
+                    != self.runtime.desktop.presentation_output(p.window)
+            })
             .filter(|p| {
                 self.runtime
                     .desktop

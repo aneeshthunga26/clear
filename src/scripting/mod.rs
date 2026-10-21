@@ -454,6 +454,7 @@ fn decode_action(value: Dynamic) -> Result<Action, String> {
         "toggle_floating" => Action::ToggleFloating,
         "toggle_maximized" => Action::ToggleMaximized,
         "toggle_fullscreen" => Action::ToggleFullscreen,
+        "toggle_fullscreen_low_latency" => Action::ToggleFullscreenLowLatency,
         "minimize" => Action::Minimize,
         "scroll" => Action::Scroll {
             amount: take_i32(&mut map, "amount")?,

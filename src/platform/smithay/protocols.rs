@@ -58,6 +58,7 @@ struct CommittedVisual(std::sync::Mutex<CommittedVisualState>);
 struct CommittedVisualState {
     fingerprint: Option<TreeVisual>,
     revision: u64,
+    fast_stamp: Option<u64>,
 }
 
 /// A committed tree's appearance revision also changes for attachments with no reported damage.
@@ -108,7 +109,10 @@ struct AssignedBuffer {
     damage: CommitCounter,
 }
 
-fn tree_buffer_assignments(surface: &WlSurface) -> (bool, Vec<AssignedBuffer>) {
+fn tree_buffer_assignments(
+    surface: &WlSurface,
+    inspect_damage: bool,
+) -> (bool, Vec<AssignedBuffer>) {
     let mut assigned = false;
     let mut buffers = Vec::new();
     with_surface_tree_upward(
@@ -124,8 +128,15 @@ fn tree_buffer_assignments(surface: &WlSurface) -> (bool, Vec<AssignedBuffer>) {
                     None => (false, false),
                 }
             };
-            assigned |= has_assignment;
-            if new_buffer {
+            assigned |= has_assignment
+                || (!inspect_damage
+                    && !states
+                        .cached_state
+                        .get::<SurfaceAttributes>()
+                        .current()
+                        .damage
+                        .is_empty());
+            if new_buffer && inspect_damage {
                 let damage = states
                     .data_map
                     .get::<RendererSurfaceStateUserData>()
@@ -242,6 +253,78 @@ impl Compositor {
             }
         }
     }
+    fn low_latency_tree(&self, root: &WlSurface) -> bool {
+        if self.low_latency_output().is_none() {
+            return false;
+        }
+        let owner = self
+            .popups
+            .find_popup(root)
+            .and_then(|p| find_popup_root_surface(&p).ok());
+        self.window_id(owner.as_ref().unwrap_or(root))
+            .is_some_and(|id| {
+                self.runtime
+                    .desktop
+                    .fullscreen_slot()
+                    .is_some_and(|s| s.window == id)
+            })
+    }
+
+    // One allocation-free stamp of geometry/tree membership, without copying opaque/damage
+    // regions or comparing buffer/commit histories. Attachments always schedule directly.
+    fn fast_tree_stamp(&self, root: &WlSurface) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut stamp = std::hash::DefaultHasher::new();
+        with_surface_tree_upward(
+            root,
+            (),
+            |_, _, _| TraversalAction::DoChildren(()),
+            |surface, states, _| {
+                surface.id().hash(&mut stamp);
+                if let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() {
+                    let state = data.lock().unwrap();
+                    state.buffer().is_some().hash(&mut stamp);
+                    if let Some(view) = state.view() {
+                        for value in [
+                            view.src.loc.x,
+                            view.src.loc.y,
+                            view.src.size.w,
+                            view.src.size.h,
+                        ] {
+                            value.to_bits().hash(&mut stamp);
+                        }
+                        (view.dst.w, view.dst.h, view.offset.x, view.offset.y).hash(&mut stamp);
+                    }
+                }
+                let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                let attrs = attrs.current();
+                attrs.buffer_scale.hash(&mut stamp);
+                u32::from(attrs.buffer_transform).hash(&mut stamp);
+                let location = states
+                    .cached_state
+                    .get::<SubsurfaceCachedState>()
+                    .current()
+                    .location;
+                (location.x, location.y).hash(&mut stamp);
+            },
+            |_, _, _| true,
+        );
+        let geometry = with_states(root, |s| {
+            s.cached_state
+                .get::<SurfaceCachedState>()
+                .current()
+                .geometry
+        });
+        geometry
+            .map(|r| (r.loc.x, r.loc.y, r.size.w, r.size.h))
+            .hash(&mut stamp);
+        if let Some(popup) = self.popups.find_popup(root) {
+            let r = popup.geometry();
+            (r.loc.x, r.loc.y, r.size.w, r.size.h).hash(&mut stamp);
+        }
+        stamp.finish()
+    }
+
     fn surface_tree_visual(&self, root: &WlSurface) -> TreeVisual {
         let mut surfaces = Vec::new();
         with_surface_tree_upward(
@@ -394,8 +477,9 @@ impl CompositorHandler for Compositor {
         }
         // Applied synchronized child updates are inspected with their parent's tree;
         // cached child commits must neither paint nor service unapplied callbacks.
+        let fast_commit = self.low_latency_tree(&tree_root);
         let (assigned_buffer, new_buffers) = if effective {
-            tree_buffer_assignments(&tree_root)
+            tree_buffer_assignments(&tree_root, !fast_commit)
         } else {
             (false, Vec::new())
         };
@@ -451,10 +535,14 @@ impl CompositorHandler for Compositor {
                         && entry.initial_fullscreen_revision
                             == self.runtime.desktop.fullscreen_revision()
                     {
-                        self.runtime.desktop.request_fullscreen(
+                        self.runtime.desktop.request_fullscreen_mode(
                             id,
                             entry.initial_fullscreen_output,
                             true,
+                            self.runtime
+                                .config
+                                .fullscreen
+                                .mode_for(&self.runtime.desktop.window(id).unwrap().app_id),
                         );
                     }
                     entry.initial_maximized = false;
@@ -506,8 +594,14 @@ impl CompositorHandler for Compositor {
         self.layer_commit(surface);
         self.dirty = was_dirty;
         if effective {
-            let visual = self.surface_tree_visual(&tree_root);
-            let changed = with_states(&tree_root, |states| {
+            if fast_commit {
+                self.low_latency_commits += 1;
+            } else {
+                self.visual_comparisons += 1;
+            }
+            let fast_stamp = fast_commit.then(|| self.fast_tree_stamp(&tree_root));
+            let visual = (!fast_commit).then(|| self.surface_tree_visual(&tree_root));
+            let (changed, policy_changed) = with_states(&tree_root, |states| {
                 states
                     .data_map
                     .insert_if_missing_threadsafe(CommittedVisual::default);
@@ -518,17 +612,33 @@ impl CompositorHandler for Compositor {
                     .0
                     .lock()
                     .unwrap();
-                let changed = assigned_buffer || previous.fingerprint.as_ref() != Some(&visual);
+                let structural_change =
+                    fast_stamp.is_some_and(|stamp| previous.fast_stamp != Some(stamp));
+                let changed = assigned_buffer
+                    || if let Some(stamp) = fast_stamp {
+                        previous.fast_stamp != Some(stamp)
+                    } else {
+                        previous.fingerprint != visual
+                    };
                 if changed {
                     previous.revision = previous
                         .revision
                         .checked_add(1)
                         .expect("committed visual revision exhausted");
                 }
-                previous.fingerprint = Some(visual);
-                changed
+                previous.fingerprint = visual;
+                previous.fast_stamp = fast_stamp;
+                (
+                    changed,
+                    if fast_commit {
+                        structural_change
+                    } else {
+                        changed
+                    },
+                )
             });
-            self.dirty |= changed;
+            // A new same-geometry game buffer needs pixels, not another layout/configure pass.
+            self.dirty |= policy_changed;
             if changed && self.surface_contributes_pixels(&tree_root) {
                 self.render_demand.invalidate(if uncertain_damage {
                     super::render_demand::Reason::UncertainCommit
@@ -834,10 +944,11 @@ impl Compositor {
                 .is_some_and(|w| w.role == crate::core::WindowRole::Normal)
             {
                 if fullscreen {
-                    self.runtime.desktop.request_fullscreen(
+                    self.runtime.request_fullscreen(
                         id,
                         output,
                         self.runtime.desktop.focused_window() == Some(id),
+                        None,
                     );
                 } else {
                     self.runtime.desktop.leave_fullscreen(id);

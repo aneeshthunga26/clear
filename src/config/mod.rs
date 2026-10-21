@@ -14,6 +14,8 @@ use std::{
 use serde::Deserialize;
 
 mod animations;
+mod fullscreen;
+pub use fullscreen::{FullscreenConfig, FullscreenRule};
 mod shell;
 mod wallpaper;
 pub use animations::{
@@ -93,8 +95,10 @@ pub struct Config {
     pub shell: ShellConfig,
     /// Pointer behavior in the compositor-owned overview.
     pub overview: OverviewConfig,
-    /// Animation engine preferences; visible effects are not yet connected.
+    /// Animation engine and visible effect preferences.
     pub animations: AnimationsConfig,
+    /// Fullscreen entry mode selection.
+    pub fullscreen: FullscreenConfig,
 }
 
 impl Default for Config {
@@ -125,6 +129,7 @@ impl Default for Config {
             shell: ShellConfig::default(),
             overview: OverviewConfig::default(),
             animations: AnimationsConfig::default(),
+            fullscreen: FullscreenConfig::default(),
         }
     }
 }
@@ -144,6 +149,7 @@ struct Source {
     shell: ShellConfig,
     overview: OverviewConfig,
     animations: AnimationsConfig,
+    fullscreen: FullscreenConfig,
     keys: Keys,
 }
 
@@ -163,6 +169,7 @@ impl Default for Source {
             shell: config.shell,
             overview: config.overview,
             animations: config.animations,
+            fullscreen: config.fullscreen,
             keys: Keys::default(),
         }
     }
@@ -247,6 +254,7 @@ impl Config {
             shell: source.shell,
             overview: source.overview,
             animations: source.animations,
+            fullscreen: source.fullscreen,
         };
         config.validate()?;
         Ok(config)
@@ -264,6 +272,7 @@ impl Config {
     }
 
     fn validate(&self) -> Result<(), String> {
+        self.fullscreen.validate()?;
         if self.outputs.is_empty() || self.outputs.len() > 16 {
             return Err("configure between 1 and 16 outputs".into());
         }

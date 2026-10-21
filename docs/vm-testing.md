@@ -70,16 +70,39 @@ Contract: [fullscreen policy](../specs/desktop.md#fullscreen),
 python3 -B scripts/vm-fullscreen-smoke.py --binary target/debug/clear
 ```
 
-Ten bounded cases use real XDG/layer SHM clients and shell IPC: `xdg-entry`,
+Seventeen bounded cases use real XDG/layer SHM clients and shell IPC. Desktop cases are: `xdg-entry`,
 `state-interleavings`, `initial-fullscreen`, `output-target`, `output-target-stretched`, `ssd-held`,
-`launcher-rejected`, `desktop-slot`, `premap-supersession`, and `transient-dialog`. They check full bounds despite panel reservations, top-panel
+`launcher-rejected`, `desktop-slot`, `premap-supersession`, and `transient-dialog`. Low-latency cases are `low-latency-steady`,
+`low-latency-mixed`, `low-latency-recovery`, `low-latency-overlay`,
+`low-latency-held`, `low-latency-tree` and `low-latency-initial`. They check full bounds despite panel reservations, top-panel
 occlusion with overlay priority, maximize/minimize restoration, first configure
 state, explicit output placement, decoration retention after an ACK with held
 commit, and launcher refusal. Each compositor runs for 16 seconds by default;
-allow about three minutes overall. Repeat `--case NAME` to select cases and use
+allow about five minutes overall. Repeat `--case NAME` to select cases and use
 `--seconds 10..30` for the bounded runtime. Dependencies match the layer fixture.
 No physical clicks/keys, delayed ACKs, visual animation or native DRM are tested.
 Artifacts stay under `target/vm-fullscreen-smoke/` by default.
+
+Nested low-latency validation (private **local virtual KWin**, not a VM):
+
+- All seven low-latency cases passed on the release binary across
+  `target/low-latency-final-gpu/` and `target/low-latency-initial/`, along with
+  `desktop-slot` and `premap-supersession` regressions. They cover undamaged buffer
+  replacement, transparent black backing, mixed outputs, overview/mode/repair
+  recovery, overlay/dialog interruptions, popup pixels, held first fullscreen
+  commits, initial app-rule selection, nonzero geometry and synchronized children.
+- After removing same-geometry policy reconciliation, release steady/tree cases
+  passed again in `target/low-latency-content-final/`. The steady run recorded 90
+  effective low-latency commits, 6 ordinary visual comparisons, 10 policy
+  reconciliations, 48 low-latency submissions and 41 callback-only opportunities.
+  Its last scene submission was at about 2.87 seconds, then it settled idle.
+  These whole-run counts include startup/ordinary rendering, the explicit update
+  interval and scheduled diagnostic capture; they are not a hardware benchmark.
+- Final mixed-output blur/glass and ordinary-renderer recovery checks passed in
+  `target/low-latency-effects-final/`.
+- Cargo fmt/check/test, editor diagnostics, release build and the optional shell's
+  16 Node model tests passed. No physical input, relative pointer/lock, native
+  scanout, GPU residency measurement or delivered latency was tested.
 
 Dedicated fullscreen desktop validation (private **local virtual KWin**, not a VM):
 

@@ -347,3 +347,14 @@ reset engine phase or pose.
   eight effects plus restore/overview exit, fading backdrop coverage and held
   fullscreen commits. This verifies captured images and policy/configures, not
   delivered cadence or physical input.
+
+## Low-latency presentation interruption
+
+Requested [low-latency fullscreen](rendering.md#low-latency-fullscreen) settles
+window and workspace motion for its selected output, including a one-time settle
+when leaving that presentation. `TransitionCause::SettleOutput` releases affected
+retained sources and tracks without settling other outputs. The adapter omits
+animation image preparation for that output, including normal overlay fallback;
+overview still uses its own bounded live previews during the interruption.
+Mode changes do not rewrite global animation preferences. Ordinary desktop
+fullscreen retains its configured animation.

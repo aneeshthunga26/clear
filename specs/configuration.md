@@ -24,6 +24,7 @@ default configuration rather than partly applying invalid declarations.
 | `wallpaper`              | No image, `fill`                                | [Wallpaper selection](wallpaper.md#selection)                       |
 | `shell`                  | `wofi` launcher; `waybar` top-layer rule        | [Shell rules](#shell-rules)                                         |
 | `overview.preview_workspace_on_hover` | `false` | Strict boolean; [overview interaction](overview.md#layout-and-input) |
+| `fullscreen` | Desktop mode; no app rules | [Fullscreen mode selection](#fullscreen-modes) |
 | `animations` | Engine disabled, speed 1, refresh-rate sampling | Strict effect tables; [animation engine](animations.md#configuration) |
 
 Unknown fields and malformed typed values MUST be rejected. Supplied output,
@@ -135,3 +136,28 @@ gesture; dispatching `AltTab` through ordinary runtime actions does not start on
 - [Wallpaper](../tests/wallpaper.rs), [titlebar](../tests/titlebar_theme.rs),
   [rounded](../tests/rounded.rs), and [blur](../tests/blur.rs) tests cover their
   schema/resource reload cases; they do not establish rendered GPU behavior.
+
+## Fullscreen modes
+
+The strict/defaulted `[fullscreen]` table accepts `default_mode = "desktop"`
+(default) or `"low-latency"`, and `rules` (default empty). Each strict
+`[[fullscreen.rules]]` entry requires `app_id` and `mode`. Modes use the same two
+spellings. There MUST be at most 256 rules, with unique, nonblank, NUL-free app IDs
+of at most 255 UTF-8 bytes. Matching is exact and case-sensitive, with no wildcard,
+content-type or process-name inference. Unknown fields/modes MUST be rejected,
+including proposed native `direct_scanout`, VRR and tearing preferences, which are
+not implemented.
+
+Future fullscreen entries resolve explicit mode, exact rule, then default.
+Changes on successful atomic reload or late app-ID changes MUST NOT rewrite an
+occupied slot's mode. Explicit mode actions/IPC can change it in place. A failed
+reload retains all prior configuration, policy and resources. Pending pre-map XDG
+requests resolve the current app ID/rules at first mapping, after epoch validation.
+The rendering path never changes this requested policy; see
+[fullscreen ownership](desktop.md#fullscreen) and
+[nested low-latency presentation](rendering.md#low-latency-fullscreen).
+
+Evidence: `low_latency_config_is_strict_bounded_and_exact` and selection/IPC tests
+in [fullscreen tests](../tests/fullscreen.rs), plus
+`fullscreen_mode_reload_is_atomic_and_does_not_rewrite_the_current_occupant` in
+[runtime tests](../tests/runtime.rs).

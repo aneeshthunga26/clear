@@ -44,6 +44,7 @@ pub enum Action {
     ToggleMaximized,
     /// Toggle fullscreen while retaining the underlying maximize/layout state.
     ToggleFullscreen,
+    ToggleFullscreenLowLatency,
     /// Hide the focused window; explicit focus or Alt-Tab restores it.
     Minimize,
     Scroll {

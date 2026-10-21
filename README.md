@@ -32,6 +32,8 @@ Ctrl+Alt+Shift+F toggles fullscreen. See [animation controls](specs/animations.m
 for speed, sampling rate, and per-effect settings.
 [Dedicated fullscreen](specs/desktop.md#fullscreen) uses one occupied-only desktop;
 select it through overview or the optional shell, or bind `activate_fullscreen`.
+The monitor examples use Ctrl+Alt+Shift+G for [nested low-latency fullscreen](specs/rendering.md#low-latency-fullscreen); repeat to exit.
+[Exact app rules](specs/configuration.md#fullscreen-modes) can select it automatically.
 Set top-level `show_fps = true`
 for the [frame-rate overlay](specs/rendering.md#fps-overlay). Use `cargo run
 --release --` with the same arguments for optimized rendering.

@@ -49,6 +49,12 @@ struct Stats {
     uncertain_frames: u64,
     last_uncertain_submission_ms: Option<u128>,
     full_frames: u64,
+    low_latency_submissions: u64,
+    normal_submissions: u64,
+    repair_calls: u64,
+    low_latency_commits: u64,
+    visual_comparisons: u64,
+    policy_reconciliations: u64,
 }
 
 struct Control {
@@ -119,9 +125,12 @@ impl BackendHandle {
         deadline
     }
 
-    pub fn report(&self) {
+    pub fn report(&self, state: &Compositor) {
         if std::env::var_os("CLEAR_RENDER_STATS").is_some_and(|value| value == "1") {
-            let control = self.control.borrow();
+            let mut control = self.control.borrow_mut();
+            control.stats.low_latency_commits = state.low_latency_commits;
+            control.stats.visual_comparisons = state.visual_comparisons;
+            control.stats.policy_reconciliations = state.policy_reconciliations;
             let s = &control.stats;
             eprintln!(
                 "clear: render stats {}",
@@ -195,7 +204,11 @@ pub(super) fn init(
     }
     resize(state, backend.window_size(), host_timing.refresh_millihertz);
     state.runtime.configure_output_modes();
-    let mut damage = OutputDamageTracker::new(backend.window_size(), 1.0, Transform::Flipped180);
+    let mut damage = Some(OutputDamageTracker::new(
+        backend.window_size(),
+        1.0,
+        Transform::Flipped180,
+    ));
     let mut wallpapers = WallpaperCache::default();
     let mut titlebars = TitlebarCache::default();
     let mut overview = OverviewCache::default();
@@ -229,7 +242,7 @@ pub(super) fn init(
                     window_images.clear();
                     overview.clear();
                     resize(state, size, host_timing.refresh_millihertz);
-                    damage = OutputDamageTracker::new(size, 1.0, Transform::Flipped180);
+                    damage = Some(OutputDamageTracker::new(size, 1.0, Transform::Flipped180));
                     state.render_demand.invalidate(Reason::Resize);
                 }
                 WinitEvent::Input(event) => state.process_input(event),
@@ -281,6 +294,32 @@ pub(super) fn init(
                     state.reconcile();
                     state.sample_overview_animation();
                     state.sample_overview_drag();
+                    let fast = state.low_latency_output();
+                    let fast_only = fast.is_some() && state.outputs.len() == 1;
+                    if let Some(output) = fast {
+                        if damage.take().is_some() {
+                            // No overview is visible when the minimal presenter is eligible.
+                            overview.clear();
+                            if let Some(region) = state.outputs.iter().find(|o| o.id == output) {
+                                wallpapers.remove_output(&region.output.name());
+                            }
+                            titlebars.retain(|id| {
+                                state.runtime.desktop.presentation_output(id) != Some(output)
+                            });
+                            if fast_only {
+                                // Shared scratch stays live when other virtual outputs need it.
+                                wallpapers = WallpaperCache::default();
+                                titlebars.retain(|_| false);
+                                window_images.clear();
+                                rounded = None;
+                                blur = None;
+                            }
+                        }
+                    }
+                    if fast.is_none() && damage.is_none() {
+                        damage = Some(OutputDamageTracker::new(size, 1.0, Transform::Flipped180));
+                        state.render_demand.invalidate(Reason::Resize);
+                    }
                     let generation = state.render_demand.generation();
                     let motion = state.has_animation_demand();
                     let scene_work = motion || state.render_demand.is_scene_work();
@@ -299,7 +338,11 @@ pub(super) fn init(
                     }
                     let mut partial_captured = false;
                     let result = (|| -> Result<Option<Vec<Rectangle<i32, Physical>>>, String> {
-                        let age = current_window_age(&mut backend)?;
+                        let age = if fast.is_some() {
+                            0
+                        } else {
+                            current_window_age(&mut backend)?
+                        };
                         let age = if full_frame { 0 } else { age };
                         let (renderer, mut framebuffer) = backend
                             .bind()
@@ -308,10 +351,11 @@ pub(super) fn init(
                         if !radius.is_finite() || !(0.0..=32.0).contains(&radius) {
                             return Err("blur radius must be finite and in 0..=32".into());
                         }
-                        if (state.runtime.config.theme.corner_radius.is_rounded()
-                            || state.overview_present()
-                            || state.runtime.config.animations.enabled
-                            || state.shell_previews_pending())
+                        if !fast_only
+                            && (state.runtime.config.theme.corner_radius.is_rounded()
+                                || state.overview_present()
+                                || state.runtime.config.animations.enabled
+                                || state.shell_previews_pending())
                             && rounded.is_none()
                         {
                             rounded = Some(
@@ -319,7 +363,7 @@ pub(super) fn init(
                                     .map_err(|e| format!("compile rounded window shaders: {e}"))?,
                             );
                         }
-                        if let Some(shaders) = rounded.as_ref() {
+                        if let Some(shaders) = rounded.as_ref().filter(|_| !fast_only) {
                             if state.shell_previews_pending() {
                                 state.prepare_shell_previews(
                                     renderer,
@@ -352,27 +396,33 @@ pub(super) fn init(
                             wallpapers.retain(&state.runtime.wallpapers);
                         }
                         let background = premultiply(state.runtime.config.theme.background);
-                        let overview_scene = if let Some(shaders) = rounded.as_ref() {
-                            overview
-                                .elements(
-                                    state,
-                                    renderer,
-                                    &mut titlebars,
-                                    shaders,
-                                    &mut wallpapers,
-                                    &mut window_images,
-                                )
-                                .map_err(|e| format!("compose overview: {e}"))?
-                        } else {
-                            overview.clear();
+                        let overview_scene =
+                            if let Some(shaders) = rounded.as_ref().filter(|_| !fast_only) {
+                                overview
+                                    .elements(
+                                        state,
+                                        renderer,
+                                        &mut titlebars,
+                                        shaders,
+                                        &mut wallpapers,
+                                        &mut window_images,
+                                    )
+                                    .map_err(|e| format!("compose overview: {e}"))?
+                            } else {
+                                overview.clear();
+                                Scene {
+                                    elements: Vec::new(),
+                                    groups: Vec::new(),
+                                }
+                            };
+                        // Overview supplies opaque backing for every output. Preparing
+                        // hidden desktop trees would import and filter invisible pixels.
+                        let mut scene = if fast_only {
                             Scene {
                                 elements: Vec::new(),
                                 groups: Vec::new(),
                             }
-                        };
-                        // Overview supplies opaque backing for every output. Preparing
-                        // hidden desktop trees would import and filter invisible pixels.
-                        let mut scene = if !overview_scene.elements.is_empty() {
+                        } else if !overview_scene.elements.is_empty() {
                             overview_scene
                         } else {
                             state
@@ -382,6 +432,7 @@ pub(super) fn init(
                                     &mut titlebars,
                                     rounded.as_ref(),
                                     radius > 0.0 || state.runtime.config.theme.liquid_glass.enabled,
+                                    fast,
                                 )
                                 .map_err(|e| format!("compose scene: {e}"))?
                         };
@@ -418,6 +469,12 @@ pub(super) fn init(
                         } else {
                             final_elements.extend(scene.elements);
                         }
+                        if let Some(output) = fast {
+                            let mut application =
+                                state.low_latency_scene(renderer, output).elements;
+                            application.extend(final_elements);
+                            final_elements = application;
+                        }
                         if let Some(element) = control
                             .fps
                             .element(renderer, &mut titlebars, size)
@@ -426,17 +483,32 @@ pub(super) fn init(
                             final_elements.insert(0, element);
                         }
                         // Restore the window target after all thumbnail/blur offscreen work.
-                        let repaired = damage
-                            .render_output(
+                        let repaired = if fast.is_some() {
+                            super::low_latency::render_full_frame(
                                 renderer,
                                 &mut framebuffer,
-                                age,
+                                size,
                                 &final_elements,
                                 background,
                             )
-                            .map_err(|e| format!("present scene: {e}"))?
-                            .damage
-                            .cloned();
+                            .map_err(|e| format!("present low latency: {e}"))?;
+                            Some(vec![Rectangle::from_size(size)])
+                        } else {
+                            control.stats.repair_calls += 1;
+                            damage
+                                .as_mut()
+                                .expect("normal repair history initialized")
+                                .render_output(
+                                    renderer,
+                                    &mut framebuffer,
+                                    age,
+                                    &final_elements,
+                                    background,
+                                )
+                                .map_err(|e| format!("present scene: {e}"))?
+                                .damage
+                                .cloned()
+                        };
                         if repaired.is_none() {
                             return Ok(None);
                         }
@@ -508,6 +580,11 @@ pub(super) fn init(
                     control.fps.submitted(submitted_at);
                     control.callbacks.delivered(submitted_at);
                     control.stats.submissions += 1;
+                    if fast.is_some() {
+                        control.stats.low_latency_submissions += 1;
+                    } else {
+                        control.stats.normal_submissions += 1;
+                    }
                     if uncertain {
                         control.stats.uncertain_frames += 1;
                         control.stats.last_uncertain_submission_ms = Some(submitted_at.as_millis());

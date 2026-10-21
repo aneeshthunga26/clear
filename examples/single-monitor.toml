@@ -210,3 +210,15 @@ speed = 1.0
 [[bindings]]
 key = "Ctrl+Alt+Shift+f"
 action = "toggle_fullscreen"
+
+# Ordinary client fullscreen stays in desktop mode. Match game app IDs exactly.
+[fullscreen]
+default_mode = "desktop" # desktop | low-latency
+# [[fullscreen.rules]]
+# app_id = "your-game-app-id"
+# mode = "low-latency"
+
+# Explicitly switch the focused window to low-latency mode; repeat to exit.
+[[bindings]]
+key = "leader+Shift+g"
+action = "toggle_fullscreen_low_latency"

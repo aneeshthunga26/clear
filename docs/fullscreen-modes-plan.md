@@ -1,13 +1,14 @@
 # Fullscreen modes — implementation plan
 
-**Status: desktop fullscreen is implemented; low-latency/game mode remains a
-proposal.** The dedicated occupied-only slot, restoration, typed navigation,
+**Status: desktop fullscreen and the nested low-latency presenter are implemented;
+native direct presentation remains a proposal.** The dedicated occupied-only slot, restoration, typed navigation,
 overview/shell integration and asynchronous XDG lifecycle are specified in
 [desktop state](../specs/desktop.md#fullscreen),
 [platform lifecycle](../specs/platform.md#xdg-window-lifecycle-and-configures),
 [overview](../specs/overview.md#fullscreen-desktop), [shell](../specs/shell.md) and
 [animations](../specs/animations.md). The sketches below retain the broader
-future two-mode design; only `desktop` is currently exposed.
+future native design. `desktop` and `low-latency` are exposed, with the latter
+using [nested complete-frame composition](../specs/rendering.md#low-latency-fullscreen).
 
 ## 1. Intended behavior
 
@@ -58,7 +59,7 @@ struct FullscreenSlot {
 }
 ```
 
-These are the broader two-mode design sketches; the current desktop-only API
+These are the broader two-mode design sketches; the current two-mode slot API
 is defined in `src/core/fullscreen.rs`. `Desktop` stores
 `Option<FullscreenSlot>` and derives a window's public fullscreen boolean from
 slot membership. Do not retain independently writable fullscreen flags that can
@@ -325,7 +326,9 @@ rise during fallback even while the user-selected mode remains low latency.
 
 ## 6. Configuration and commands
 
-Proposed strict TOML, to be implemented and documented later:
+The implemented strict mode/rule schema is specified in
+[configuration](../specs/configuration.md#fullscreen-modes). The following broader
+sketch includes native preferences that remain proposed and are currently rejected:
 
 ```toml
 [fullscreen]
@@ -372,7 +375,7 @@ failure downgrades the path, not the requested fullscreen state.
 3. **Navigation, config and IPC.** Typed special-desktop targets, occupied-only
    overview/cycling, actions/rules, separate snapshot and Quickshell controls.
    Update configuration/input/scripting/overview/shell specs and examples together.
-4. **Nested low-latency presenter.** Separate full-frame path with no damage repair
+4. **Nested low-latency presenter (implemented).** Separate full-frame path with no damage repair
    or effects, direct commit wakeups, cache trimming and path diagnostics. Test
    idle/callback/recovery behavior and record that host presentation remains.
 5. **Native backend foundations.** Feature-gated DRM/GBM/session/libinput outputs,

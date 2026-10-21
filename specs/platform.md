@@ -321,3 +321,16 @@ is not established merely by CPU tests or protocol/capture fixtures.
   [decoration fixture](../scripts/vm-decoration-smoke.py): native state/configure
   transitions and framebuffer assertions. See [testing](../docs/vm-testing.md)
   for commands and the scope of historical runs.
+
+## Low-latency nested presentation
+
+The optional requested low-latency fullscreen mode retains normal XDG commit,
+synchronized child, buffer lifetime, configure, input and visibility handling.
+It changes only the [rendering path](rendering.md#low-latency-fullscreen) and
+[mode selection](configuration.md#fullscreen-modes). No native display ownership,
+game input protocols, direct scanout, VRR or tearing support is added. Host swaps
+remain synchronized and existing callback-only/demand-driven deadlines apply.
+`CLEAR_RENDER_STATS=1` adds `low_latency_submissions`, `normal_submissions`,
+`repair_calls`, `low_latency_commits`, `visual_comparisons` and `policy_reconciliations` to the bounded
+shutdown diagnostics. These distinguish bypassed compositor work from physical
+presentation; they MUST NOT be interpreted as a native latency measurement.

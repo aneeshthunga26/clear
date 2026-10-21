@@ -382,3 +382,37 @@ fn platform_effects_are_explicit_and_do_not_execute_in_policy() {
     assert_eq!(runtime.action(Action::Quit), vec![Effect::Quit]);
     assert!(runtime.action(Action::CloseFocused).is_empty());
 }
+
+#[test]
+fn fullscreen_mode_reload_is_atomic_and_does_not_rewrite_the_current_occupant() {
+    use clear::core::FullscreenMode;
+    let fixture = Fixture::new();
+    let path = fixture.config("[fullscreen]\ndefault_mode='low-latency'\n");
+    let mut runtime = Runtime::load(Some(path)).unwrap();
+    outputs(&mut runtime);
+    runtime
+        .desktop
+        .add_window(WindowId(1), "game".into(), "game".into());
+    runtime.action(Action::ToggleFullscreen);
+    let before = runtime.desktop.fullscreen_slot().unwrap().clone();
+    fixture.config("[fullscreen]\ndefault_mode='desktop'\n");
+    runtime.reload().unwrap();
+    assert_eq!(runtime.desktop.fullscreen_slot(), Some(&before));
+    assert_eq!(
+        runtime.config.fullscreen.default_mode,
+        FullscreenMode::Desktop
+    );
+    fixture.config("[fullscreen]\ndefault_mode='invalid'\n");
+    assert!(runtime.reload().is_err());
+    assert_eq!(runtime.desktop.fullscreen_slot(), Some(&before));
+    assert_eq!(
+        runtime.config.fullscreen.default_mode,
+        FullscreenMode::Desktop
+    );
+    runtime.action(Action::ToggleFullscreen);
+    runtime.action(Action::ToggleFullscreen);
+    assert_eq!(
+        runtime.desktop.fullscreen_slot().unwrap().mode,
+        FullscreenMode::Desktop
+    );
+}

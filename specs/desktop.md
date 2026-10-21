@@ -142,8 +142,19 @@ and [platform](platform.md#launcher-geometry).
 Clear has one fixed, occupied-only `Fullscreen` presentation destination across
 all outputs. `Desktop::fullscreen_slot` is its authoritative owner; a window's
 read-only `fullscreen` flag mirrors slot membership. There MUST NOT be two
-fullscreen occupants. This is desktop fullscreen; a low-latency/game presenter is
-not implemented.
+fullscreen occupants. The slot records requested `Desktop` or `LowLatency` mode;
+[nested presentation](rendering.md#low-latency-fullscreen) determines its effective path.
+Both modes share ownership, navigation, restoration and asynchronous XDG semantics.
+
+Runtime ordinary fullscreen entry selects an explicit requested mode, then an exact
+[app rule or default](configuration.md#fullscreen-modes). A repeated enter with no
+explicit mode preserves an existing occupant's mode. `toggle_fullscreen_low_latency`
+changes a desktop-mode occupant to low latency in place, preserving its epoch,
+output and return context; repeating it exits a low-latency occupant. Ordinary
+toggle exits either mode. Mode changes and renderer fallbacks MUST NOT transfer
+home ownership or silently change the requested mode. The core's legacy
+`request_fullscreen` / `SetFullscreen` entry explicitly selects desktop mode;
+configuration-aware callers use the runtime bridge.
 
 `ToggleFullscreen` enters/exits for the focused normal window. An explicit
 `SetFullscreen(window, true)` activates an already focused window, while a hidden

@@ -842,3 +842,88 @@ fn stretched_motion_shares_travel_extent_but_fullscreen_switches_only_its_output
             .any(|w| w.key == key(2) && w.effect.is_none())
     );
 }
+
+#[test]
+fn direct_output_cancels_its_retained_motion_without_settling_other_outputs() {
+    let mut base = snapshot(vec![window(1, 1, Some(rect()))]);
+    base.outputs.push(OutputState {
+        id: OutputId(2),
+        bounds: Rect::new(800, 0, 800, 600),
+        panel: None,
+        physical_scale: 1.0,
+    });
+    base.groups.push(GroupState {
+        id: 2,
+        presentation: PresentationTarget::Workspace(WorkspaceId(2)),
+        outputs: vec![OutputId(2)],
+        motion_bounds: None,
+    });
+    let mut second = window(2, 2, Some(Rect::new(850, 100, 200, 150)));
+    second.home_output = OutputId(2);
+    second.placement.as_mut().unwrap().clip = Some(Rect::new(800, 0, 800, 600));
+    base.windows.push(second);
+    let (mut planner, mut engine) = setup(base.clone());
+    let mut moved = base.clone();
+    for w in &mut moved.windows {
+        w.placement.as_mut().unwrap().rect.x += 50;
+    }
+    planner
+        .reconcile(moved.clone(), &[], t(0.0), &mut engine)
+        .unwrap();
+    assert!(
+        planner
+            .sample(t(0.02), &engine)
+            .windows
+            .iter()
+            .all(|w| w.effect.is_some())
+    );
+    planner
+        .reconcile(
+            moved.clone(),
+            &[TransitionCause::SettleOutput(OutputId(1))],
+            t(0.02),
+            &mut engine,
+        )
+        .unwrap();
+    let frame = planner.sample(t(0.02), &engine);
+    assert!(
+        frame
+            .windows
+            .iter()
+            .find(|w| w.key == key(1))
+            .unwrap()
+            .effect
+            .is_none()
+    );
+    assert!(
+        frame
+            .windows
+            .iter()
+            .find(|w| w.key == key(2))
+            .unwrap()
+            .effect
+            .is_some()
+    );
+    let mut hidden = moved.clone();
+    hidden.windows[0].placement = None;
+    let update = planner
+        .reconcile(
+            hidden,
+            &[TransitionCause::SettleOutput(OutputId(1))],
+            t(0.03),
+            &mut engine,
+        )
+        .unwrap();
+    assert!(update.retain.is_empty());
+    moved.groups[0].presentation = PresentationTarget::Fullscreen;
+    moved.windows[0].fullscreen = true;
+    planner
+        .reconcile(
+            moved,
+            &[TransitionCause::SettleOutput(OutputId(1))],
+            t(0.04),
+            &mut engine,
+        )
+        .unwrap();
+    assert!(planner.sample(t(0.04), &engine).workspaces.is_empty());
+}

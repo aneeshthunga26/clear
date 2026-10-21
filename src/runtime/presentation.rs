@@ -104,6 +104,8 @@ pub enum TransitionCause {
     },
     /// Settle all motion for an output/topology/resource reset.
     Settle,
+    /// Settle only the affected presentation output, retaining other outputs' motion.
+    SettleOutput(OutputId),
 }
 
 /// Opaque retained-image identity assigned by the planner; the adapter owns its pixels.
@@ -239,6 +241,35 @@ impl PresentationPlanner {
             self.snapshot = snapshot;
             return Ok(update);
         }
+        let direct_outputs: BTreeSet<_> = causes
+            .iter()
+            .filter_map(|cause| match cause {
+                TransitionCause::SettleOutput(output) => Some(*output),
+                _ => None,
+            })
+            .collect();
+        if !direct_outputs.is_empty() {
+            let keys: BTreeSet<_> = self
+                .snapshot
+                .windows
+                .iter()
+                .chain(&snapshot.windows)
+                .filter(|w| direct_outputs.contains(&w.home_output))
+                .map(|w| w.key)
+                .collect();
+            for key in keys {
+                update.release.extend(self.settle_window(key, engine));
+            }
+            let groups: Vec<_> = self
+                .groups
+                .iter()
+                .filter(|(_, m)| m.outputs.iter().any(|o| direct_outputs.contains(o)))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in groups {
+                self.remove_group(id, engine);
+            }
+        }
         update.release.extend(self.retire_finished(now, engine));
         let connected: BTreeSet<_> = snapshot.outputs.iter().map(|o| o.id).collect();
         let stale: Vec<_> = self
@@ -308,6 +339,9 @@ impl PresentationPlanner {
         let settings = engine.config().clone();
         let mut switches = BTreeMap::new();
         for group in &snapshot.groups {
+            if group.outputs.iter().any(|o| direct_outputs.contains(o)) {
+                continue;
+            }
             if let Some(prior) = previous.groups.iter().find(|g| g.id == group.id) {
                 if prior.presentation != group.presentation {
                     let direction = causes
@@ -451,7 +485,9 @@ impl PresentationPlanner {
             }
         }
         for prior in previous.windows.iter().filter(|w| w.visible()) {
-            if !connected.contains(&prior.home_output) {
+            if direct_outputs.contains(&prior.home_output)
+                || !connected.contains(&prior.home_output)
+            {
                 self.remove_live(prior.key, engine);
                 continue;
             }
@@ -564,6 +600,9 @@ impl PresentationPlanner {
             }
         }
         for current in snapshot.windows.iter().filter(|w| w.visible()) {
+            if direct_outputs.contains(&current.home_output) {
+                continue;
+            }
             let prior = old.get(&current.key).copied();
             let placement = current.placement.as_ref().unwrap();
             let hint = window_hint(causes, current.key);

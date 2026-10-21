@@ -37,7 +37,7 @@ malformed-value coverage in [configuration tests](../tests/extensions.rs).
 
 [Demand-driven scheduling](platform.md#demand-driven-scheduling) decides whether
 pixels need an opportunity. Ordinary unfiltered client updates then use Smithay's
-output damage tracker with the actual EGL window buffer age, queried after resize
+output damage tracker (except [low-latency fullscreen](#low-latency-fullscreen)) with the actual EGL window buffer age, queried after resize
 handling with that window surface/context current. Unknown age is zero. Submission
 uses the tracker’s repair damage, including damage needed by older backbuffers,
 with the pinned backend's single coordinate conversion.
@@ -72,6 +72,66 @@ measurement. Normal capture retains its full-frame recovery behavior.
 Evidence: [backend](../src/platform/smithay/backend.rs),
 [render demand tests](../src/platform/smithay/render_demand.rs), and
 [idle/partial GPU fixture](../scripts/vm-idle-smoke.py).
+
+## Low-latency fullscreen
+
+An active requested low-latency slot uses a separate nested complete-frame
+presenter once its root has committed fullscreen state. It MUST draw only the
+current committed application/subsurface tree, its popups and opaque black
+output-local backing on that output. It MUST bypass desktop scene preparation,
+wallpaper, SSD, rounding, blur/glass, retained-window snapshots and output damage
+repair there. The draw loop clears and paints the whole host framebuffer directly;
+it MUST NOT query EGL buffer age or call `OutputDamageTracker::render_output`.
+Wayland imports still consume protocol damage and synchronize applied transactions
+normally; this is a bypass of compositor repair/fingerprinting, not removal of
+Smithay's required buffer/import bookkeeping.
+
+Virtual outputs share a host framebuffer. Other outputs MUST retain ordinary
+scene/effect preparation with output-local clips, followed by the minimal app tree
+on its own output. The whole shared frame is painted without repair history while
+this presenter is effective; other outputs therefore also lose incremental repair
+during that interval. Effects prepared for other outputs MUST NOT sample or filter
+the game tree. FPS HUD and capture may draw/read this composed host frame; their
+cost remains real and does not imply physical timing or direct scanout.
+
+Overview (including its closing animation), a pending switcher, authorized shell
+preview work, a visible related transient dialog, a mapped overlay-layer tree on
+the target output, or uncommitted fullscreen content MUST use normal composition
+until that interruption ends. The selected mode stays low latency. Dormant and
+headless slots do not keep the presenter running. See the exact diagnostic
+[paths and reasons](shell.md#snapshot-fields). Required popups remain in the
+minimal presenter. Fullscreen output input/layer priority stays unchanged.
+
+Entry/exit/mode changes settle window/workspace motion only on the affected
+presentation output. Other outputs' tracks/resources stay live. Do not retain a
+steady-state animation image of the game. When the minimal path starts, discard
+shared repair history; when normal rendering resumes, create fresh history and
+force a complete recovery frame before incremental repair. Single-output entry
+releases wallpaper textures, titlebar strips, rounded/filter scratch, overview
+thumbnails and the window-image scratch composer; all are recreated lazily.
+Mixed-output entry drops the target's wallpaper references/titlebar strips and
+unused overview thumbnails, retaining shared caches and scratch used by normal outputs. Prepared
+CPU configuration resources, client import caches, host/driver buffers and the
+optional HUD retain their existing bounded owners; no zero-residency claim is made.
+
+Applied buffer assignments/content damage schedule presentation directly. Structural
+state uses a small allocation-free tree stamp (membership/order, view, scale,
+transform, offsets and geometry), without copying opaque regions or comparing
+buffer/damage histories. Effective visual revisions still advance, invalidating
+previews when normal composition resumes. Same-geometry content commits request
+pixels without repeating layout/configure reconciliation. Callback/input-only commits with unchanged
+visual state MUST service callbacks/input without repainting. Synchronized child
+commits remain deferred to the parent transaction. New content, exposure or required
+UI wakes rendering; a static game MUST settle idle. Existing host redraw coalescing
+bounds draws; Clear adds no candidate-buffer queue or retained game screenshot.
+The synchronized EGL interval remains 1; lateness does not lower cadence to a divisor.
+
+This is nested reduced-work composition. Native DRM/KMS, direct scanout, VRR,
+tearing, relative pointer/lock and XWayland are not implemented by this feature.
+Evidence: [minimal presenter](../src/platform/smithay/low_latency.rs),
+[backend](../src/platform/smithay/backend.rs), output-specific settlement in
+[presentation tests](../tests/presentation.rs), and `low-latency-*` protocol/GPU
+cases in [fullscreen smoke](../scripts/vm-fullscreen-smoke.py).
 
 ## Theme
 

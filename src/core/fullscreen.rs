@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// Requested presentation policy; nested low latency still uses synchronized host swaps.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FullscreenMode {
+    #[default]
+    Desktop,
+    LowLatency,
+}
+
+impl FullscreenMode {
+    /// Stable configuration and IPC spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::LowLatency => "low-latency",
+        }
+    }
+}
+
 /// A presentation destination; Fullscreen is never a numbered workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PresentationTarget {
@@ -14,6 +33,8 @@ pub enum PresentationTarget {
 pub struct FullscreenSlot {
     /// Sole managed fullscreen occupant.
     pub window: WindowId,
+    /// Requested mode, retained while dormant or using an overlay fallback.
+    pub mode: FullscreenMode,
     /// Effective presentation output; absent while headless.
     pub output: Option<OutputId>,
     /// Whether the special destination is selected on its output.
@@ -160,6 +181,17 @@ impl Desktop {
         output: Option<OutputId>,
         activate: bool,
     ) -> bool {
+        self.request_fullscreen_mode(window, output, activate, FullscreenMode::Desktop)
+    }
+
+    /// Enter or change mode in place without losing an existing occupant's return context.
+    pub fn request_fullscreen_mode(
+        &mut self,
+        window: WindowId,
+        output: Option<OutputId>,
+        activate: bool,
+        mode: FullscreenMode,
+    ) -> bool {
         let Some(w) = self.window(window) else {
             return false;
         };
@@ -182,6 +214,7 @@ impl Desktop {
             .as_ref()
             .is_some_and(|s| s.window == window && s.output == target)
         {
+            self.fullscreen.as_mut().unwrap().mode = mode;
             if activate {
                 self.activate_fullscreen();
             }
@@ -204,6 +237,7 @@ impl Desktop {
         });
         self.fullscreen = Some(FullscreenSlot {
             window,
+            mode,
             output: target,
             active: false,
             revision: self.fullscreen_revision,

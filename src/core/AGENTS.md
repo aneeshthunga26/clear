@@ -10,7 +10,7 @@ Parent guidance: [src/AGENTS.md](../AGENTS.md).
 - `desktop.rs`: window/workspace ownership, output groups, focus, persistent
   geometry, mode overrides, and ordered placement computation.
 - `fullscreen.rs`: the single occupied-only fullscreen presentation, return/focus context,
-  transient relationships and output-local visibility; see [fullscreen](../../specs/desktop.md#fullscreen).
+  transient relationships, requested presentation mode and output-local visibility; see [fullscreen](../../specs/desktop.md#fullscreen).
 - `resize.rs`: opaque baseline resize sessions, region lifecycle validation, and
   persistent per-workspace/output/mode sizing. Floating gestures edit only saved
   rectangles; tiled gestures edit only layout proportions.

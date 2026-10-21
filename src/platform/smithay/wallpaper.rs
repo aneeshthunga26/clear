@@ -113,6 +113,16 @@ impl WallpaperCache {
             })
             .collect()
     }
+    /// Release only this output's GPU references, retaining shared images used elsewhere.
+    pub fn remove_output(&mut self, output: &str) {
+        for cached in &mut self.images {
+            cached.outputs.remove(output);
+            cached.previews.retain(|(name, _), _| name != output);
+        }
+        self.images
+            .retain(|cached| !cached.outputs.is_empty() || !cached.previews.is_empty());
+    }
+
     pub fn retain(&mut self, wallpapers: &Wallpapers) {
         self.images.retain(|cached| {
             wallpapers

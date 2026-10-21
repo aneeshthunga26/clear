@@ -50,7 +50,8 @@ the [binding action schema](input.md#action-schema), without `key` fields.
 `alt_tab` is not supported by the Rhai decoder: its gesture belongs to physical
 input. `toggle_overview` is supported as a request for adapter authorization
 under the [overview contract](overview.md). All returned maps are decoded and validated before any is dispatched.
-`toggle_fullscreen` is also supported as a unit action using desktop policy.
+`toggle_fullscreen` and `toggle_fullscreen_low_latency` are supported as unit
+actions using the runtime [fullscreen mode policy](desktop.md#fullscreen).
 Malformed results fail as a whole. Successful actions are applied in returned
 order; nested script dispatch shares runtime's 128-action expansion budget.
 

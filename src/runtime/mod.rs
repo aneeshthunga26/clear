@@ -164,6 +164,50 @@ impl Runtime {
         self.desktop.set_window_role(id, role);
     }
 
+    /// Enter fullscreen using explicit mode, exact app rule, then configured default.
+    pub fn request_fullscreen(
+        &mut self,
+        id: WindowId,
+        output: Option<OutputId>,
+        activate: bool,
+        mode: Option<crate::core::FullscreenMode>,
+    ) -> bool {
+        let Some(window) = self.desktop.window(id) else {
+            return false;
+        };
+        let mode = mode.unwrap_or_else(|| {
+            self.desktop
+                .fullscreen_slot()
+                .filter(|slot| slot.window == id)
+                .map_or_else(
+                    || self.config.fullscreen.mode_for(&window.app_id),
+                    |slot| slot.mode,
+                )
+        });
+        self.desktop
+            .request_fullscreen_mode(id, output, activate, mode)
+    }
+
+    /// Toggle requested mode while retaining the slot's normal return context.
+    pub fn toggle_fullscreen(&mut self, low_latency: bool) {
+        let Some(id) = self.desktop.focused_window() else {
+            return;
+        };
+        let slot = self.desktop.fullscreen_slot();
+        if slot.is_some_and(|s| {
+            s.window == id && (!low_latency || s.mode == crate::core::FullscreenMode::LowLatency)
+        }) {
+            self.desktop.leave_fullscreen(id);
+        } else {
+            self.request_fullscreen(
+                id,
+                None,
+                true,
+                low_latency.then_some(crate::core::FullscreenMode::LowLatency),
+            );
+        }
+    }
+
     /// Resolve configured connector names after the backend creates its outputs.
     pub fn configure_output_modes(&mut self) {
         let outputs: Vec<_> = self
@@ -270,7 +314,10 @@ impl Runtime {
                 Action::Unstretch => Command::Unstretch,
                 Action::ToggleFloating => Command::ToggleFloating,
                 Action::ToggleMaximized => Command::ToggleMaximized,
-                Action::ToggleFullscreen => Command::ToggleFullscreen,
+                Action::ToggleFullscreen | Action::ToggleFullscreenLowLatency => {
+                    self.toggle_fullscreen(matches!(action, Action::ToggleFullscreenLowLatency));
+                    continue;
+                }
                 Action::Minimize => Command::MinimizeFocused,
                 Action::Scroll { amount } => Command::Scroll(amount),
                 Action::CloseFocused => Command::CloseFocused,

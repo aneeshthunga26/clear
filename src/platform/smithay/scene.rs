@@ -249,6 +249,7 @@ impl Compositor {
             return;
         }
         self.dirty = false;
+        self.policy_reconciliations += 1;
         self.shell_dirty = true;
         self.revoke_stale_fullscreen_intents();
         self.sync_transient_parents();
@@ -893,6 +894,7 @@ impl Compositor {
         titlebars: &mut TitlebarCache,
         rounded: Option<&RoundedShaders>,
         blur: bool,
+        fast: Option<OutputId>,
     ) -> Result<Scene, GlesError> {
         let mut elements = Vec::new();
         let mut groups = Vec::new();
@@ -915,13 +917,14 @@ impl Compositor {
             &mut elements,
             &mut groups,
             |output| {
-                shell_reveal_alpha(
-                    reveal,
-                    output,
-                    Layer::Overlay,
-                    full_outputs.contains(&output),
-                )
-                .is_none()
+                fast != Some(output)
+                    && shell_reveal_alpha(
+                        reveal,
+                        output,
+                        Layer::Overlay,
+                        full_outputs.contains(&output),
+                    )
+                    .is_none()
             },
         );
         self.layer_elements_filtered(
@@ -930,7 +933,8 @@ impl Compositor {
             &mut elements,
             &mut groups,
             |output| {
-                !full_outputs.contains(&output)
+                fast != Some(output)
+                    && !full_outputs.contains(&output)
                     && shell_reveal_alpha(reveal, output, Layer::Top, false).is_none()
             },
         );
@@ -942,6 +946,7 @@ impl Compositor {
                 if let Some(slot) = self.runtime.desktop.fullscreen_slot().filter(|s| s.active)
                     && let Some(output) = slot.output.and_then(|o| self.runtime.desktop.output(o))
                     && !self.overview_present()
+                    && fast != Some(output.id)
                 {
                     let start = elements.len();
                     if self
@@ -976,12 +981,14 @@ impl Compositor {
                     &[Layer::Top],
                     &mut elements,
                     &mut groups,
-                    |output| full_outputs.contains(&output),
+                    |output| fast != Some(output) && full_outputs.contains(&output),
                 );
                 self.snap_preview_elements(&mut elements, &mut groups, rounded);
             }
             for placement in self.placements.iter().rev() {
-                if self.overview_present() {
+                if self.overview_present()
+                    || fast == self.runtime.desktop.presentation_output(placement.window)
+                {
                     continue;
                 }
                 if self.elevated_window(placement.window, &full_outputs) != elevated {
@@ -991,7 +998,12 @@ impl Compositor {
                     continue;
                 };
                 if let Some(visual) = self.window_animations.visual(placement.window) {
-                    for clip in animated_clips(visual) {
+                    for clip in animated_clips(visual).into_iter().filter(|clip| {
+                        !self
+                            .outputs
+                            .iter()
+                            .any(|o| fast == Some(o.id) && o.rect == *clip)
+                    }) {
                         self.animated_popups(
                             renderer,
                             placement.window,
@@ -1208,7 +1220,12 @@ impl Compositor {
                     .outgoing()
                     .filter(|visual| visual.fullscreen_priority == elevated)
                 {
-                    for clip in animated_clips(visual) {
+                    for clip in animated_clips(visual).into_iter().filter(|clip| {
+                        !self
+                            .outputs
+                            .iter()
+                            .any(|o| fast == Some(o.id) && o.rect == *clip)
+                    }) {
                         let start = elements.len();
                         if let Some(element) = visual.image.element(
                             visual.destination(),
@@ -1231,14 +1248,15 @@ impl Compositor {
                 }
             }
         }
-        self.layer_elements(
+        self.layer_elements_filtered(
             renderer,
             &[Layer::Bottom, Layer::Background],
             &mut elements,
             &mut groups,
+            |output| fast != Some(output),
         );
         wallpapers.retain(&self.runtime.wallpapers);
-        for region in &self.outputs {
+        for region in self.outputs.iter().filter(|o| fast != Some(o.id)) {
             if let Some(motion) = self.window_animations.wallpaper_offsets(region.id) {
                 for source in self
                     .outputs
@@ -1361,16 +1379,6 @@ impl Compositor {
                 }),
             });
         }
-    }
-
-    fn layer_elements(
-        &self,
-        renderer: &mut GlesRenderer,
-        kinds: &[Layer],
-        elements: &mut Vec<SceneElement>,
-        groups: &mut Vec<SceneGroup>,
-    ) {
-        self.layer_elements_filtered(renderer, kinds, elements, groups, |_| true);
     }
 
     fn layer_elements_filtered(
